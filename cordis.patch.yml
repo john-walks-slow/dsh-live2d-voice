@@ -1,0 +1,4 @@
+# dsh-live2d-voice — bundle patch layer
+- insert:
+    - id: dsh-live2d-voice
+      name: dsh-live2d-voice
