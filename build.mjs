@@ -23,7 +23,10 @@ await build({
 	platform: "node",
 	target: "node22",
 	outfile: "lib/index.js",
-	external: ["@deepseek-ai/*"],
+	// ws is CJS and its internal require("events") cannot be bundled into
+	// pure ESM — keep it external (runtime dependency, resolved from the
+	// plugin's own node_modules like any other package dep).
+	external: ["@deepseek-ai/*", "ws"],
 	sourcemap: false,
 	logLevel: "info",
 });

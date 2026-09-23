@@ -18,7 +18,7 @@
 
 import type { Context } from "@deepseek-ai/cordis";
 import type { SseHub } from "./events.js";
-import type { PluginConfig } from "./config.js";
+import { speechLanguageInstruction, type PluginConfig } from "./config.js";
 
 export type SessionSpeechMode = "live" | "exited";
 
@@ -88,6 +88,8 @@ function liveSection(config: PluginConfig): string {
 		`  ${emotions.map((emotion) => `[${emotion}]`).join(" ")}`,
 		"- 标签只用于控制角色表情，不会被朗读；没有情绪变化时省略标签即可。",
 	];
+	const language = speechLanguageInstruction(config.speechLanguage);
+	if (language) lines.push(`- ${language}`);
 	const custom = config.speechPrompt.trim();
 	if (custom) lines.push("", "用户附加要求：", custom);
 	return lines.join("\n");

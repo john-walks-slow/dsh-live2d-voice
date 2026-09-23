@@ -9,15 +9,24 @@ export interface PublicConfig {
 	ttsModel: string;
 	apiKeyFile: string;
 	sttLanguage: string;
+	asrCredentialsFile: string;
+	speechLanguage: string;
+	subtitleLanguage: string;
 	speechPrompt: string;
 	emotionMap: Record<string, number | string>;
 	apiKeyCount: number;
+	asrConfigured: boolean;
 }
 
 export interface VoicePreset {
 	id: string;
 	label: string;
 	voiceId: string;
+}
+
+export interface LanguageOption {
+	id: string;
+	label: string;
 }
 
 export interface ModelInfo {

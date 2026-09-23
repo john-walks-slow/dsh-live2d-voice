@@ -33,8 +33,26 @@ export interface PluginConfig {
 	apiKeys: string[];
 	/** Optional file that holds API keys (checked first when apiKeys is empty). */
 	apiKeyFile: string;
-	/** STT language hint (Phase 2; reserved here so config stays stable). */
+	/**
+	 * Voice-input recognition language: "auto" lets the recognizer detect,
+	 * or an explicit BCP-47-ish hint ("zh", "ja", "en", …).
+	 */
 	sttLanguage: string;
+	/**
+	 * Volcengine ASR credentials file (JSON: appid/accessToken/apikey) for
+	 * the streaming speech-to-text relay.
+	 */
+	asrCredentialsFile: string;
+	/**
+	 * The character's speaking language ("ja" default; "auto" follows the
+	 * user). Drives the live-mode instruction "always reply in <language>".
+	 */
+	speechLanguage: string;
+	/**
+	 * Subtitle translation target language ("zh" default; "off" disables).
+	 * When active, subtitles show original + translated line (Phase 3).
+	 */
+	subtitleLanguage: string;
 	/**
 	 * User-authored extra instructions appended to the Live2D speech-format
 	 * system-prompt section (e.g. "总是用日语自然交流"). Live-mode only — the
@@ -45,6 +63,24 @@ export interface PluginConfig {
 	emotionMap: Record<string, number | string>;
 	/** Sub-workspace overrides keyed by workspace id (Phase 3). */
 	workspaces: Record<string, Partial<PluginConfig>>;
+}
+
+/** Display labels for the language pickers (client + prompt share these). */
+export const LANGUAGE_OPTIONS = [
+	{ id: "auto", label: "自动" },
+	{ id: "ja", label: "日本語" },
+	{ id: "zh", label: "中文" },
+	{ id: "en", label: "English" },
+] as const;
+
+/** Resolve the instruction line for the character's speaking language. */
+export function speechLanguageInstruction(language: string): string {
+	const map: Record<string, string> = {
+		ja: "无论用户使用什么语言，你都始终用日语自然交流（用户会看到字幕翻译）。",
+		zh: "无论用户使用什么语言，你都始终用中文自然交流。",
+		en: "Whatever language the user speaks, always reply naturally in English.",
+	};
+	return map[language] ?? "";
 }
 
 const DEFAULT_EMOTION_MAP: Record<string, number> = {
@@ -65,7 +101,10 @@ export const DEFAULT_CONFIG: PluginConfig = {
 	ttsModel: "s2.1-pro-free",
 	apiKeys: [],
 	apiKeyFile: "",
-	sttLanguage: "zh",
+	sttLanguage: "auto",
+	asrCredentialsFile: join(homedir(), ".config/volc-asr/credentials.json"),
+	speechLanguage: "ja",
+	subtitleLanguage: "zh",
 	speechPrompt: "",
 	emotionMap: { ...DEFAULT_EMOTION_MAP },
 	workspaces: {},
@@ -80,13 +119,23 @@ export function loadConfig(): PluginConfig {
 	try {
 		if (!existsSync(configFilePath())) return structuredClone(DEFAULT_CONFIG);
 		const raw = JSON.parse(readFileSync(configFilePath(), "utf-8")) as Partial<PluginConfig>;
-		return {
+		const config: PluginConfig = {
 			...structuredClone(DEFAULT_CONFIG),
 			...raw,
 			emotionMap: { ...DEFAULT_EMOTION_MAP, ...(raw.emotionMap ?? {}) },
 			workspaces: raw.workspaces ?? {},
 			apiKeys: Array.isArray(raw.apiKeys) ? raw.apiKeys.filter((k) => typeof k === "string" && k) : [],
 		};
+		// One-time Phase 1 → 2 migration: Phase 1 files never carried
+		// speechLanguage (no such field) and its saved configs baked the old
+		// sttLanguage default "zh" — which now breaks Japanese recognition.
+		// Phase 1 exposed no sttLanguage UI, so that value is always the old
+		// default; migrate it to auto. Any Phase 2 save persists
+		// speechLanguage, which makes this condition false forever after.
+		if (raw.speechLanguage === undefined && config.sttLanguage === "zh") {
+			config.sttLanguage = "auto";
+		}
+		return config;
 	} catch {
 		return structuredClone(DEFAULT_CONFIG);
 	}

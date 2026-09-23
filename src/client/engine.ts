@@ -21,6 +21,14 @@ export class SpeechEngine {
 	private timeData: Uint8Array<ArrayBuffer> | null = null;
 	private sampleRate = 44100;
 	private muted = false;
+	/**
+	 * Barge-in muzzle: stop the current audio AND drop everything the still
+	 * running turn keeps sending until the next submit unmuzzles it. Plain
+	 * stop() only silences the current sentence — the turn's remaining
+	 * sentences would resume right over the user.
+	 */
+	private muzzled = false;
+	private muzzleTimer = 0;
 	/** Unscheduled raw PCM bytes (may split samples across SSE chunks). */
 	private pending: Uint8Array[] = [];
 	private carry: number[] = [];
@@ -55,6 +63,7 @@ export class SpeechEngine {
 
 	/** Enqueue one base64 PCM chunk. */
 	enqueueBase64(b64: string): void {
+		if (this.muzzled) return;
 		const binary = atob(b64);
 		const bytes = new Uint8Array(this.carry.length + binary.length);
 		for (let i = 0; i < this.carry.length; i++) bytes[i] = this.carry[i];
@@ -149,6 +158,31 @@ export class SpeechEngine {
 		this.pending = [];
 		this.carry = [];
 		this.nextTime = 0;
+	}
+
+	/**
+	 * Barge-in: stop now and stay silent — audio from the interrupted turn
+	 * is dropped until unmuzzle() (the next successful submit or mic stop).
+	 * A safety timer re-allows audio after 8s so a barge that never yields
+	 * a submitted segment (e.g. a sub-300ms blip the VAD filters out)
+	 * cannot mute the character forever.
+	 */
+	muzzle(): void {
+		this.muzzled = true;
+		this.stop();
+		if (this.muzzleTimer !== 0) window.clearTimeout(this.muzzleTimer);
+		this.muzzleTimer = window.setTimeout(() => {
+			this.muzzled = false;
+			this.muzzleTimer = 0;
+		}, 8000);
+	}
+
+	unmuzzle(): void {
+		this.muzzled = false;
+		if (this.muzzleTimer !== 0) {
+			window.clearTimeout(this.muzzleTimer);
+			this.muzzleTimer = 0;
+		}
 	}
 
 	/**

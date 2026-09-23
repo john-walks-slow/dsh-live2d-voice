@@ -1,17 +1,16 @@
 # dsh-live2d-voice
 
-DSH 插件：在会话视图里新增 **Live2D** tab——Live2D 角色随对话实时开口说话（口型同步 + 表情切换 + 字幕），AI 回复经 Fish Audio TTS 流式合成语音推送到浏览器播放。
+DSH 插件：在会话视图里新增 **Live2D** tab——Live2D 角色随对话实时开口说话（口型同步 + 表情切换 + 字幕），AI 回复经 Fish Audio TTS 流式合成语音推送到浏览器播放；🎙 连续语音输入（本地 VAD 分句 + 火山引擎 ASR）让你全程免键盘对话。
 
-Phase 1 能力：
+能力总览：
 
 - 🎭 **Live2D 角色舞台**：Cubism 4 模型（pixi.js v7 渲染），说话时 `ParamMouthOpenY` 随音频 RMS 包络驱动口型，句级情绪标签切换表情
 - 🔊 **流式语音**：LLM 回复边生成边按句合成（Fish Audio，44100Hz PCM），SSE 推送、浏览器端队列播放；断句 / abort 与模型流同步
+- 🎙 **连续语音输入**（v0.2.0）：浏览器本地 VAD 分句 → 整句识别（火山 `bigmodel_nostream`，中/日/英自动检测）→ 识别完自动提交对话；支持说话打断（barge-in）与扬声器回声防护
 - 💬 **双语字幕**：用户与 AI 台词均显示（14s 淡出），可一键隐藏
 - ⌨ **键盘输入**：在 Live2D 页直接对话（走 GUI 会话通道，冷会话自动创建/resume agent）
 - ⚙ **音色快切**：HUD 内置 5 个预设音色，即选即生效
 - 🔇 **静音开关**：只看口型不听声
-
-> 🎙 语音输入（麦克风 STT）为 Phase 2 规划，按钮现为占位禁用态。
 
 ## 安装
 
@@ -50,6 +49,18 @@ pnpm install && sv restart dsh   # 重启 dsh 生效
     "anger": 3, "surprise": 4, "fear": 5, "disgust": 6, "shy": 7
   },
 
+  // 语音输入：火山引擎 ASR 凭证文件（JSON：apikey，或 appid+accessToken）
+  "asrCredentialsFile": "~/.config/volc-asr/credentials.json",
+
+  // 语音输入识别语言：auto（自动检测中/日/英等）| zh | ja | en
+  "sttLanguage": "auto",
+
+  // 角色说话语言：ja（默认，角色始终用日语交流）| zh | en —— 注入 live 模式提示词
+  "speechLanguage": "ja",
+
+  // 字幕翻译目标语言（Phase 3 生效）：zh | off
+  "subtitleLanguage": "zh",
+
   // 自定义提示词：仅在 Live2D 语音模式下随情绪标签协议一起注入
   // 例："无论用户说什么语言，总是用日语自然交流。用户会看到字幕翻译。"
   "speechPrompt": ""
@@ -63,7 +74,10 @@ pnpm install && sv restart dsh   # 重启 dsh 生效
 | `ttsModel` | `s2.1-pro-free` | Fish Audio TTS 模型 |
 | `apiKeys` | `[]` | 内联 key 列表（优先于 `apiKeyFile`） |
 | `apiKeyFile` | `""` | key 文件路径（每行一个 key 或 JSON 数组） |
-| `sttLanguage` | `"zh"` | Phase 2 语音输入语言（预留） |
+| `asrCredentialsFile` | `~/.config/volc-asr/credentials.json` | 火山 ASR 凭证（JSON 含 `apikey` 或 `appid`+`accessToken`）；未配置时 🎙 点击给出引导提示 |
+| `sttLanguage` | `"auto"` | 语音识别语言；auto 用火山 `enable_auto_lang` 自动检测 |
+| `speechLanguage` | `"ja"` | 角色说话语言，注入"始终用 X 语言交流"指令 |
+| `subtitleLanguage` | `"zh"` | 字幕翻译目标（Phase 3 生效，当前预留） |
 | `emotionMap` | 8 情绪默认表 | 标签 → 表情索引/名称 |
 | `speechPrompt` | `""` | 自定义提示词，仅语音模式生效（HUD ⚙ 里也能编辑） |
 | `workspaces` | `{}` | per-workspace 覆盖（Phase 3 预留） |
@@ -96,8 +110,16 @@ cd ~/.dsh/live2d-voice-models
 ## 使用
 
 1. 打开任一会话，顶部视图 tab 切到 **Live2D**
-2. 点 HUD 的 ⌨ 打开输入框，直接对话（也可先在 Chat 页说，再切回来看角色表演）
-3. 表情/口型/字幕随回复自动驱动；🔇 静音、💬 字幕开关、⚙ 换音色
+2. 点 HUD 的 ⌨ 打开输入框直接对话；或点 🎙 开启连续语音输入——说话自然停顿后一句自动识别、自动发送（说完即可继续说下一句）
+3. AI 说话时直接开口即可**打断**（barge-in 立即静音角色并转向你的新输入）；正在生成回复时的新语音会以 steer 模式插队
+4. 表情/口型/字幕随回复自动驱动；🔇 静音、💬 字幕开关、⚙ 换音色
+
+语音输入细节：
+
+- 识别延迟 ≈ 说完话 0.5s（VAD 判停）+ 识别约 1s，随后自动提交
+- 角色的语音可能被麦克风拾到（外放场景）：识别结果与角色最近台词高度重合时会被当作回声丢弃
+- 浏览器要求 HTTPS 或 localhost（getUserMedia 限制）；手机浏览器同样可用
+- `sttLanguage: auto` 实测覆盖中文/日语/英语自动检测；指定 `ja`/`zh`/`en` 可锁定语种提高稳定性
 
 注意：
 
@@ -108,6 +130,16 @@ cd ~/.dsh/live2d-voice-models
 ## 工作原理（简）
 
 ```
+                        ┌── 🎙 语音输入 ────────────────────────────────┐
+                        │ 浏览器 AudioWorklet：48k→16k 降采样 + 能量 VAD │
+                        │ 分句（250ms 预滚 / 20s 上限）                  │
+                        │   │ 整句 PCM                                  │
+                        │   ▼                                           │
+                        │ POST /live2d-voice/asr/recognize              │
+                        │   │ 火山 bigmodel_nostream（快灌 + 负包收尾）  │
+                        │   ▼                                           │
+                        │ 识别文本 ── 自动提交（barge/运行中 → steer）───┼──► 用户输入
+                        └───────────────────────────────────────────────┘
 用户输入 ──► GUI 会话通道 (session/prompt) ──► agent 回复流
                                                   │ llm/stream tap（仅 Live 监听的会话）
                                                   ▼
@@ -125,9 +157,10 @@ cd ~/.dsh/live2d-voice-models
                                              ParamMouthOpenY
 ```
 
-- 情绪协议（会话级按需注入）：仅当该会话的 Live2D 视图打开时，system prompt 才附加"语音输出格式"一节（order 9800，含自定义 `speechPrompt`），要求模型句首输出 `[neutral|joy|sadness|anger|surprise|fear|disgust|shy]` 标签；句子层提取后映射为表情，标签本身不进字幕。切回 Chat 视图后下一轮自动撤下该节并附"已退出"提醒
+- 情绪协议（会话级按需注入）：仅当该会话的 Live2D 视图打开时，system prompt 才附加"语音输出格式"一节（order 9800，含 `speechLanguage` 指令与自定义 `speechPrompt`），要求模型句首输出 `[neutral|joy|sadness|anger|surprise|fear|disgust|shy]` 标签；句子层提取后映射为表情，标签本身不进字幕。切回 Chat 视图后下一轮自动撤下该节并附"已退出"提醒
 - TTS 与 Turn 解耦：LLM 流结束即放行 Agent Turn 结算，剩余句子在后台继续合成；新一轮流开始或视图关闭时自动中止旧合成
 - 多 key 轮询：单 key 401/402/429 自动切下一个，全部失败才报错（SSE `error` 事件）
+- 语音识别用火山 `bigmodel_nostream`（v3 sauc 二进制帧协议）：双向流式端点不支持日语（实测空文本），nostream 覆盖 25 语种且 `enable_auto_lang` 自动检测可用；每句独立短连接、快灌整句、负包收尾后返回整段文本
 
 ## 开发
 
@@ -135,10 +168,11 @@ cd ~/.dsh/live2d-voice-models
 npm install        # .npmrc 已设 legacy-peer-deps（client 包 0.1.1-rc.2 peer 与 host 0.1.5-rc.3 冲突）
 npm run typecheck
 npm run build      # lib/index.js (host ESM) + lib/client.js (浏览器 bundle)
-node e2e/verify-live.mjs   # 端到端验证（需 e2e 实例跑在 4188，见 dsh-e2e skill）
+node e2e/verify-live.mjs    # Phase 1 端到端回归（需 e2e 实例跑在 4188，见 dsh-e2e skill）
+node e2e/verify-voice.mjs   # Phase 2 语音闭环 e2e（同上；需 /tmp/t-zh-16k.pcm 与 /tmp/t-ja-16k.pcm 测试音频）
 ```
 
-源码结构：`src/`（host：config/events/tts/sentence/speech/system-prompt/routes）+ `src/client/`（view/engine/model/hud/subtitle/api）。构建产物 `lib/client.js` 是浏览器 bundle（react/pixi/live2d 打包进去，`@deepseek-ai/*` external 由宿主提供）。
+源码结构：`src/`（host：config/events/tts/sentence/speech/asr/system-prompt/routes）+ `src/client/`（view/engine/model/hud/subtitle/mic/api）。构建产物 `lib/client.js` 是浏览器 bundle（react/pixi/live2d 打包进去，`@deepseek-ai/*` external 由宿主提供）。
 
 ## License
 

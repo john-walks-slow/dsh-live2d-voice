@@ -3,6 +3,8 @@
  * webserver degrades to a no-op with one log line):
  *
  *   GET  /live2d-voice/stream?session=<id>   SSE event stream (the Live view)
+ *   POST /live2d-voice/asr/recognize?lang=.. one buffered utterance of 16k
+ *                                           PCM in (octet-stream), text out
  *   GET  /live2d-voice/config                sanitized config + voice presets
  *   POST /live2d-voice/config                update config fields
  *   POST /live2d-voice/message               submit a user message to a session
@@ -23,10 +25,15 @@ import type {} from "@deepseek-ai/dsh-agent";
 import type {} from "@deepseek-ai/dsh-host-webserver";
 import { createUserMessage, type ContentBlock } from "@deepseek-ai/dsh-llm";
 import type { SessionId } from "@deepseek-ai/dsh-session";
-import { VOICE_PRESETS, type PluginConfig } from "./config.js";
+import { LANGUAGE_OPTIONS, VOICE_PRESETS, type PluginConfig } from "./config.js";
 import type { SseHub } from "./events.js";
+import { loadVolcCredentials, recognizeUtterance } from "./asr.js";
 
 const BODY_MAX_BYTES = 64 * 1024;
+/** 16kHz s16le mono ≈ 32KB/s — 2MB ≈ one minute of speech, far above the client's 20s cap. */
+const PCM_MAX_BYTES = 2 * 1024 * 1024;
+/** Below 100ms of audio the recognizer has nothing to work with. */
+const PCM_MIN_BYTES = 3200;
 const MODELS_PREFIX = "/live2d-voice/models";
 const CORE_SCRIPT_PATH = "/live2d-voice/core/live2dcubismcore.min.js";
 
@@ -59,10 +66,25 @@ async function readJsonBody(req: IncomingMessage): Promise<Record<string, unknow
 	return parsed as Record<string, unknown>;
 }
 
+/** Read a raw binary request body (bounded). */
+async function readRawBody(req: IncomingMessage, maxBytes: number): Promise<Buffer> {
+	const chunks: Buffer[] = [];
+	let size = 0;
+	for await (const chunk of req) {
+		size += (chunk as Buffer).length;
+		if (size > maxBytes) throw new Error("body too large");
+		chunks.push(chunk as Buffer);
+	}
+	return Buffer.concat(chunks);
+}
+
 /** The sanitized config served to the GUI: API keys never leave the host. */
 function publicConfig(config: PluginConfig, keyCount: number) {
 	const { apiKeys: _apiKeys, ...rest } = config;
-	return { ...rest, apiKeyCount: keyCount };
+	const asrConfigured = config.asrCredentialsFile
+		? loadVolcCredentials(config.asrCredentialsFile) !== undefined
+		: false;
+	return { ...rest, apiKeyCount: keyCount, asrConfigured };
 }
 
 function mimeOf(path: string): string {
@@ -125,12 +147,52 @@ export function installRoutes(ctx: Context, deps: RouteDeps): (() => void) | und
 		} })
 	);
 
+	// Speech-to-text: one VAD-closed utterance (16k s16le mono PCM body) in,
+	// transcript JSON out. Each request drives its own short-lived upstream
+	// session, so concurrent utterances are naturally isolated.
+	disposers.push(
+		webServer.register({ kind: "exact", path: "/live2d-voice/asr/recognize", handler: (req, res) => {
+			if (req.method !== "POST") {
+				writeJson(res, 405, { code: "method_not_allowed" });
+				return;
+			}
+			void (async () => {
+				const config = deps.getConfig();
+				const credentials = config.asrCredentialsFile ? loadVolcCredentials(config.asrCredentialsFile) : undefined;
+				if (credentials === undefined) {
+					writeJson(res, 500, { ok: false, error: "未配置火山 ASR 凭证（live2d-voice.json → asrCredentialsFile，JSON 需含 apikey 或 appid+accessToken）" });
+					return;
+				}
+				const language = new URL(req.url ?? "/", "http://localhost").searchParams.get("lang")?.trim() || config.sttLanguage || "auto";
+				let pcm: Buffer;
+				try {
+					pcm = await readRawBody(req, PCM_MAX_BYTES);
+				} catch (error) {
+					writeJson(res, 413, { ok: false, error: error instanceof Error ? error.message : String(error) });
+					return;
+				}
+				if (pcm.length < PCM_MIN_BYTES) {
+					writeJson(res, 400, { ok: false, error: "音频过短（不足 100ms）" });
+					return;
+				}
+				const text = await recognizeUtterance(credentials, pcm, language);
+				writeJson(res, 200, { ok: true, text });
+			})().catch((error: unknown) => {
+				writeJson(res, 500, { ok: false, error: error instanceof Error ? error.message : String(error) });
+			});
+		} })
+	);
+
 	// Config read (sanitized) + write.
 	disposers.push(
 		webServer.register({ kind: "exact", path: "/live2d-voice/config", handler: (req, res) => {
 			if (req.method === "GET") {
 				const config = deps.getConfig();
-				writeJson(res, 200, { config: publicConfig(config, deps.resolveKeys(config).length), presets: VOICE_PRESETS });
+				writeJson(res, 200, {
+					config: publicConfig(config, deps.resolveKeys(config).length),
+					presets: VOICE_PRESETS,
+					languages: LANGUAGE_OPTIONS,
+				});
 				return;
 			}
 			if (req.method !== "POST") {
@@ -140,7 +202,7 @@ export function installRoutes(ctx: Context, deps: RouteDeps): (() => void) | und
 			void readJsonBody(req)
 				.then((body) => {
 					const patch: Partial<PluginConfig> = {};
-					for (const key of ["modelPath", "voiceId", "ttsModel", "apiKeyFile", "sttLanguage", "speechPrompt"] as const) {
+					for (const key of ["modelPath", "voiceId", "ttsModel", "apiKeyFile", "sttLanguage", "asrCredentialsFile", "speechLanguage", "subtitleLanguage", "speechPrompt"] as const) {
 						if (typeof body[key] === "string") patch[key] = body[key] as string;
 					}
 					if (Array.isArray(body.apiKeys)) {

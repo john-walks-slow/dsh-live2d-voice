@@ -4,16 +4,17 @@
  */
 
 import type {
+	AudioPayload,
+	AudioStartPayload,
 	ErrorPayload,
 	ExpressionPayload,
+	LanguageOption,
 	ModelInfo,
 	PublicConfig,
+	SpeechEndPayload,
 	StreamHandlers,
 	SubtitlePayload,
 	VoicePreset,
-	SpeechEndPayload,
-	AudioStartPayload,
-	AudioPayload,
 } from "./types.js";
 
 async function getJson<T>(url: string): Promise<T> {
@@ -22,7 +23,7 @@ async function getJson<T>(url: string): Promise<T> {
 	return (await response.json()) as T;
 }
 
-export function fetchConfig(): Promise<{ config: PublicConfig; presets: VoicePreset[] }> {
+export function fetchConfig(): Promise<{ config: PublicConfig; presets: VoicePreset[]; languages: LanguageOption[] }> {
 	return getJson("/live2d-voice/config");
 }
 
@@ -50,6 +51,22 @@ export async function postMessage(sessionId: string, text: string): Promise<void
 		const body = (await response.json().catch(() => ({}))) as { message?: string };
 		throw new Error(body.message ?? `HTTP ${response.status}`);
 	}
+}
+
+/**
+ * Recognize one buffered utterance (VAD-closed by the mic layer): raw 16kHz
+ * s16le mono PCM body in, transcript out. Each call is an independent HTTP
+ * request, so overlapping segments cannot interleave.
+ */
+export async function recognizeUtterance(pcm: ArrayBuffer, language: string): Promise<string> {
+	const response = await fetch(`/live2d-voice/asr/recognize?lang=${encodeURIComponent(language)}`, {
+		method: "POST",
+		headers: { "content-type": "application/octet-stream" },
+		body: pcm,
+	});
+	const body = (await response.json().catch(() => ({}))) as { ok?: boolean; text?: string; error?: string };
+	if (!response.ok || !body.ok) throw new Error(body.error ?? `HTTP ${response.status}`);
+	return body.text ?? "";
 }
 
 /**

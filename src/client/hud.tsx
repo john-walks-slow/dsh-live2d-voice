@@ -1,13 +1,15 @@
 /**
- * The bottom HUD capsule: mic (Phase 2), TTS mute, subtitles, keyboard input,
- * and the voice settings popover (presets + custom speech prompt).
+ * The bottom HUD capsule: mic (continuous voice input), TTS mute, subtitles,
+ * keyboard input, and the voice settings popover (presets + custom speech
+ * prompt).
  *
  * The capsule fades to a whisper after 2.5s of pointer idleness (class
  * toggling owned by the view); hover restores it.
  */
 
 import { useState } from "react";
-import type { VoicePreset } from "./types.js";
+import type { MicState } from "./mic.js";
+import type { LanguageOption, VoicePreset } from "./types.js";
 
 export interface HudProps {
 	faded: boolean;
@@ -15,30 +17,43 @@ export interface HudProps {
 	subtitlesOn: boolean;
 	inputOpen: boolean;
 	popoverOpen: boolean;
+	micState: MicState;
+	asrConfigured: boolean;
 	presets: VoicePreset[];
+	languages: LanguageOption[];
 	currentVoiceId: string;
+	currentSttLanguage: string;
 	apiKeyCount: number;
 	speechPrompt: string;
 	onToggleMute: () => void;
 	onToggleSubtitles: () => void;
 	onToggleInput: () => void;
 	onTogglePopover: () => void;
+	onToggleMic: () => void;
 	onPickVoice: (preset: VoicePreset) => void;
+	onPickSttLanguage: (id: string) => void;
 	onSavePrompt: (text: string) => void;
 }
 
 export function Hud(props: HudProps) {
 	const [draftPrompt, setDraftPrompt] = useState<string | null>(null);
 	const promptValue = draftPrompt ?? props.speechPrompt;
+	const micOn = props.micState === "listening" || props.micState === "requesting";
 	return (
 		<div className={`lv-hud${props.faded ? " lv-faded" : ""}`}>
 			<button
 				type="button"
-				className="lv-btn"
-				disabled
-				title="语音输入（规划中，Phase 2 提供）"
+				className={`lv-btn lv-mic${micOn ? " lv-on lv-mic-live" : ""}`}
+				title={
+					!props.asrConfigured
+						? "语音输入未配置（asrCredentialsFile）"
+						: micOn
+							? "关闭语音输入"
+							: "语音输入：连续倾听，说完一句自动发送；AI 说话时可直接插话打断"
+				}
+				onClick={props.onToggleMic}
 			>
-				🎙️
+				{micOn ? "⏺" : "🎙"}
 			</button>
 			<button
 				type="button"
@@ -91,6 +106,20 @@ export function Hud(props: HudProps) {
 							{preset.voiceId === props.currentVoiceId && <span>✓</span>}
 						</button>
 					))}
+					<h4>识别语言</h4>
+					<div className="lv-langs">
+						{props.languages.map((language) => (
+							<button
+								key={language.id}
+								type="button"
+								className={`lv-lang${language.id === props.currentSttLanguage ? " lv-current" : ""}`}
+								onClick={() => props.onPickSttLanguage(language.id)}
+							>
+								{language.label}
+							</button>
+						))}
+					</div>
+					<p className="lv-pop-note">自动检测覆盖中/日/英；识别不稳时锁定语种。</p>
 					<h4>自定义提示词</h4>
 					<textarea
 						className="lv-prompt-input"

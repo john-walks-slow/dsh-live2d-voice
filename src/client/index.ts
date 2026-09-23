@@ -27,12 +27,12 @@ export function apply(ctx: ClientContext): void {
 
 		// Submit through the same channel the Chat composer uses, so the host
 		// handles agent creation/resume, attribution and queueing for us.
-		const submitPrompt = (sessionId: string, text: string) => {
+		const submitPrompt = (sessionId: string, text: string, mode: "queue" | "steer" = "queue") => {
 			const binding = sessions.binding?.(sessionId as SessionId);
 			const session = binding?.session;
 			if (!session) return undefined;
 			return session
-				.prompt([{ type: "text", text }], "queue")
+				.prompt([{ type: "text", text }], mode)
 				.then((result) =>
 					result.ok
 						? { ok: true as const }
