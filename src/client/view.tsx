@@ -39,6 +39,20 @@ export type SubmitPrompt = (
 
 type ViewProps = ConvViewProps & { submitPrompt?: SubmitPrompt };
 
+/** localStorage key for persisted look params (sliders / presets). */
+const LOOK_PARAMS_STORE = "lv-look-params-v1";
+
+/** Restore persisted look params, falling back to defaults. */
+function loadLookParams(): LookParams {
+	try {
+		const stored = localStorage.getItem(LOOK_PARAMS_STORE);
+		if (stored) return { ...DEFAULT_LOOK_PARAMS, ...(JSON.parse(stored) as Partial<LookParams>) };
+	} catch {
+		/* corrupted store — fall back to defaults */
+	}
+	return { ...DEFAULT_LOOK_PARAMS };
+}
+
 export function Live2DView(props: ViewProps) {
 	const sessionId = String(props.sessionId);
 	const rootRef = useRef<HTMLDivElement>(null);
@@ -99,7 +113,8 @@ export function Live2DView(props: ViewProps) {
 	const tiltRef = useRef<TiltParallax | null>(null);
 	const camLookRef = useRef<{ dx: number; dy: number } | null>(null);
 	const gyroLookRef = useRef<{ dx: number; dy: number } | null>(null);
-	const lookParamsRef = useRef<LookParams>({ ...DEFAULT_LOOK_PARAMS });
+	// Look params persist locally (client-side preference — no server round-trip).
+	const lookParamsRef = useRef<LookParams>(loadLookParams());
 	/** State mirror so the HUD sliders re-render on change. */
 	const [lookParams, setLookParams] = useState<LookParams>(lookParamsRef.current);
 
@@ -317,8 +332,19 @@ export function Live2DView(props: ViewProps) {
 				camLookRef.current = x === null ? null : { dx: (x - 0.5) * 2, dy: (y - 0.5) * 2 };
 			},
 			onState: (state) => {
-				if (state === "starting") showToast("视线追踪启动中（首次需下载模型）…");
-				else if (typeof state === "object") showToast(`视线追踪不可用：${state.error}`);
+				if (state === "starting") {
+					// The MediaPipe task (~6 MB) downloads on the very first run only.
+					const GAZE_FIRST = "lv-gaze-first-run";
+					const first = !localStorage.getItem(GAZE_FIRST);
+					if (first) {
+						try {
+							localStorage.setItem(GAZE_FIRST, "1");
+						} catch {
+							/* best-effort */
+						}
+					}
+					showToast(first ? "视线追踪启动中（首次需下载识别模型，请稍候）…" : "视线追踪启动中…");
+				} else if (typeof state === "object") showToast(`视线追踪不可用：${state.error}`);
 			},
 		});
 		gazeRef.current = tracker;
@@ -637,6 +663,11 @@ export function Live2DView(props: ViewProps) {
 		lookParamsRef.current = { ...lookParamsRef.current, ...patch };
 		setLookParams(lookParamsRef.current);
 		modelRef.current?.setLookParams(lookParamsRef.current);
+		try {
+			localStorage.setItem(LOOK_PARAMS_STORE, JSON.stringify(lookParamsRef.current));
+		} catch {
+			/* quota / private mode — persistence is best-effort */
+		}
 	};
 
 

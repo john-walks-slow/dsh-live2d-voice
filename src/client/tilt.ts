@@ -61,20 +61,29 @@ export class TiltParallax {
 
 	async start(): Promise<void> {
 		if (this.running) return;
-		type PermissionCapable = {
-			requestPermission?: () => Promise<PermissionState | "granted" | "denied">;
-		};
-		const ctor = DeviceOrientationEvent as unknown as PermissionCapable;
-		if (typeof ctor.requestPermission === "function") {
-			try {
-				const verdict = await ctor.requestPermission();
-				if (verdict !== "granted") {
-					this.events.onState({ error: "陀螺仪权限被拒绝" });
+		// iOS Safari requires an explicit permission grant issued from a user
+		// gesture (the toggle click). Android / desktop stream orientation
+		// events with no permission gate — calling requestPermission there is
+		// actively harmful because by the time start() runs (after the config
+		// save round-trip) the gesture context is gone and the call rejects,
+		// permanently blocking the feature. So gate only on iOS.
+		const isIOS = /iPhone|iPad|iPod/i.test(navigator.userAgent);
+		if (isIOS) {
+			type PermissionCapable = {
+				requestPermission?: () => Promise<PermissionState | "granted" | "denied">;
+			};
+			const ctor = DeviceOrientationEvent as unknown as PermissionCapable;
+			if (typeof ctor.requestPermission === "function") {
+				try {
+					const verdict = await ctor.requestPermission();
+					if (verdict !== "granted") {
+						this.events.onState({ error: "陀螺仪权限被拒绝" });
+						return;
+					}
+				} catch {
+					this.events.onState({ error: "陀螺仪权限请求失败" });
 					return;
 				}
-			} catch {
-				this.events.onState({ error: "陀螺仪权限请求失败" });
-				return;
 			}
 		}
 		this.neutral = null;
