@@ -54,6 +54,9 @@ const WORKLET_SRC = `
 class CaptureProcessor extends AudioWorkletProcessor {
 	constructor() {
 		super();
+		// Soft mic gain (>1 amplifies quiet mics, soft-limited to avoid
+		// clipping; applied before the VAD/ASR path).
+		this.gain = (this.options?.processorOptions?.gain ?? 1) || 1;
 		this.ratio = Math.ceil(sampleRate / 16000);
 		this.tail = [];
 		this.levelAccum = 0;
@@ -65,16 +68,23 @@ class CaptureProcessor extends AudioWorkletProcessor {
 		if (!input || input.length === 0) return true;
 		const left = input[0];
 		if (!left) return true;
-		// RMS level for this 128-frame block.
+		// Soft limiting (tanh) keeps loud input smooth instead of hard-clipping.
+		const g = this.gain;
+		const gated = [];
+		for (let i = 0; i < left.length; i++) {
+			const s = left[i] * g;
+			gated.push(Math.tanh(s));
+		}
+		// RMS level for this 128-frame block (post-gain, so VAD sees louder speech).
 		let sum = 0;
-		for (let i = 0; i < left.length; i++) sum += left[i] * left[i];
-		const rms = Math.sqrt(sum / left.length);
+		for (let i = 0; i < gated.length; i++) sum += gated[i] * gated[i];
+		const rms = Math.sqrt(sum / gated.length);
 		this.levelAccum += rms;
 		this.levelCount++;
 		// Downsample by decimation with a boxcar (moving-average) anti-alias.
 		const out = [];
-		for (let i = 0; i < left.length; i++) {
-			this.tail.push(left[i]);
+		for (let i = 0; i < gated.length; i++) {
+			this.tail.push(gated[i]);
 			if (this.tail.length === this.ratio) {
 				let acc = 0;
 				for (let j = 0; j < this.tail.length; j++) acc += this.tail[j];
@@ -120,6 +130,7 @@ export class MicCapture {
 	private context: AudioContext | null = null;
 	private node: AudioWorkletNode | null = null;
 	private events: MicEvents;
+	private gain: number;
 	private speakingSince = 0;
 	private lastSpeechAt = 0;
 	private inSpeech = false;
@@ -132,8 +143,9 @@ export class MicCapture {
 	private segment: Int16Array[] = [];
 	private segmentSamples = 0;
 
-	constructor(events: MicEvents) {
+	constructor(events: MicEvents, options?: { gain?: number }) {
 		this.events = events;
+		this.gain = options?.gain ?? 1.5;
 	}
 
 	get active(): boolean {
@@ -164,7 +176,9 @@ export class MicCapture {
 				void this.context.resume().catch(() => undefined);
 			}
 		};
-		this.node = new AudioWorkletNode(this.context, "lv-capture");
+		this.node = new AudioWorkletNode(this.context, "lv-capture", {
+			processorOptions: { gain: this.gain },
+		});
 			this.node.port.onmessage = (message: MessageEvent) => {
 				const data = message.data as { pcm?: Int16Array; level?: number };
 				if (data.pcm) this.handleFrame(data.pcm);

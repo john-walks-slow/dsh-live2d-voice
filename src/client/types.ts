@@ -13,6 +13,8 @@ export interface PublicConfig {
 	asrCredentialsFile: string;
 	/** "stream" (live bidirectional, default) | "nostream" (buffered one-shot). */
 	asrMode: string;
+	/** Microphone soft-gain (>1 amplifies before VAD/ASR). */
+	micGain?: number;
 	speechLanguage: string;
 	subtitleLanguage: string;
 	speechPrompt: string;

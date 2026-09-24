@@ -173,6 +173,7 @@ export function Live2DView(props: ViewProps) {
 				setAsrConfigured(config.asrConfigured);
 				setSttLanguage(config.sttLanguage);
 				setAsrMode(config.asrMode || "stream");
+				micGainRef.current = typeof config.micGain === "number" && config.micGain > 0 ? config.micGain : 1.5;
 				setEyeTracking(config.eyeTracking);
 				setGyroParallax(config.gyroParallax);
 			})
@@ -803,8 +804,9 @@ export function Live2DView(props: ViewProps) {
 			return;
 		}
 		setMicState("requesting");
-		const mic = new MicCapture({
-			onLevel: (level) => {
+		const mic = new MicCapture(
+			{
+				onLevel: (level) => {
 				setMicLevel(level);
 				if (engineRef.current?.speaking() && MicCapture.isBargeLevel(level)) {
 					engineRef.current.muzzle();
@@ -873,7 +875,7 @@ export function Live2DView(props: ViewProps) {
 				showToast(`麦克风错误：${message}`);
 				stopListening();
 			},
-		});
+		}, { gain: micGainRef.current });
 		try {
 			await mic.start();
 		} catch (error) {

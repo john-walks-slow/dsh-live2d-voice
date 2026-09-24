@@ -81,6 +81,12 @@ export interface PluginConfig {
 	 */
 	asrMode: string;
 	/**
+	 * Microphone soft-gain applied in the capture AudioWorklet before the
+	 * VAD/ASR path (1.0 = passthrough; >1 amplifies, with soft limiting).
+	 * Raises quiet mics so VAD opens reliably and ASR sees fuller speech.
+	 */
+	micGain: number;
+	/**
 	 * Volcengine ASR credentials file (JSON: appid/accessToken/apikey) for
 	 * the streaming speech-to-text relay.
 	 */
@@ -181,6 +187,7 @@ export const DEFAULT_CONFIG: PluginConfig = {
 	apiKeyFile: "",
 	sttLanguage: "auto",
 	asrMode: "stream",
+	micGain: 1.5,
 	asrCredentialsFile: join(homedir(), ".config/volc-asr/credentials.json"),
 	speechLanguage: "ja",
 	subtitleLanguage: "zh",
