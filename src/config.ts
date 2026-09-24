@@ -81,6 +81,13 @@ export interface PluginConfig {
 	gyroParallax: boolean;
 	/** Emotion tag → model expression name/index map. */
 	emotionMap: Record<string, number | string>;
+	/**
+	 * When set, entering the Live2D view automatically switches the session
+	 * to this model; exiting restores the previous selection.  Null/undefined
+	 * means no auto-switch.
+	 */
+	liveModel?: { provider: string; model: string; reasoningEffort?: string } | null;
+
 	/** Per-workspace overrides keyed by the workspace root path (cwd). */
 	workspaces: Record<string, Partial<PluginConfig>>;
 }
@@ -137,6 +144,7 @@ export const DEFAULT_CONFIG: PluginConfig = {
 	gyroParallax: false,
 	emotionMap: { ...DEFAULT_EMOTION_MAP },
 	workspaces: {},
+	liveModel: null,
 };
 
 export function configFilePath(): string {

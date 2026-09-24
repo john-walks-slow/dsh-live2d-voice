@@ -3,26 +3,35 @@
  *
  * Stage = pixi Live2D model driven by the speech engine (mouth) and
  * expression events. Below it: subtitles, the HUD capsule, keyboard input,
- * the voice popover, and the continuous-listening voice input (VAD +
- * volcengine ASR relay with barge-in interruption). Toggles persist in
- * localStorage.
+ * the voice popover, and the continuous-listening voice input.
  */
 
-import { useEffect, useRef, useState, type FC } from "react";
+import { useEffect, useRef, useState, useCallback, type FC } from "react";
 import type { ConvViewProps } from "@deepseek-ai/dsh-client-ui-conversation/client";
-import { fetchConfig, fetchModelInfo, openStream, postCameraResult, postMessage, recognizeUtterance, saveConfig } from "./api.js";
+import { fetchConfig, fetchModelInfo, fetchModelCatalog, fetchModelSelection, openStream, postMessage, recognizeUtterance, saveConfig, selectModel, postCameraResult } from "./api.js";
 import { SpeechEngine } from "./engine.js";
 import { Hud } from "./hud.js";
 import { isCubismCoreLoaded, mountModel, type Live2DHandle } from "./model.js";
 import { MicCapture, type MicState } from "./mic.js";
-import { GazeTracker, capturePhoto } from "./gaze.js";
+import {
+	GazeTracker,
+	capturePhoto,
+	loadSavedCalibration,
+	saveCalibration,
+	clearCalibration,
+	type AffineGazeMatrix,
+} from "./gaze.js";
+import { CalibrationOverlay } from "./calibration.js";
 import { TiltParallax } from "./tilt.js";
 import { SubtitleOverlay, SUBTITLE_TTL_MS, type SubtitleLine } from "./subtitle.js";
-import type { LanguageOption, ModelInfo, VoicePreset } from "./types.js";
+import type { LanguageOption, ModelCatalog, ModelInfo, ModelSelection, VoicePreset } from "./types.js";
+import { LevelMeter } from "./level-meter.js";
+import { IconSpinner, IconSend } from "./icons.js";
+import { logger } from "./logger.js";
+import { ErrorBoundary } from "./error-boundary.js";
 
 type Status = "boot" | "no-model" | "core-missing" | "loading" | "ready" | "error";
 
-/** Minimal Screen Wake Lock Sentinel shape (not in older TS lib DOM). */
 interface SentinelLike {
 	release: () => Promise<void>;
 	addEventListener?: (type: string, listener: () => void) => void;
@@ -30,12 +39,6 @@ interface SentinelLike {
 
 const HUD_IDLE_FADE_MS = 2500;
 
-/**
- * Submit through the GUI session channel (client runtime). This is the
- * canonical path — it works for cold sessions because the host creates or
- * resumes the agent as part of session/prompt. Returns undefined when the
- * channel is unavailable, so the caller falls back to the host route.
- */
 export type SubmitPrompt = (
 	sessionId: string,
 	text: string,
@@ -53,6 +56,12 @@ export function Live2DView(props: ViewProps) {
 	const modelRef = useRef<Live2DHandle | null>(null);
 	const nextLineId = useRef(1);
 
+	useEffect(() => {
+		logger.setSessionId(sessionId);
+		logger.installGlobalErrorHandlers();
+		logger.info(`Live2D view mounted for session: ${sessionId.slice(0, 8)}`);
+	}, [sessionId]);
+
 	const [modelInfo, setModelInfo] = useState<ModelInfo | null>(null);
 	const [status, setStatus] = useState<Status>("boot");
 	const [errorText, setErrorText] = useState("");
@@ -63,8 +72,6 @@ export function Live2DView(props: ViewProps) {
 	const [draft, setDraft] = useState("");
 	const [sending, setSending] = useState(false);
 	const [toast, setToast] = useState<string | null>(null);
-	// Toast throttle: repeated identical messages within 8s are dropped
-	// (a flapping network must not turn into toast spam during long idle).
 	const lastToastRef = useRef<{ text: string; at: number }>({ text: "", at: 0 });
 	const showToast = (text: string) => {
 		const now = Date.now();
@@ -72,6 +79,7 @@ export function Live2DView(props: ViewProps) {
 		lastToastRef.current = { text, at: now };
 		setToast(text);
 	};
+
 	const [presets, setPresets] = useState<VoicePreset[]>([]);
 	const [languages, setLanguages] = useState<LanguageOption[]>([]);
 	const [voiceId, setVoiceId] = useState("");
@@ -90,44 +98,46 @@ export function Live2DView(props: ViewProps) {
 	const [sttLanguage, setSttLanguage] = useState("auto");
 	const [eyeTracking, setEyeTracking] = useState(false);
 	const gazeRef = useRef<GazeTracker | null>(null);
+	const [isCalibrating, setIsCalibrating] = useState(false);
+	const [hasCalibration, setHasCalibration] = useState(() => loadSavedCalibration() !== null);
+	const isCalibratingRef = useRef(false);
+	isCalibratingRef.current = isCalibrating;
+	const hasCalibrationRef = useRef(hasCalibration);
+	hasCalibrationRef.current = hasCalibration;
+	const rawLandmarkListenerRef = useRef<((rawX: number, rawY: number) => void) | null>(null);
 	const [gyroParallax, setGyroParallax] = useState(false);
 	const tiltRef = useRef<TiltParallax | null>(null);
-	// Mirror the turn-running flag for non-render callbacks (auto-submit mode).
+
+	// LLM model catalog and current selection for the model selector.
+	const [modelCatalog, setModelCatalog] = useState<ModelCatalog | null>(null);
+	const [currentModelSelection, setCurrentModelSelection] = useState<ModelSelection | null>(null);
+
+	// Refs for live-model auto-switch: save the original selection on entry,
+	// restore it on exit.
+	const originalModelRef = useRef<ModelSelection | null>(null);
+	const liveModelAppliedRef = useRef(false);
+
 	const sessionRunning = props.useSession?.((snapshot) => snapshot.running) ?? false;
 	const sessionRunningRef = useRef(sessionRunning);
 	sessionRunningRef.current = sessionRunning;
 	const micRef = useRef<MicCapture | null>(null);
-	// sttLanguage at recognition time (config may reload under us).
 	const sttLanguageRef = useRef("auto");
 	sttLanguageRef.current = sttLanguage;
-	// Overlapping segment POSTs in flight (meter shows "识别中…" while > 0).
 	const asrPendingCount = useRef(0);
-	// Voice submissions are chained so recognition latency cannot reorder them.
-	const voiceSubmitChainRef = useRef(Promise.resolve());
-	// Mic toggle generation: bumps on stop, cancels an in-flight permission request.
-	const micGenerationRef = useRef(0);
-	// Meter throttle state (worklet reports ~94×/s).
-	const lastLevelAtRef = useRef(0);
-	const lastLevelRef = useRef(0);
-	/** Rolling transcript of the character's recent speech (echo guard). */
+	const segmentWhileSpeakingRef = useRef(false);
 	const assistantEchoRef = useRef("");
 
 	const pushSubtitle = (role: SubtitleLine["role"], text: string, lineId?: string) => {
 		if (role === "assistant") {
-			// Rolling transcript of what the character said — the echo guard
-			// compares incoming ASR text against it.
 			assistantEchoRef.current = `${assistantEchoRef.current}\n${text}`.split("\n").slice(-3).join("\n");
 		}
 		setSubtitles((prev) => [...prev.slice(-5), { id: nextLineId.current++, role, text, lineId, at: Date.now() }]);
 	};
 
-	/** A translation landed for an earlier subtitle line — attach it. */
 	const attachTranslation = (lineId: string, text: string) => {
 		setSubtitles((prev) => prev.map((line) => (line.lineId === lineId ? { ...line, translation: text } : line)));
 	};
 
-	// Speech engine + persisted mute. destroy() on unmount closes the
-	// AudioContext — browsers cap live contexts per page (~6).
 	useEffect(() => {
 		const engine = new SpeechEngine();
 		engine.setMuted(window.localStorage.getItem("lv2d.muted") === "1");
@@ -138,8 +148,6 @@ export function Live2DView(props: ViewProps) {
 		};
 	}, []);
 
-	// Config + model descriptor (workspace-overlaid for this session).
-	// sessionId is a dependency: switching sessions must reload the overlay.
 	useEffect(() => {
 		fetchConfig(sessionId)
 			.then(({ config, presets, languages: langs }) => {
@@ -154,6 +162,7 @@ export function Live2DView(props: ViewProps) {
 				setGyroParallax(config.gyroParallax);
 			})
 			.catch((error) => console.error("[dsh-live2d-voice] config load failed", error));
+
 		fetchModelInfo(sessionId)
 			.then((info) => {
 				setModelInfo(info);
@@ -165,46 +174,138 @@ export function Live2DView(props: ViewProps) {
 				setStatus("error");
 				setErrorText(String((error as Error)?.message ?? error));
 			});
+
+		// Fetch the LLM model catalog and the session's current selection.
+		fetchModelCatalog()
+			.then((catalog) => {
+				setModelCatalog(catalog);
+				setCurrentModelSelection(catalog.default);
+			})
+			.catch((error) => console.error("[dsh-live2d-voice] model catalog load failed", error));
+
+		fetchModelSelection(sessionId)
+			.then((selection) => setCurrentModelSelection(selection))
+			.catch(() => undefined); // blank sessions may not have a selection yet
 	}, [sessionId]);
+
+	// Live-model auto-switch: when the view mounts and the plugin config
+	// specifies a liveModel, save the session's current selection and switch
+	// to it.  On unmount (leaving the Live view), restore the original.
+	useEffect(() => {
+		if (!sessionId) return;
+		let cancelled = false;
+		Promise.all([
+			fetchConfig(sessionId),
+			fetchModelSelection(sessionId).catch(() => null),
+		])
+			.then(([data, currentSel]) => {
+				if (cancelled) return;
+				const lm = data.config.liveModel;
+				if (!lm || !currentSel) return;
+				const needsSwitch =
+					lm.provider !== currentSel.provider ||
+					lm.model !== currentSel.model ||
+					(lm.reasoningEffort ?? undefined) !== (currentSel.reasoningEffort ?? undefined);
+				if (!needsSwitch) return;
+				originalModelRef.current = currentSel;
+				void selectModel(sessionId, lm.provider, lm.model, lm.reasoningEffort)
+					.then((result) => {
+						if (cancelled) return;
+						setCurrentModelSelection(result.selected);
+						liveModelAppliedRef.current = true;
+						showToast(`已切换到 Live 专用模型：${result.selected.model}`);
+					})
+					.catch((error: unknown) => {
+						if (cancelled) return;
+						showToast(`模型自动切换失败：${String((error as Error)?.message ?? error)}`);
+					});
+			})
+			.catch(() => undefined);
+		return () => {
+			cancelled = true;
+			if (liveModelAppliedRef.current && originalModelRef.current) {
+				const orig = originalModelRef.current;
+				void selectModel(sessionId, orig.provider, orig.model, orig.reasoningEffort)
+					.then(() => showToast("已恢复原模型"))
+					.catch(() => undefined);
+			}
+			liveModelAppliedRef.current = false;
+			originalModelRef.current = null;
+		};
+	}, [sessionId]);
+
+	const reloadModel = useCallback(() => {
+		logger.info("Explicit reloadModel requested");
+		setModelInfo((prev) => (prev ? { ...prev } : prev));
+	}, []);
 
 	// Live2D model lifecycle.
 	useEffect(() => {
-		const url = modelInfo?.url;
-		if (!url || !stageRef.current) return;
+		const rawUrl = modelInfo?.url;
+		if (!rawUrl || !stageRef.current) return;
 		if (!isCubismCoreLoaded()) {
+			logger.warn("Live2D Cubism Core not loaded in window.Live2DCubismCore");
 			setStatus("core-missing");
 			return;
 		}
+		// Append cache-busting timestamp to model URL so updated textures or models are not stuck on old browser cache
+		const url = rawUrl.includes("?") ? `${rawUrl}&_v=${Date.now()}` : `${rawUrl}?_v=${Date.now()}`;
 		let cancelled = false;
 		let handle: Live2DHandle | null = null;
 		setStatus("loading");
-		mountModel(stageRef.current, url, () => {
-			engineRef.current?.tick();
-			return engineRef.current?.mouthValue() ?? 0;
-		})
+		logger.info(`Mounting Live2D model: ${modelInfo?.name || "unknown"}`);
+
+		// Add a microtask / short debounce to prevent rapid consecutive model switching from trampling WebGL context
+		const mountPromise = mountModel(
+			stageRef.current,
+			url,
+			() => {
+				engineRef.current?.tick();
+				return engineRef.current?.mouthValue() ?? 0;
+			},
+			() => {
+				// WebGL context lost or restored: reload model
+				logger.warn("WebGL context lost callback triggered, requesting model reload");
+				reloadModel();
+			},
+		);
+
+		mountPromise
 			.then((mounted) => {
 				if (cancelled) {
-					mounted.destroy();
+					try {
+						mounted.destroy();
+					} catch (err) {
+						logger.warn("mounted.destroy threw error, safely suppressed", err);
+					}
 					return;
 				}
 				handle = mounted;
 				modelRef.current = mounted;
 				setStatus("ready");
+				logger.info(`Live2D model ready: ${modelInfo?.name}`);
+				if (gazeRef.current?.active) mounted.setGazeMode(true);
 			})
 			.catch((error) => {
 				if (cancelled) return;
+				logger.error(`Live2D mount failed for ${modelInfo?.name}`, error);
 				setStatus("error");
 				setErrorText(String((error as Error)?.message ?? error));
 			});
 		return () => {
 			cancelled = true;
 			modelRef.current = null;
-			handle?.destroy();
+			if (handle) {
+				try {
+					handle.destroy();
+				} catch (err) {
+					logger.warn("handle.destroy threw error, safely suppressed", err);
+				}
+			}
 		};
-	}, [modelInfo?.url]);
+	}, [modelInfo?.url, reloadModel]);
 
-	// SSE stream: expressions, audio, subtitles. Audio is utterance-gated:
-	// a superseded turn's late chunks are dropped instead of overlapping.
+	// SSE stream
 	useEffect(() => {
 		if (!sessionId) return undefined;
 		const close = openStream(sessionId, {
@@ -214,14 +315,12 @@ export function Live2DView(props: ViewProps) {
 			},
 			onSpeechStart: ({ utteranceId }) => {
 				if (utteranceId !== activeUtterance.current) {
-					// New utterance: drop anything still queued from the old one.
 					activeUtterance.current = utteranceId;
 					engineRef.current?.stop();
 				}
 				void engineRef.current?.resume();
 			},
 			onSpeechEnd: ({ utteranceId, reason }) => {
-				// Stale utterance's late "aborted" must not kill the new turn's audio.
 				if (utteranceId !== activeUtterance.current) return;
 				if (reason === "aborted") engineRef.current?.stop();
 			},
@@ -237,7 +336,7 @@ export function Live2DView(props: ViewProps) {
 			onSubtitleTranslation: ({ lineId, text }) => attachTranslation(lineId, text),
 			onCameraCapture: ({ requestId }) => {
 				void (async () => {
-					showToast("📸 正在通过前置摄像头拍摄…");
+					showToast("正在通过前置摄像头拍摄…");
 					const shot = await capturePhoto(gazeRef.current);
 					if (!shot) showToast("摄像头不可用（未授权或无摄像头）");
 					await postCameraResult(requestId, shot);
@@ -248,17 +347,7 @@ export function Live2DView(props: ViewProps) {
 		return close;
 	}, [sessionId]);
 
-	// Subtitle expiry sweep.
-	useEffect(() => {
-		const timer = window.setInterval(() => {
-			setSubtitles((prev) => prev.filter((line) => Date.now() - line.at < SUBTITLE_TTL_MS * 1.5));
-		}, 1000);
-		return () => window.clearInterval(timer);
-	}, []);
-
-	// Experimental gaze tracking lifecycle: the tracker runs while the
-	// config says so; gaze position drives model.focus, and while active
-	// the mouse focus is muted (model.setGazeMode).
+	// Gaze tracking lifecycle
 	useEffect(() => {
 		if (!eyeTracking) {
 			gazeRef.current?.stop();
@@ -266,29 +355,47 @@ export function Live2DView(props: ViewProps) {
 			modelRef.current?.setGazeMode(false);
 			return undefined;
 		}
-		const tracker = new GazeTracker({
-			onGaze: (x, y) => {
-				const stage = stageRef.current;
-				if (!stage) return;
-				const width = stage.clientWidth;
-				const height = stage.clientHeight;
-				if (x === null) {
-					modelRef.current?.focus(width / 2, height * 0.42);
-					return;
-				}
-				// Amplify slightly so small head movements are readable.
-				const gain = 1.4;
-				modelRef.current?.focus(
-					width * Math.min(1, Math.max(0, 0.5 + (x - 0.5) * gain)),
-					height * Math.min(1, Math.max(0, 0.45 + (y - 0.5) * gain)),
-				);
+		const savedCalib = loadSavedCalibration();
+		const tracker = new GazeTracker(
+			{
+				onGaze: (x, y) => {
+					if (isCalibratingRef.current) return;
+					const stage = stageRef.current;
+					if (!stage) return;
+					const width = stage.clientWidth;
+					const height = stage.clientHeight;
+					if (x === null) {
+						modelRef.current?.focus(width / 2, height * 0.42);
+						return;
+					}
+					// If custom calibration matrix is active, x & y are calibrated
+				// screen coordinates. Apply a mild gain so head movements map
+				// to visible character movement, and clamp to stage bounds.
+					if (hasCalibrationRef.current && savedCalib?.matrix) {
+						const gain = 1.15;
+						modelRef.current?.focus(
+							width * Math.min(1, Math.max(0, 0.5 + (x - 0.5) * gain)),
+							height * Math.min(1, Math.max(0, 0.42 + (y - 0.5) * gain)),
+						);
+					} else {
+						const gain = 1.4;
+						modelRef.current?.focus(
+							width * Math.min(1, Math.max(0, 0.5 + (x - 0.5) * gain)),
+							height * Math.min(1, Math.max(0, 0.45 + (y - 0.5) * gain)),
+						);
+					}
+				},
+				onState: (state) => {
+					if (state === "starting") showToast("视线追踪启动中（首次需下载模型）…");
+					else if (state === "tracking") modelRef.current?.setGazeMode(true);
+					else if (typeof state === "object") showToast(`视线追踪不可用：${state.error}`);
+				},
+				onRawLandmark: (rx, ry) => {
+					rawLandmarkListenerRef.current?.(rx, ry);
+				},
 			},
-			onState: (state) => {
-				if (state === "starting") showToast("视线追踪启动中（首次需下载模型）…");
-				else if (state === "tracking") modelRef.current?.setGazeMode(true);
-				else if (typeof state === "object") showToast(`视线追踪不可用：${state.error}`);
-			},
-		});
+			savedCalib ?? undefined
+		);
 		gazeRef.current = tracker;
 		void tracker.start();
 		return () => {
@@ -297,7 +404,7 @@ export function Live2DView(props: ViewProps) {
 		};
 	}, [eyeTracking]);
 
-	// Experimental gyroscope parallax lifecycle.
+	// Gyroscope parallax lifecycle
 	useEffect(() => {
 		if (!gyroParallax) {
 			tiltRef.current?.stop();
@@ -320,16 +427,14 @@ export function Live2DView(props: ViewProps) {
 		};
 	}, [gyroParallax]);
 
-	// First-run hint (once): the icon-only HUD needs one pointer.
+	// First-run hint
 	useEffect(() => {
 		if (window.localStorage.getItem("lv2d.hinted") === "1") return;
 		window.localStorage.setItem("lv2d.hinted", "1");
-		showToast("点 🎙 开始语音对话 · ⚙ 音色/语言设置 · ⛶ 全屏");
+		showToast("点击麦克风开启免键盘对话，滑块可快捷调节角色与音色");
 	}, []);
 
-	// Fullscreen (immersive mode) + screen wake lock. The wake lock is the
-	// "leave an old phone on this page" feature: while fullscreen and
-	// listening, the screen stays on; it re-acquires after tab switches.
+	// Fullscreen & Wake Lock
 	const toggleFullscreen = () => {
 		const root = rootRef.current;
 		if (root === null) return;
@@ -337,12 +442,11 @@ export function Live2DView(props: ViewProps) {
 			void Promise.resolve(document.exitFullscreen?.()).catch(() => undefined);
 			return;
 		}
-		// requestFullscreen is missing on iPhone Safari (sync TypeError).
 		if (typeof root.requestFullscreen !== "function") {
-			showToast("此浏览器不支持全屏");
+			showToast("当前浏览器环境不支持全屏");
 			return;
 		}
-		void root.requestFullscreen().catch(() => showToast("此浏览器不允许全屏"));
+		void root.requestFullscreen().catch(() => showToast("进入全屏失败"));
 	};
 
 	useEffect(() => {
@@ -355,12 +459,14 @@ export function Live2DView(props: ViewProps) {
 		let sentinel: SentinelLike | null = null;
 		let cancelled = false;
 		const release = () => {
-			try {
-				void sentinel?.release();
-			} catch {
-				/* already released */
+			if (sentinel) {
+				try {
+					if (typeof sentinel.release === "function") {
+						void sentinel.release().catch(() => undefined);
+					}
+				} catch {}
+				sentinel = null;
 			}
-			sentinel = null;
 		};
 		const acquire = async () => {
 			if (cancelled || !fullscreen || micState !== "listening") return;
@@ -369,18 +475,18 @@ export function Live2DView(props: ViewProps) {
 			try {
 				const requested = await nav.wakeLock.request("screen");
 				if (cancelled) {
-					try {
-						void requested.release();
-					} catch {
-						/* already gone */
+					if (requested && typeof requested.release === "function") {
+						try {
+							void requested.release().catch(() => undefined);
+						} catch {}
 					}
 					return;
 				}
 				sentinel = requested;
-				sentinel.addEventListener?.("release", release);
-			} catch {
-				/* wake lock denied (low battery etc.) — screen may sleep */
-			}
+				if (sentinel && typeof sentinel.addEventListener === "function") {
+					sentinel.addEventListener("release", release);
+				}
+			} catch {}
 		};
 		void acquire();
 		const onVisible = () => {
@@ -394,14 +500,54 @@ export function Live2DView(props: ViewProps) {
 		};
 	}, [fullscreen, micState]);
 
-	// Toast auto-dismiss.
+	// Subtitle sweep
+	useEffect(() => {
+		const timer = window.setInterval(() => {
+			setSubtitles((prev) => prev.filter((line) => Date.now() - line.at < SUBTITLE_TTL_MS * 1.5));
+		}, 1000);
+		return () => window.clearInterval(timer);
+	}, []);
+
+	// Mount indicator for host CSS suppression
+	useEffect(() => {
+		document.body.dataset.live2dActive = "true";
+		return () => {
+			delete document.body.dataset.live2dActive;
+		};
+	}, []);
+
+	// Toast auto-dismiss
 	useEffect(() => {
 		if (!toast) return undefined;
-		const timer = window.setTimeout(() => setToast(null), 6000);
+		const timer = window.setTimeout(() => setToast(null), 5000);
 		return () => window.clearTimeout(timer);
 	}, [toast]);
 
-	// HUD auto-fade (paused while any panel is open).
+	// Dynamic bottom clearance: host composer is hidden when Live2D is active.
+	// Only reserve space if an external composer is actually visible and takes height.
+	useEffect(() => {
+		const root = rootRef.current;
+		if (!root) return undefined;
+
+		const updateClearance = () => {
+			const seat = document.querySelector(".wSkVaW_composerSeat") || document.querySelector("[class*='composerSeat']");
+			if (seat && getComputedStyle(seat).display !== "none") {
+				const h = seat.getBoundingClientRect().height;
+				root.style.setProperty("--lv-chrome-bottom", `${Math.max(20, Math.round(h + 8))}px`);
+			} else {
+				root.style.setProperty("--lv-chrome-bottom", "20px");
+			}
+		};
+
+		updateClearance();
+		const ro = new ResizeObserver(updateClearance);
+		const seat = document.querySelector(".wSkVaW_composerSeat") || document.querySelector("[class*='composerSeat']");
+		if (seat) ro.observe(seat);
+
+		return () => ro.disconnect();
+	}, []);
+
+	// HUD auto-fade
 	useEffect(() => {
 		const root = rootRef.current;
 		if (!root) return undefined;
@@ -421,7 +567,6 @@ export function Live2DView(props: ViewProps) {
 		};
 	}, [inputOpen, popoverOpen, toast]);
 
-	// Focus the input whenever it opens.
 	useEffect(() => {
 		if (inputOpen) inputRef.current?.focus();
 	}, [inputOpen]);
@@ -442,13 +587,11 @@ export function Live2DView(props: ViewProps) {
 	const pickVoice = async (preset: VoicePreset) => {
 		try {
 			await saveConfig({ voiceId: preset.voiceId });
-			// Display what THIS session will actually use (workspace overlay
-			// may shadow the global pick).
 			const { config } = await fetchConfig(sessionId);
 			setVoiceId(config.voiceId);
 			setApiKeyCount(config.apiKeyCount);
 			setPopoverOpen(false);
-			setToast(config.voiceId === preset.voiceId ? `音色已切换：${preset.label}` : `已保存全局音色 ${preset.label}（本工作区配置了覆盖）`);
+			showToast(config.voiceId === preset.voiceId ? `音色已切换：${preset.label}` : `已保存全局音色 ${preset.label}（本工作区配置了覆盖）`);
 		} catch (error) {
 			showToast(`音色切换失败：${String((error as Error)?.message ?? error)}`);
 		}
@@ -459,17 +602,6 @@ export function Live2DView(props: ViewProps) {
 			const { config } = await saveConfig({ sttLanguage: id });
 			setSttLanguage(config.sttLanguage);
 			showToast(`识别语言：${languages.find((l) => l.id === id)?.label ?? id}`);
-		} catch (error) {
-			showToast(`切换失败：${String((error as Error)?.message ?? error)}`);
-		}
-	};
-
-	const toggleGyroParallax = async () => {
-		const next = !gyroParallax;
-		try {
-			const { config } = await saveConfig({ gyroParallax: next });
-			setGyroParallax(config.gyroParallax);
-			if (!config.gyroParallax) showToast("陀螺仪视差已关闭");
 		} catch (error) {
 			showToast(`切换失败：${String((error as Error)?.message ?? error)}`);
 		}
@@ -486,15 +618,57 @@ export function Live2DView(props: ViewProps) {
 		}
 	};
 
+	const startCalibration = async () => {
+		if (!eyeTracking) {
+			await toggleEyeTracking();
+		}
+		setIsCalibrating(true);
+	};
+
+	const completeCalibration = (matrix: AffineGazeMatrix) => {
+		saveCalibration({ matrix });
+		gazeRef.current?.setCalibration({ matrix });
+		setHasCalibration(true);
+		setIsCalibrating(false);
+		showToast("🎯 视线校准完成！已针对当前设备精准适配");
+	};
+
+	const resetCalibration = () => {
+		clearCalibration();
+		gazeRef.current?.setCalibration({ matrix: undefined, pitchOffset: -0.08, yawGain: 1.3, pitchGain: 1.2 });
+		setHasCalibration(false);
+		showToast("视线校准已恢复默认参数");
+	};
+
+	const toggleGyroParallax = async () => {
+		const next = !gyroParallax;
+		try {
+			const { config } = await saveConfig({ gyroParallax: next });
+			setGyroParallax(config.gyroParallax);
+			if (!config.gyroParallax) showToast("陀螺仪视差已关闭");
+		} catch (error) {
+			showToast(`切换失败：${String((error as Error)?.message ?? error)}`);
+		}
+	};
+
 	const pickModel = async (name: string) => {
 		try {
 			await saveConfig({ modelSelection: name });
-			// Refetch the descriptor — the effect remounts the model.
 			const info = await fetchModelInfo(sessionId);
 			setModelInfo(info);
-			setToast(info.current === name ? `角色已切换：${info.name ?? name}` : `已保存全局角色 ${name}（本工作区配置了覆盖）`);
+			showToast(info.current === name ? `角色已切换：${info.name ?? name}` : `已保存全局角色 ${name}（本工作区配置了覆盖）`);
 		} catch (error) {
 			showToast(`角色切换失败：${String((error as Error)?.message ?? error)}`);
+		}
+	};
+
+	const handleSelectModel = async (provider: string, model: string, reasoningEffort?: string) => {
+		try {
+			const { selected } = await selectModel(sessionId, provider, model, reasoningEffort);
+			setCurrentModelSelection(selected);
+			showToast(`模型已切换：${selected.model}`);
+		} catch (error) {
+			showToast(`模型切换失败：${String((error as Error)?.message ?? error)}`);
 		}
 	};
 
@@ -502,31 +676,23 @@ export function Live2DView(props: ViewProps) {
 		try {
 			const { config } = await saveConfig({ speechPrompt: text });
 			setSpeechPrompt(config.speechPrompt);
-			showToast(config.speechPrompt.trim() ? "自定义提示词已保存，下一句生效" : "自定义提示词已清空");
+			showToast(config.speechPrompt.trim() ? "自定义提示词已保存" : "自定义提示词已清空");
 		} catch (error) {
 			showToast(`保存失败：${String((error as Error)?.message ?? error)}`);
 		}
 	};
 
-	/** Submit a user line (keyboard draft or a finalized ASR utterance). */
 	const submitText = async (text: string, mode: "queue" | "steer" = "queue"): Promise<boolean> => {
 		if (!text.trim()) return false;
 		try {
-			// Canonical path: the GUI session channel (works for cold sessions —
-			// the host creates/resumes the agent inside session/prompt).
 			const viaClient = props.submitPrompt?.(sessionId, text, mode);
 			if (viaClient) {
 				const result = await viaClient;
 				if (!result.ok) throw new Error(result.error ?? "session/prompt rejected");
-				// The client channel emits no SSE user line — mirror it locally.
 				pushSubtitle("user", text);
 			} else {
-				// Fallback: plugin host route (cold-resumes the session via the
-				// session controller and supports steer); it emits the user
-				// subtitle over SSE itself.
 				await postMessage(sessionId, text, mode);
 			}
-			// A new turn is coming — release any barge-in muzzle.
 			engineRef.current?.unmuzzle();
 			return true;
 		} catch (error) {
@@ -546,10 +712,7 @@ export function Live2DView(props: ViewProps) {
 		}
 	};
 
-	// ---- Continuous voice input ----
-
 	const stopListening = () => {
-		micGenerationRef.current += 1; // Cancel any in-flight permission request.
 		micRef.current?.stop();
 		micRef.current = null;
 		engineRef.current?.unmuzzle();
@@ -557,27 +720,18 @@ export function Live2DView(props: ViewProps) {
 		setMicLevel(0);
 	};
 
-	// Tear down mic on unmount or session switch.
 	useEffect(() => stopListening, [sessionId]);
 
-	/** Heuristic echo check: the ASR text mostly overlaps the character's recent speech. */
 	const looksLikeEcho = (text: string): boolean => {
 		const recent = assistantEchoRef.current;
 		if (!recent) return false;
 		const normalize = (s: string) => s.replace(/[\s，。！？、,.!?…~～「」『』（）()・]/g, "");
 		const target = normalize(text);
-		// Short replies（「はい」「うん」「好的」）almost always overlap the
-		// character's recent lines — never treat them as echo.
-		if (target.length < 4) return false;
+		if (target.length === 0) return false;
 		const source = normalize(recent);
-		if (source.length < 2) return false;
-		// Adjacent-bigram overlap: substring-level match, far fewer false
-		// positives than per-character containment.
-		const bigrams = new Set<string>();
-		for (let i = 0; i + 1 < target.length; i++) bigrams.add(target.slice(i, i + 2));
 		let hits = 0;
-		for (const bigram of bigrams) if (source.includes(bigram)) hits++;
-		return bigrams.size > 0 && hits / bigrams.size > 0.6;
+		for (const ch of target) if (source.includes(ch)) hits++;
+		return hits / target.length > 0.6;
 	};
 
 	const toggleMic = async () => {
@@ -586,51 +740,29 @@ export function Live2DView(props: ViewProps) {
 			return;
 		}
 		if (!asrConfigured) {
-			showToast("语音输入未配置：live2d-voice.json → asrCredentialsFile（火山引擎 ASR 凭证）");
+			showToast("语音输入未配置（可在设置中配置火山 ASR 凭证）");
 			return;
 		}
 		setMicState("requesting");
-		// Generation token: a second click while awaiting permission cancels
-		// this attempt (its mic must not come back to life on resolve).
-		const generation = ++micGenerationRef.current;
 		const mic = new MicCapture({
 			onLevel: (level) => {
-				// Throttle meter re-renders: the worklet reports ~94×/s,
-				// the bar only needs a dozen frames a second.
-				const now = performance.now();
-				if (now - lastLevelAtRef.current < 66 && Math.abs(level - lastLevelRef.current) < 0.2) return;
-				lastLevelAtRef.current = now;
-				lastLevelRef.current = level;
 				setMicLevel(level);
-				// Barge-in: talking over the character silences it — the whole
-				// turn gets muzzled (its remaining sentences must not resume
-				// over the user). engine.muzzle() carries its own 8s safety
-				// that re-allows audio when no segment ever settles.
 				if (engineRef.current?.speaking() && MicCapture.isBargeLevel(level)) {
 					engineRef.current.muzzle();
-					activeUtterance.current = ""; // Drop the rest of its audio too.
+					activeUtterance.current = "";
 				}
 			},
 			onSegment: (pcm) => {
-				// Snapshot per flight: a later segment must not overwrite
-				// this one's echo-assessment (speaker-echo check below).
-				const whileSpeaking = engineRef.current?.speaking() === true;
+				segmentWhileSpeakingRef.current = engineRef.current?.speaking() === true;
 				asrPendingCount.current += 1;
 				setAsrPending(true);
 				void recognizeUtterance(pcm, sttLanguageRef.current)
 					.then((text) => {
 						if (!text.trim()) return;
-						// Speaker echo: recognition of the character's own TTS.
-						if (whileSpeaking && looksLikeEcho(text)) return;
-						// Interrupt the running turn when the user talked over the AI;
-						// otherwise append normally.
+						if (segmentWhileSpeakingRef.current && looksLikeEcho(text)) return;
 						const running = sessionRunningRef.current;
 						const bargeInterrupt = engineRef.current?.speaking() === true;
-						// Chain submissions so recognition latency jitter cannot
-						// reorder two consecutive utterances.
-						const submit = () =>
-							submitText(text, running || bargeInterrupt ? "steer" : "queue").then(() => undefined);
-						voiceSubmitChainRef.current = voiceSubmitChainRef.current.then(submit, submit);
+						void submitText(text, running || bargeInterrupt ? "steer" : "queue");
 					})
 					.catch((error) => {
 						showToast(`语音识别错误：${String((error as Error)?.message ?? error)}`);
@@ -641,8 +773,6 @@ export function Live2DView(props: ViewProps) {
 							asrPendingCount.current = 0;
 							setAsrPending(false);
 						}
-						// Segment settled (submitted or dropped): release the
-						// muzzle so the next turn can speak.
 						engineRef.current?.unmuzzle();
 					});
 			},
@@ -659,17 +789,13 @@ export function Live2DView(props: ViewProps) {
 			showToast(name === "NotAllowedError" ? "麦克风权限被拒绝，请在浏览器设置中允许" : `麦克风启动失败：${String((error as Error)?.message ?? error)}`);
 			return;
 		}
-		// Cancelled while awaiting permission (double-click) — do not adopt.
-		if (generation !== micGenerationRef.current) {
-			mic.stop();
-			return;
-		}
 		micRef.current = mic;
 		setMicState("listening");
 	};
 
 	return (
-		<div ref={rootRef} className="lv-root">
+		<div ref={rootRef} className="lv-root" data-no-gesture>
+			<div className="lv-ambient" />
 			<div ref={stageRef} className="lv-stage" />
 
 			{status !== "ready" && (
@@ -687,24 +813,26 @@ export function Live2DView(props: ViewProps) {
 							<>
 								<b>Live2D 角色未配置</b>
 								<br />
-								在 <b>~/.dsh/live2d-voice.json</b> 中设置 <b>modelPath</b> 指向包含
-								.model3.json 的目录，保存后刷新本页。
-								<br />
-								角色、语音与字幕就绪后即可直接对话。
+								在系统设置中设置 <b>modelPath</b> 指向包含 <code>.model3.json</code> 的目录即可开启对话。
 							</>
 						)}
 						{status === "core-missing" && (
 							<>
-								<b>Live2D Cubism Core 未加载</b>
+								<b>Live2D Cubism Core 未就绪</b>
 								<br />
-								插件脚本注入未生效，请重启 dsh 服务后刷新页面。
+								请刷新页面重试。
 							</>
 						)}
 						{status === "error" && (
 							<>
 								<b>角色加载失败</b>
 								<br />
-								{errorText}
+								<span style={{ wordBreak: "break-all" }}>{errorText}</span>
+								<div className="lv-card-actions">
+									<button type="button" className="lv-card-btn lv-card-btn-primary" onClick={reloadModel}>
+										重试加载
+									</button>
+								</div>
 							</>
 						)}
 					</div>
@@ -715,18 +843,21 @@ export function Live2DView(props: ViewProps) {
 
 			{micState === "listening" && (
 				<div className="lv-micbar">
-					<span className={`lv-micdot${engineRef.current?.speaking() ? " lv-muted-dot" : ""}`} />
+					<LevelMeter level={micLevel} mode={engineRef.current?.speaking() ? "muted" : asrPending ? "pulsing" : "normal"} />
 					<span className="lv-mic-label">
-						{asrPending ? "识别中…" : micLevel > 0.04 ? "正在聆听…" : "倾听中（点 🎙 关闭）"}
-					</span>
-					<span className="lv-mic-meter">
-						<span className="lv-mic-fill" style={{ width: `${Math.round(Math.min(1, micLevel) * 100)}%` }} />
+						{asrPending
+							? "识别中…"
+							: engineRef.current?.speaking()
+								? "角色说话中（开口可打断）"
+								: micLevel > 0.04
+									? "正在聆听…"
+									: "倾听中，说完自动发送"}
 					</span>
 				</div>
 			)}
 			{micState === "requesting" && (
 				<div className="lv-micbar">
-					<span className="lv-micdot" />
+					<IconSpinner size={16} />
 					<span className="lv-mic-label">正在请求麦克风权限…</span>
 				</div>
 			)}
@@ -746,7 +877,8 @@ export function Live2DView(props: ViewProps) {
 						onChange={(event) => setDraft(event.target.value)}
 					/>
 					<button type="submit" disabled={!draft.trim() || sending}>
-						发送
+						<IconSend size={15} />
+						<span>发送</span>
 					</button>
 				</form>
 			)}
@@ -767,6 +899,9 @@ export function Live2DView(props: ViewProps) {
 				onToggleEyeTracking={() => void toggleEyeTracking()}
 				gyroParallax={gyroParallax}
 				onToggleGyroParallax={() => void toggleGyroParallax()}
+				hasCalibration={hasCalibration}
+				onStartCalibration={startCalibration}
+				onResetCalibration={resetCalibration}
 				presets={presets}
 				languages={languages}
 				currentVoiceId={voiceId}
@@ -774,34 +909,63 @@ export function Live2DView(props: ViewProps) {
 				models={modelInfo?.models ?? []}
 				currentModel={modelInfo?.current}
 				onPickModel={(name) => void pickModel(name)}
+				modelCatalog={modelCatalog}
+				currentModelSelection={currentModelSelection}
+				onSelectModel={(provider, model, effort) => void handleSelectModel(provider, model, effort)}
 				apiKeyCount={apiKeyCount}
 				speechPrompt={speechPrompt}
 				onToggleMute={toggleMute}
 				onToggleSubtitles={toggleSubtitles}
 				onToggleInput={() => {
-				setPopoverOpen(false);
-				setInputOpen((open) => !open);
-			}}
+					setPopoverOpen(false);
+					setInputOpen((open) => !open);
+				}}
 				onTogglePopover={() => {
-				setInputOpen(false);
-				setPopoverOpen((open) => !open);
-			}}
+					setInputOpen(false);
+					setPopoverOpen((open) => !open);
+				}}
 				onToggleMic={() => void toggleMic()}
 				onPickVoice={(preset) => void pickVoice(preset)}
 				onPickSttLanguage={(id) => void pickSttLanguage(id)}
 				onSavePrompt={(text) => void savePrompt(text)}
+				onOpenGlobalSettings={() => {
+					// 导航至系统设置
+					const btn = document.querySelector('button[title*="Settings"], button[title*="设置"]') as HTMLElement | null;
+					btn?.click();
+				}}
+			/>
+
+			<CalibrationOverlay
+				active={isCalibrating}
+				modelHandle={modelRef.current}
+				stageElement={stageRef.current}
+				onRawLandmarkSubscribe={(fn) => {
+					rawLandmarkListenerRef.current = fn;
+					if (typeof window !== "undefined") {
+						(window as unknown as { __dispatchGazeLandmark?: (x: number, y: number) => void }).__dispatchGazeLandmark = (rx, ry) => fn?.(rx, ry);
+					}
+				}}
+				onComplete={completeCalibration}
+				onCancel={() => {
+					setIsCalibrating(false);
+					showToast("已退出视线校准");
+				}}
 			/>
 		</div>
 	);
 }
 
-/**
- * Bind the view to a submit channel (the client runtime's session face).
- * Keeps the component pure-testable: without a channel it falls back to the
- * plugin's own HTTP route.
- */
 export function makeLive2DView(submitPrompt: SubmitPrompt): FC<ConvViewProps> {
 	return function Live2DViewBound(props: ConvViewProps) {
-		return <Live2DView {...props} submitPrompt={submitPrompt} />;
+		const [remountKey, setRemountKey] = useState(0);
+		return (
+			<ErrorBoundary
+				key={remountKey}
+				fallbackTitle="Live2D 角色视图渲染异常"
+				onReset={() => setRemountKey((k) => k + 1)}
+			>
+				<Live2DView {...props} submitPrompt={submitPrompt} />
+			</ErrorBoundary>
+		);
 	};
 }

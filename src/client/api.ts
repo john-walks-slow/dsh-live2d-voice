@@ -9,7 +9,9 @@ import type {
 	ErrorPayload,
 	ExpressionPayload,
 	LanguageOption,
+	ModelCatalog,
 	ModelInfo,
+	ModelSelection,
 	PublicConfig,
 	CameraCapturePayload,
 	SpeechEndPayload,
@@ -18,6 +20,7 @@ import type {
 	SubtitleTranslationPayload,
 	VoicePreset,
 } from "./types.js";
+import { logger } from "./logger.js";
 
 async function getJson<T>(url: string): Promise<T> {
 	const response = await fetch(url, { headers: { accept: "application/json" } });
@@ -87,19 +90,53 @@ export async function postCameraResult(requestId: string, shot: { dataUrl: strin
 	}).catch(() => undefined);
 }
 
+/** Fetch the full model catalog (provider-grouped models + deployment default). */
+export function fetchModelCatalog(): Promise<ModelCatalog> {
+	return getJson("/live2d-voice/model-catalog");
+}
+
+/** Fetch the current model selection for one session. */
+export function fetchModelSelection(sessionId: string): Promise<ModelSelection> {
+	return getJson(`/live2d-voice/model-selection?session=${encodeURIComponent(sessionId)}`);
+}
+
+/** Select a model (and optional reasoning effort) for one session. */
+export async function selectModel(sessionId: string, provider: string, model: string, reasoningEffort?: string): Promise<{ selected: ModelSelection }> {
+	const response = await fetch("/live2d-voice/select-model", {
+		method: "POST",
+		headers: { "content-type": "application/json" },
+		body: JSON.stringify({ sessionId, provider, model, reasoningEffort }),
+	});
+	if (!response.ok) {
+		const body = (await response.json().catch(() => ({}))) as { message?: string };
+		throw new Error(body.message ?? `HTTP ${response.status}`);
+	}
+	return (await response.json()) as { selected: ModelSelection };
+}
+
 /**
  * Open the session SSE stream. Returns a closer. EventSource auto-reconnects;
  * listeners tolerate duplicate `hello` events after a reconnect.
  */
 export function openStream(sessionId: string, handlers: StreamHandlers): () => void {
 	const source = new EventSource(`/live2d-voice/stream?session=${encodeURIComponent(sessionId)}`);
+	logger.info(`SSE stream connecting for session ${sessionId.slice(0, 8)}`);
+
+	source.onopen = () => {
+		logger.info("SSE stream opened");
+	};
+
+	source.onerror = (e) => {
+		logger.warn("SSE stream connection error / reconnecting", e);
+	};
+
 	const wire = <T>(event: string, handler?: (payload: T) => void) => {
 		if (!handler) return;
 		source.addEventListener(event, (raw) => {
 			try {
 				handler(JSON.parse((raw as MessageEvent).data) as T);
 			} catch (error) {
-				console.error(`[dsh-live2d-voice] bad ${event} payload`, error);
+				logger.error(`bad ${event} payload`, error);
 			}
 		});
 	};

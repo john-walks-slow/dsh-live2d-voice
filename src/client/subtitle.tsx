@@ -1,7 +1,5 @@
 /**
- * Subtitle overlay: the recent dialogue lines (assistant + user) rendered as
- * centered captions. The newest line is large; older lines shrink and dim.
- * Lines expire individually after a while so the stage stays clean.
+ * Subtitle overlay: the recent dialogue lines rendered as refined glass caption cards.
  */
 
 export interface SubtitleLine {
@@ -21,20 +19,21 @@ export function SubtitleOverlay(props: { lines: SubtitleLine[]; visible: boolean
 	if (!props.visible) return null;
 	const live = props.lines.filter((line) => Date.now() - line.at < SUBTITLE_TTL_MS);
 	const current = live[live.length - 1];
-	const older = live.slice(0, -1).slice(-3);
-	const render = (line: SubtitleLine, className: string) => (
-		<p key={line.id} className={className}>
-			{line.text}
-			{line.translation && <span className="lv-sub-tr">{line.translation}</span>}
-		</p>
-	);
+	const older = live.slice(0, -1).slice(-2); // 历史句最多保留 2 句，避免遮挡
+
 	return (
 		<div className={`lv-subs${props.raised ? " lv-subs-raised" : ""}`}>
-			{older.map((line) =>
-				render(line, `lv-sub lv-old${line.role === "user" ? " lv-user" : ""}${line.role === "error" ? " lv-err" : ""}`),
+			{older.map((line) => (
+				<div key={line.id} className="lv-sub-old">
+					{line.text}
+				</div>
+			))}
+			{current && (
+				<div className={`lv-sub-card${current.role === "user" ? " lv-sub-user" : ""}`}>
+					<p className="lv-sub-text">{current.text}</p>
+					{current.translation && <span className="lv-sub-tr">{current.translation}</span>}
+				</div>
 			)}
-			{current &&
-				render(current, `lv-sub lv-cur${current.role === "user" ? " lv-user" : ""}${current.role === "error" ? " lv-err" : ""}`)}
 		</div>
 	);
 }

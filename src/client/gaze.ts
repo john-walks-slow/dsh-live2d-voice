@@ -22,6 +22,131 @@ export interface GazeEvents {
 	 */
 	onGaze: (x: number | null, y: number) => void;
 	onState: (state: GazeState) => void;
+	/** Raw normalized landmark position (0..1, mirrored x) before calibration, useful for calibration sampling. */
+	onRawLandmark?: (rawX: number, rawY: number) => void;
+}
+
+export interface AffineGazeMatrix {
+	a: number;
+	b: number;
+	c: number;
+	d: number;
+	e: number;
+	f: number;
+}
+
+export interface GazeCalibration {
+	/** Vertical pitch offset (-0.5 .. 0.5), positive shifts gaze upward (counteracts top camera angle). */
+	pitchOffset?: number;
+	/** Horizontal sensitivity multiplier (0.5 .. 2.5). */
+	yawGain?: number;
+	/** Vertical sensitivity multiplier (0.5 .. 2.5). */
+	pitchGain?: number;
+	/** Affine 2D transformation matrix computed from smart 5-point calibration. */
+	matrix?: AffineGazeMatrix;
+}
+
+export interface CalibrationSample {
+	rawX: number;
+	rawY: number;
+	targetX: number; // 0..1 normalized screen/stage coordinate
+	targetY: number; // 0..1 normalized screen/stage coordinate
+}
+
+export const GAZE_CALIB_STORAGE_KEY = "lv2d.gaze_calibration_matrix";
+
+export function loadSavedCalibration(): GazeCalibration | null {
+	try {
+		if (typeof window === "undefined" || !window.localStorage) return null;
+		const raw = window.localStorage.getItem(GAZE_CALIB_STORAGE_KEY);
+		if (!raw) return null;
+		const parsed = JSON.parse(raw) as GazeCalibration;
+		return parsed && typeof parsed === "object" ? parsed : null;
+	} catch {
+		return null;
+	}
+}
+
+export function saveCalibration(calib: GazeCalibration): void {
+	try {
+		if (typeof window === "undefined" || !window.localStorage) return;
+		window.localStorage.setItem(GAZE_CALIB_STORAGE_KEY, JSON.stringify(calib));
+	} catch {}
+}
+
+export function clearCalibration(): void {
+	try {
+		if (typeof window === "undefined" || !window.localStorage) return;
+		window.localStorage.removeItem(GAZE_CALIB_STORAGE_KEY);
+	} catch {}
+}
+
+/**
+ * Closed-form 2D affine calibration solver via ridge-regularized normal equations:
+ * Solves targetX = a*x + b*y + c and targetY = d*x + e*y + f over N calibration points.
+ */
+export function solveCalibrationMatrix(samples: CalibrationSample[]): AffineGazeMatrix | null {
+	if (samples.length < 3) return null;
+
+	let s_xx = 0, s_yy = 0, s_xy = 0, s_x = 0, s_y = 0;
+	let s_xu = 0, s_yu = 0, s_u = 0;
+	let s_xv = 0, s_yv = 0, s_v = 0;
+	const N = samples.length;
+
+	for (const p of samples) {
+		s_xx += p.rawX * p.rawX;
+		s_yy += p.rawY * p.rawY;
+		s_xy += p.rawX * p.rawY;
+		s_x += p.rawX;
+		s_y += p.rawY;
+		s_xu += p.rawX * p.targetX;
+		s_yu += p.rawY * p.targetX;
+		s_u += p.targetX;
+		s_xv += p.rawX * p.targetY;
+		s_yv += p.rawY * p.targetY;
+		s_v += p.targetY;
+	}
+
+	const lambda = 1e-4; // Tikhonov regularization
+	const m00 = s_xx + lambda, m01 = s_xy, m02 = s_x;
+	const m10 = s_xy, m11 = s_yy + lambda, m12 = s_y;
+	const m20 = s_x, m21 = s_y, m22 = N + lambda;
+
+	const det = m00 * (m11 * m22 - m12 * m21) -
+	            m01 * (m10 * m22 - m12 * m20) +
+	            m02 * (m10 * m21 - m11 * m20);
+
+	if (Math.abs(det) < 1e-7) return null;
+	const invDet = 1 / det;
+
+	const inv00 = (m11 * m22 - m12 * m21) * invDet;
+	const inv01 = (m02 * m21 - m01 * m22) * invDet;
+	const inv02 = (m01 * m12 - m02 * m11) * invDet;
+
+	const inv10 = (m12 * m20 - m10 * m22) * invDet;
+	const inv11 = (m00 * m22 - m02 * m20) * invDet;
+	const inv12 = (m02 * m10 - m00 * m12) * invDet;
+
+	const inv20 = (m10 * m21 - m11 * m20) * invDet;
+	const inv21 = (m01 * m20 - m00 * m21) * invDet;
+	const inv22 = (m00 * m11 - m01 * m10) * invDet;
+
+	let a = inv00 * s_xu + inv01 * s_yu + inv02 * s_u;
+	let b = inv10 * s_xu + inv11 * s_yu + inv12 * s_u;
+	let c = inv20 * s_xu + inv21 * s_yu + inv22 * s_u;
+
+	let d = inv00 * s_xv + inv01 * s_yv + inv02 * s_v;
+	let e = inv10 * s_xv + inv11 * s_yv + inv12 * s_v;
+	let f = inv20 * s_xv + inv21 * s_yv + inv22 * s_v;
+
+	// Physiological sanity bounds:
+	// a and e are primary horizontal and vertical direction gains.
+	if (a < 0.2 || a > 4.5 || isNaN(a)) a = 1.4;
+	if (e < 0.2 || e > 4.5 || isNaN(e)) e = 1.3;
+	if (Math.abs(b) > 2.0 || isNaN(b)) b = 0;
+	if (Math.abs(d) > 2.0 || isNaN(d)) d = 0;
+
+	return { a, b, c, d, e, f };
 }
 
 /** Structural view of the dynamically-imported tasks-vision module. */
@@ -63,10 +188,21 @@ export class GazeTracker {
 	private lastDetect = 0;
 	private lostSince = 0;
 	private events: GazeEvents;
+	private calibration: GazeCalibration;
 	private running = false;
 
-	constructor(events: GazeEvents) {
+	constructor(events: GazeEvents, calibration: GazeCalibration = {}) {
 		this.events = events;
+		this.calibration = {
+			pitchOffset: -0.08, // default shift: phone camera is at top, looking down slightly
+			yawGain: 1.3,
+			pitchGain: 1.2,
+			...calibration,
+		};
+	}
+
+	setCalibration(calibration: GazeCalibration): void {
+		this.calibration = { ...this.calibration, ...calibration };
 	}
 
 	get active(): boolean {
@@ -137,7 +273,29 @@ export class GazeTracker {
 					const nose = result?.faceLandmarks?.[0]?.[1];
 					if (nose) {
 						this.lostSince = 0;
-						this.events.onGaze(1 - nose.x, nose.y);
+						const rawX = 1 - nose.x;
+						const rawY = nose.y;
+
+						// Feed raw normalized coordinates to calibration listener if listening
+						this.events.onRawLandmark?.(rawX, rawY);
+
+						let screenX: number;
+						let screenY: number;
+
+						if (this.calibration.matrix) {
+							const m = this.calibration.matrix;
+							screenX = m.a * rawX + m.b * rawY + m.c;
+							screenY = m.d * rawX + m.e * rawY + m.f;
+						} else {
+							// Default prior: pitch offset & gains
+							screenX = (rawX - 0.5) * (this.calibration.yawGain ?? 1.3) + 0.5;
+							screenY = (rawY - 0.5 + (this.calibration.pitchOffset ?? -0.08)) * (this.calibration.pitchGain ?? 1.2) + 0.5;
+						}
+
+						this.events.onGaze(
+							Math.max(0.02, Math.min(0.98, screenX)),
+							Math.max(0.02, Math.min(0.98, screenY)),
+						);
 					} else if (this.lostSince === 0) {
 						this.lostSince = now;
 					} else if (now - this.lostSince > FACE_LOST_MS) {

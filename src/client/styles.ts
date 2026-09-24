@@ -1,411 +1,1101 @@
 /**
- * View styles, injected once per page as a single <style> tag (the dsh web
- * app owns the document; plugin CSS arrives via JS to avoid asset plumbing).
+ * Live2D Voice plugin design system styles.
+ * Driven entirely by DSH host CSS variables (--dsw-alias-*) with graceful fallbacks.
+ * Fully responsive across light / dark themes, desktop, mobile viewports and fullscreen.
  */
 
 const CSS = `
+/* ==========================================================================
+   1. Design Tokens & Semantic Variables Layer
+   ========================================================================== */
 .lv-root {
+	/* Palette mapped to DSH host aliases */
+	--lv-fg:            var(--dsw-alias-label-primary, #0f1115);
+	--lv-fg-2:          var(--dsw-alias-label-secondary, #61666b);
+	--lv-fg-3:          var(--dsw-alias-label-tertiary, #81858c);
+	--lv-fg-caption:    var(--dsw-alias-label-caption, #adb2b8);
+	--lv-accent:        var(--dsw-alias-state-business-primary, #4176e6);
+	--lv-accent-soft:   var(--dsw-alias-state-business-tertiary, #e4edfd);
+	--lv-success:       var(--dsw-alias-state-success-primary, #22c55e);
+	--lv-warn:          var(--dsw-alias-state-warn-label, #f59e0b);
+	--lv-danger:        var(--dsw-alias-state-error-primary, #ec1313);
+	--lv-base:          var(--dsw-alias-bg-base, #ffffff);
+	--lv-surface:       var(--dsw-alias-bg-layer-2, #ffffff);
+	--lv-surface-2:     var(--dsw-alias-bg-layer-3, #ffffff);
+	--lv-border:        var(--dsw-alias-border-l2, rgba(0, 0, 0, 0.10));
+	--lv-border-soft:   var(--dsw-alias-border-l1, rgba(0, 0, 0, 0.05));
+	--lv-hover:         var(--dsw-alias-interactive-bg-hover, rgba(38, 49, 72, 0.06));
+	--lv-active:        var(--dsw-alias-interactive-bg-active, rgba(38, 49, 72, 0.10));
+	--lv-toast-bg:      var(--dsw-alias-toast-bg, #353638);
+	--lv-shadow-panel:  var(--dsw-elevation-panel, 0 0 0 0.5px rgba(0,0,0,0.04), 0 3px 8px rgba(0,0,0,0.03), 0 0 16px rgba(0,0,0,0.02));
+	--lv-shadow-pop:    var(--dsw-elevation-prominent, 0 0 0 0.5px rgba(0,0,0,0.06), 0 6px 16px rgba(0,0,0,0.08), 0 0 24px rgba(0,0,0,0.05));
+	--lv-font:          var(--dsw-font-family, -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif);
+
+	/* Glassmorphism token */
+	--lv-glass-bg:      color-mix(in srgb, var(--lv-surface-2) 75%, transparent);
+	--lv-glass-border:  var(--lv-border);
+	--lv-glass-blur:    saturate(1.4) blur(16px);
+
+	/* Dynamic bottom clearance: now that host composer & task overlays are hidden,
+	   keep clean breathing room at the bottom of the viewport/stage. */
+	--lv-chrome-bottom: 20px;
+
 	position: absolute;
 	inset: 0;
 	overflow: hidden;
-	background: radial-gradient(ellipse at 50% 28%, #232742 0%, #12131f 55%, #0b0c14 100%);
-}
-.lv-stage { position: absolute; inset: 0; }
-.lv-stage canvas { display: block; }
-
-/* ---------- HUD capsule ---------- */
-.lv-hud {
-	position: absolute;
-	bottom: 140px;
-	left: 50%;
-	transform: translateX(-50%);
-	display: flex;
-	align-items: center;
-	gap: 4px;
-	padding: 6px;
-	border-radius: 999px;
-	background: rgba(18, 20, 32, 0.78);
-	backdrop-filter: blur(12px);
-	border: 1px solid rgba(255, 255, 255, 0.09);
-	box-shadow: 0 4px 24px rgba(0, 0, 0, 0.35);
-	transition: opacity 0.45s ease;
-	z-index: 9;
-}
-.lv-hud.lv-faded { opacity: 0.16; }
-.lv-hud.lv-faded:hover { opacity: 1; }
-/* While the mic is live the stop control must stay findable. */
-.lv-hud.lv-mic-live.lv-faded { opacity: 0.75; }
-.lv-btn {
-	width: 38px;
-	height: 38px;
-	border-radius: 50%;
-	border: none;
-	background: transparent;
-	color: #cdd2e4;
-	font-size: 17px;
-	line-height: 1;
-	cursor: pointer;
-	display: grid;
-	place-items: center;
-	transition: background 0.15s ease, color 0.15s ease, transform 0.1s ease;
-}
-.lv-btn:hover { background: rgba(255, 255, 255, 0.1); color: #fff; }
-.lv-btn:active { transform: scale(0.94); }
-.lv-btn.lv-on { color: #7ab8ff; background: rgba(96, 150, 255, 0.14); }
-.lv-btn:disabled { opacity: 0.35; cursor: not-allowed; }
-.lv-hud-sep { width: 1px; height: 22px; margin: 0 3px; background: rgba(255, 255, 255, 0.12); }
-/* Touch targets: 44px minimum on coarse pointers (phones/tablets). */
-@media (pointer: coarse) {
-	.lv-btn { width: 44px; height: 44px; font-size: 19px; }
-	.lv-langs { gap: 8px; }
-	.lv-lang { padding: 9px 14px; font-size: 13.5px; }
+	user-select: none;
+	background: var(--lv-base);
+	font-family: var(--lv-font);
+	color: var(--lv-fg);
+	transition: background 0.3s ease;
 }
 
-/* ---------- voice popover ---------- */
-.lv-pop {
-	position: absolute;
-	bottom: calc(100% + 10px);
-	right: 0;
-	width: 280px;
-	border-radius: 14px;
-	background: rgba(18, 20, 32, 0.94);
-	backdrop-filter: blur(14px);
-	border: 1px solid rgba(255, 255, 255, 0.1);
-	box-shadow: 0 8px 32px rgba(0, 0, 0, 0.45);
-	color: #dfe3f0;
-	font-size: 13px;
-	z-index: 9;
-	overflow: hidden;
-	display: flex;
-	flex-direction: column;
-	max-height: min(calc(100vh - 380px), 480px);
+/* Dark mode adjustments */
+body[data-ds-dark-theme] .lv-root,
+.lv-root.lv-dark {
+	--lv-fg:            var(--dsw-alias-label-primary, #f9fafb);
+	--lv-fg-2:          var(--dsw-alias-label-secondary, #9ca3af);
+	--lv-fg-3:          var(--dsw-alias-label-tertiary, #6b7280);
+	--lv-base:          var(--dsw-alias-bg-base, #151517);
+	--lv-surface:       var(--dsw-alias-bg-layer-2, #1c1d21);
+	--lv-surface-2:     var(--dsw-alias-bg-layer-3, #23252a);
+	--lv-border:        var(--dsw-alias-border-l2, rgba(255, 255, 255, 0.12));
+	--lv-border-soft:   var(--dsw-alias-border-l1, rgba(255, 255, 255, 0.06));
+	--lv-hover:         var(--dsw-alias-interactive-bg-hover, rgba(255, 255, 255, 0.08));
+	--lv-active:        var(--dsw-alias-interactive-bg-active, rgba(255, 255, 255, 0.14));
+	--lv-glass-bg:      color-mix(in srgb, var(--lv-surface-2) 65%, transparent);
 }
-.lv-pop-head {
-	display: flex;
-	align-items: center;
-	justify-content: space-between;
-	padding: 10px 12px 8px;
-	font-size: 13px;
-	font-weight: 650;
-	color: #f0f2fa;
-	border-bottom: 1px solid rgba(255, 255, 255, 0.08);
-	flex: none;
-}
-.lv-pop-close {
-	width: 26px;
-	height: 26px;
-	border: none;
-	border-radius: 8px;
-	background: transparent;
-	color: #9aa3bd;
-	font-size: 13px;
-	cursor: pointer;
-	line-height: 1;
-}
-.lv-pop-close:hover { background: rgba(255, 255, 255, 0.1); color: #f0f2fa; }
-.lv-pop-body {
-	overflow-y: auto;
-	padding: 10px;
-	scrollbar-width: thin;
-	scrollbar-color: rgba(255, 255, 255, 0.18) transparent;
-}
-.lv-pop-body::-webkit-scrollbar { width: 5px; }
-.lv-pop-body::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.18); border-radius: 3px; }
-.lv-pop h4 { margin: 8px 4px 8px; font-size: 11px; font-weight: 600; color: #8f99b5; letter-spacing: 0.06em; }
-.lv-pop .lv-langs { margin: 0 2px; }
-.lv-pop .lv-pop-note { margin: 6px 4px 2px; }
-.lv-switch-row {
-	display: flex;
-	align-items: center;
-	justify-content: space-between;
-	gap: 10px;
-	margin: 2px 4px 6px;
-	font-size: 12.5px;
-	color: #c6cde0;
-}
-.lv-switch {
-	flex: none;
-	width: 40px;
-	height: 22px;
-	border-radius: 999px;
-	border: 1px solid rgba(255, 255, 255, 0.16);
-	background: rgba(255, 255, 255, 0.08);
-	position: relative;
-	cursor: pointer;
-	padding: 0;
-	transition: background 0.2s ease, border-color 0.2s ease;
-}
-.lv-switch.lv-on { background: rgba(120, 160, 255, 0.45); border-color: rgba(159, 193, 255, 0.6); }
-.lv-switch-knob {
-	position: absolute;
-	top: 2px;
-	left: 2px;
-	width: 16px;
-	height: 16px;
-	border-radius: 50%;
-	background: #e8ecf8;
-	transition: transform 0.2s ease;
-}
-.lv-switch.lv-on .lv-switch-knob { transform: translateX(18px); }
-.lv-voice {
-	display: flex;
-	justify-content: space-between;
-	align-items: center;
-	width: 100%;
-	padding: 8px 10px;
-	border: none;
-	border-radius: 9px;
-	background: transparent;
-	color: #dfe3f0;
-	font-size: 13px;
-	cursor: pointer;
-	text-align: left;
-}
-.lv-voice:hover { background: rgba(255, 255, 255, 0.08); }
-.lv-voice.lv-current { color: #7ab8ff; background: rgba(96, 150, 255, 0.12); }
-.lv-pop-note { margin: 8px 4px 0; color: #8a91a8; font-size: 11.5px; line-height: 1.5; }
-.lv-prompt-input {
-	width: 100%;
-	box-sizing: border-box;
-	margin: 2px 0 6px;
-	padding: 8px;
-	border-radius: 10px;
-	border: 1px solid rgba(255, 255, 255, 0.12);
-	background: rgba(255, 255, 255, 0.06);
-	color: #dfe3f0;
-	font-size: 12.5px;
-	font-family: inherit;
-	line-height: 1.5;
-	resize: vertical;
-	min-height: 56px;
-}
-.lv-prompt-input:focus { outline: none; border-color: rgba(159, 193, 255, 0.5); }
-.lv-prompt-save {
-	width: 100%;
-	padding: 7px 0;
-	border-radius: 10px;
-	border: 1px solid rgba(255, 255, 255, 0.14);
-	background: rgba(255, 255, 255, 0.08);
-	color: #dfe3f0;
-	font-size: 12.5px;
-	cursor: pointer;
-}
-.lv-prompt-save:hover:not(:disabled) { background: rgba(255, 255, 255, 0.14); }
-.lv-prompt-save:disabled { opacity: 0.45; cursor: default; }
-.lv-pop-note.lv-warn { color: #e8b26a; }
 
-/* ---------- subtitles ---------- */
+/* ==========================================================================
+   2. Stage, Ambient Halo & Ground Shadow
+   ========================================================================== */
+/* Hide host composer & task overlays when Live2D is active */
+body:has(.lv-root) .wSkVaW_composerSeat,
+body:has(.lv-root) [data-composer-seat],
+body:has(.lv-root) [class*="composerSeat"],
+body[data-live2d-active="true"] .wSkVaW_composerSeat,
+body[data-live2d-active="true"] [data-composer-seat],
+body[data-live2d-active="true"] [class*="composerSeat"],
+body[data-live2d-active="true"] [class*="task-board"],
+body[data-live2d-active="true"] [class*="taskBoard"] {
+	display: none !important;
+}
+
+.lv-ambient {
+	position: absolute;
+	inset: 0;
+	pointer-events: none;
+	background:
+		radial-gradient(120% 90% at 50% 0%, color-mix(in srgb, var(--lv-accent) 8%, transparent), transparent 65%),
+		radial-gradient(60% 55% at 50% 48%, color-mix(in srgb, var(--lv-accent) 6%, transparent), transparent 75%);
+}
+
+.lv-stage {
+	position: absolute;
+	inset: 0;
+	width: 100%;
+	height: 100%;
+	display: block;
+	touch-action: none;
+}
+
+.lv-stage canvas {
+	width: 100% !important;
+	height: 100% !important;
+	display: block;
+}
+
+/* ==========================================================================
+   3. Subtitle Cards (Refined Glass Overlay)
+   ========================================================================== */
 .lv-subs {
-	transition: bottom 0.25s ease;
 	position: absolute;
 	left: 50%;
 	transform: translateX(-50%);
-	bottom: 200px;
-	width: min(72%, 640px);
+	bottom: calc(var(--lv-chrome-bottom) + 72px);
+	width: min(76%, 660px);
 	text-align: center;
 	z-index: 4;
 	pointer-events: none;
 	display: flex;
 	flex-direction: column;
-	gap: 4px;
+	gap: 6px;
+	transition: bottom 0.25s cubic-bezier(0.2, 0.8, 0.2, 1);
 }
-.lv-subs.lv-subs-raised { bottom: 266px; }
-.lv-toast-raised { bottom: 266px; }
 
-.lv-sub {
-	color: #f0f2fa;
-	text-shadow: 0 1px 6px rgba(0, 0, 0, 0.85), 0 0 2px rgba(0, 0, 0, 0.9);
-	font-family: system-ui, -apple-system, "Segoe UI", "PingFang SC", "Noto Sans SC", sans-serif;
-	transition: opacity 0.6s ease;
+.lv-subs.lv-subs-raised {
+	bottom: calc(var(--lv-chrome-bottom) + 128px);
 }
-.lv-sub.lv-old { font-size: 12.5px; opacity: 0.45; }
-.lv-sub.lv-cur { font-size: 17px; opacity: 1; }
-.lv-sub.lv-user { color: #9fc1ff; }
+
+.lv-sub-card {
+	padding: 10px 16px;
+	border-radius: 16px;
+	background: color-mix(in srgb, var(--lv-surface) 65%, transparent);
+	backdrop-filter: blur(14px);
+	border: 1px solid var(--lv-border-soft);
+	box-shadow: var(--lv-shadow-panel);
+	color: var(--lv-fg);
+	display: inline-block;
+	max-width: 100%;
+	margin: 0 auto;
+	animation: lv-slide-up 0.24s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+.lv-sub-old {
+	font-size: 13px;
+	opacity: 0.55;
+	padding: 4px 12px;
+	background: transparent;
+	border: none;
+	box-shadow: none;
+	backdrop-filter: none;
+}
+
+.lv-sub-user {
+	border-color: color-mix(in srgb, var(--lv-accent) 25%, transparent);
+}
+
+.lv-sub-text {
+	margin: 0;
+	font-size: 16px;
+	line-height: 1.55;
+	font-weight: 500;
+	word-break: break-word;
+}
+
 .lv-sub-tr {
 	display: block;
-	margin-top: 1px;
-	font-size: 0.82em;
-	opacity: 0.78;
+	margin-top: 3px;
+	font-size: 13px;
+	line-height: 1.5;
+	font-weight: 400;
+	color: var(--lv-fg-2);
+	word-break: break-word;
+	animation: lv-fade-in 0.2s ease-out;
 }
-.lv-sub.lv-err { color: #e8968a; font-size: 12.5px; }
 
-/* ---------- voice input ---------- */
+/* ==========================================================================
+   4. Status Chip & LevelMeter (Replacing Crude Red Dot)
+   ========================================================================== */
 .lv-micbar {
 	position: absolute;
-	bottom: 204px;
+	bottom: calc(var(--lv-chrome-bottom) + 64px);
 	left: 50%;
 	transform: translateX(-50%);
-	display: flex;
+	display: inline-flex;
 	align-items: center;
 	gap: 10px;
-	padding: 7px 14px;
+	padding: 6px 14px;
 	border-radius: 999px;
-	background: rgba(18, 20, 32, 0.88);
-	backdrop-filter: blur(12px);
-	border: 1px solid rgba(255, 120, 120, 0.25);
-	color: #dfe3f0;
+	background: var(--lv-glass-bg);
+	backdrop-filter: var(--lv-glass-blur);
+	border: 1px solid var(--lv-glass-border);
+	box-shadow: var(--lv-shadow-panel);
+	color: var(--lv-fg);
 	font-size: 13px;
+	font-weight: 500;
 	z-index: 8;
-	max-width: min(86%, 560px);
-}
-.lv-micdot {
-	width: 9px;
-	height: 9px;
-	border-radius: 50%;
-	background: #ff5f5f;
-	box-shadow: 0 0 8px rgba(255, 95, 95, 0.8);
-	animation: lv-pulse 1.2s ease-in-out infinite;
-	flex: none;
-}
-.lv-micdot.lv-muted-dot {
-	background: #8a91a8;
-	box-shadow: none;
-	animation: none;
-}
-.lv-mic-label {
+	max-width: min(90%, 540px);
 	white-space: nowrap;
-	overflow: hidden;
-	text-overflow: ellipsis;
-	max-width: 340px;
-}
-.lv-mic-meter {
-	width: 72px;
-	height: 5px;
-	border-radius: 3px;
-	background: rgba(255, 255, 255, 0.12);
-	overflow: hidden;
-	flex: none;
-}
-.lv-mic-fill {
-	display: block;
-	height: 100%;
-	border-radius: 3px;
-	background: linear-gradient(90deg, #7fd4a0, #ffd479, #ff5f5f);
-	transition: width 80ms linear;
-}
-.lv-btn.lv-mic-live {
-	color: #ff5f5f;
-	box-shadow: 0 0 12px rgba(255, 95, 95, 0.45);
-	animation: lv-pulse 1.2s ease-in-out infinite;
-}
-@keyframes lv-pulse {
-	0%, 100% { opacity: 1; }
-	50% { opacity: 0.45; }
+	animation: lv-slide-up 0.2s cubic-bezier(0.2, 0.8, 0.2, 1);
 }
 
-/* ---------- language pills ---------- */
-.lv-langs {
-	display: flex;
-	flex-wrap: wrap;
-	gap: 6px;
-	margin: 2px 0 8px;
+.lv-meter {
+	display: inline-flex;
+	align-items: center;
+	gap: 2.5px;
+	height: 18px;
 }
-.lv-lang {
-	padding: 5px 10px;
+
+.lv-meter-bar {
+	width: 2.5px;
 	border-radius: 999px;
-	border: 1px solid rgba(255, 255, 255, 0.14);
-	background: rgba(255, 255, 255, 0.06);
-	color: #c6cddd;
-	font-size: 12px;
-	cursor: pointer;
-}
-.lv-lang:hover { background: rgba(255, 255, 255, 0.12); }
-.lv-lang.lv-current {
-	background: rgba(159, 193, 255, 0.22);
-	border-color: rgba(159, 193, 255, 0.55);
-	color: #e8f0ff;
+	background: var(--lv-accent);
+	transition: height 0.08s ease;
 }
 
-/* ---------- small screens ---------- */
-@media (max-width: 640px) {
-	.lv-subs { width: min(92%, 640px); }
-	.lv-input { width: min(92%, 640px); }
-	.lv-toast { max-width: 92%; }
-	.lv-pop { width: min(94vw, 320px); }
+.lv-meter-pulsing .lv-meter-bar {
+	animation: lv-pulse 1s ease-in-out infinite;
 }
 
-/* ---------- text input ---------- */
-.lv-input {
+.lv-meter-muted .lv-meter-bar {
+	opacity: 0.35;
+	background: var(--lv-fg-3);
+}
+
+/* ==========================================================================
+   5. HUD Toolbar & Buttons (Vector Iconography, No Emoji)
+   ========================================================================== */
+.lv-hud {
 	position: absolute;
-	bottom: 204px;
+	bottom: calc(var(--lv-chrome-bottom) + 12px);
 	left: 50%;
 	transform: translateX(-50%);
-	width: min(72%, 640px);
+	display: inline-flex;
+	align-items: center;
+	gap: 4px;
+	padding: 5px 8px;
+	border-radius: 999px;
+	background: var(--lv-glass-bg);
+	backdrop-filter: var(--lv-glass-blur);
+	border: 1px solid var(--lv-glass-border);
+	box-shadow: var(--lv-shadow-pop);
+	z-index: 9;
+	transition: opacity 0.3s ease, transform 0.3s ease;
+}
+
+.lv-hud.lv-faded:not(:hover):not(:focus-within) {
+	opacity: 0.45;
+	transform: translateX(-50%) scale(0.98);
+}
+
+.lv-hud.lv-mic-live.lv-faded {
+	opacity: 0.85;
+}
+
+.lv-btn {
+	position: relative;
+	width: 36px;
+	height: 36px;
+	border-radius: 50%;
+	border: none;
+	background: transparent;
+	color: var(--lv-fg-2);
+	cursor: pointer;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	transition: background 0.15s ease, color 0.15s ease, transform 0.1s ease;
+}
+
+.lv-btn:hover {
+	background: var(--lv-hover);
+	color: var(--lv-fg);
+}
+
+.lv-btn:active {
+	transform: scale(0.92);
+}
+
+.lv-btn.lv-on {
+	color: var(--lv-accent);
+	background: color-mix(in srgb, var(--lv-accent) 12%, transparent);
+}
+
+/* Mic pulse halo */
+.lv-btn.lv-mic-live::after {
+	content: "";
+	position: absolute;
+	inset: -3px;
+	border-radius: 50%;
+	border: 1.5px solid color-mix(in srgb, var(--lv-accent) 60%, transparent);
+	animation: lv-halo 2s ease-in-out infinite;
+	pointer-events: none;
+}
+
+.lv-hud-sep {
+	width: 1px;
+	height: 18px;
+	margin: 0 4px;
+	background: var(--lv-border-soft);
+}
+
+/* Touch targets for phones */
+@media (pointer: coarse) {
+	.lv-btn {
+		width: 42px;
+		height: 42px;
+	}
+}
+
+/* ==========================================================================
+   6. Compact Canvas Popover (Quick Switching)
+   ========================================================================== */
+.lv-pop {
+	position: absolute;
+	bottom: calc(100% + 12px);
+	right: 0;
+	width: 290px;
+	border-radius: 18px;
+	background: var(--lv-glass-bg);
+	backdrop-filter: var(--lv-glass-blur);
+	border: 1px solid var(--lv-glass-border);
+	box-shadow: var(--lv-shadow-pop);
+	color: var(--lv-fg);
+	font-size: 13px;
+	z-index: 9;
+	overflow: hidden;
+	display: flex;
+	flex-direction: column;
+	max-height: min(calc(100vh - 280px), 480px);
+	transform-origin: bottom right;
+	animation: lv-pop-appear 0.2s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+@keyframes lv-pop-appear {
+	from {
+		opacity: 0;
+		transform: scale(0.95) translateY(6px);
+	}
+	to {
+		opacity: 1;
+		transform: scale(1) translateY(0);
+	}
+}
+
+.lv-pop-head {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	padding: 10px 14px 8px;
+	font-size: 13px;
+	font-weight: 600;
+	color: var(--lv-fg);
+	border-bottom: 1px solid var(--lv-border-soft);
+}
+
+.lv-pop-close {
+	width: 24px;
+	height: 24px;
+	border: none;
+	border-radius: 6px;
+	background: transparent;
+	color: var(--lv-fg-3);
+	cursor: pointer;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+}
+
+.lv-pop-close:hover {
+	background: var(--lv-hover);
+	color: var(--lv-fg);
+}
+
+.lv-pop-body {
+	overflow-y: auto;
+	padding: 10px 14px 14px;
+	scrollbar-width: thin;
+}
+
+.lv-pop h4 {
+	margin: 10px 2px 6px;
+	font-size: 11px;
+	font-weight: 600;
+	color: var(--lv-fg-3);
+	text-transform: uppercase;
+	letter-spacing: 0.05em;
+}
+
+.lv-langs {
+	display: flex;
+	gap: 6px;
+	flex-wrap: wrap;
+}
+
+.lv-lang {
+	padding: 5px 11px;
+	border-radius: 999px;
+	border: 1px solid var(--lv-border);
+	background: color-mix(in srgb, var(--lv-surface) 40%, transparent);
+	color: var(--lv-fg-2);
+	font-size: 12px;
+	cursor: pointer;
+	transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+
+.lv-lang:hover {
+	background: var(--lv-hover);
+	color: var(--lv-fg);
+}
+
+.lv-lang.lv-current {
+	border-color: var(--lv-accent);
+	background: color-mix(in srgb, var(--lv-accent) 14%, transparent);
+	color: var(--lv-accent);
+	font-weight: 500;
+}
+
+.lv-switch-row {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 12px;
+	padding: 6px 4px;
+	font-size: 12.5px;
+	color: var(--lv-fg);
+}
+
+.lv-switch {
+	width: 38px !important;
+	height: 22px !important;
+	min-width: 38px !important;
+	min-height: 22px !important;
+	border-radius: 999px !important;
+	border: 1px solid var(--lv-border) !important;
+	background: var(--lv-surface-2) !important;
+	position: relative !important;
+	cursor: pointer;
+	padding: 0 !important;
+	display: inline-block !important;
+	flex-shrink: 0 !important;
+	box-sizing: border-box !important;
+	outline: none;
+	transition: background 0.2s cubic-bezier(0.2, 0.8, 0.2, 1), border-color 0.2s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+.lv-switch.lv-on {
+	background: var(--lv-accent) !important;
+	border-color: var(--lv-accent) !important;
+}
+
+.lv-switch-knob {
+	position: absolute !important;
+	top: 2px !important;
+	left: 2px !important;
+	width: 16px !important;
+	height: 16px !important;
+	border-radius: 50% !important;
+	background: #ffffff !important;
+	box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2) !important;
+	transition: transform 0.2s cubic-bezier(0.2, 0.8, 0.2, 1) !important;
+	display: block !important;
+	box-sizing: border-box !important;
+}
+
+.lv-switch.lv-on .lv-switch-knob {
+	transform: translateX(16px) !important;
+}
+
+.lv-calib-trigger-row {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	margin: 2px 4px 8px;
+}
+
+.lv-btn-calib {
+	flex: 1;
+	display: inline-flex;
+	align-items: center;
+	justify-content: space-between;
+	padding: 6px 10px;
+	border-radius: 8px;
+	border: 1px solid var(--lv-border);
+	background: color-mix(in srgb, var(--lv-accent) 10%, transparent);
+	color: var(--lv-fg);
+	font-size: 12px;
+	font-weight: 500;
+	cursor: pointer;
+	transition: background 0.15s ease, border-color 0.15s ease;
+}
+
+.lv-btn-calib:hover {
+	background: color-mix(in srgb, var(--lv-accent) 18%, transparent);
+	border-color: var(--lv-accent);
+}
+
+.lv-calib-tag {
+	padding: 1px 6px;
+	border-radius: 999px;
+	background: color-mix(in srgb, #10b981 18%, transparent);
+	color: #10b981;
+	font-size: 10.5px;
+	font-weight: 600;
+}
+
+.lv-btn-calib-reset {
+	padding: 6px 8px;
+	border-radius: 8px;
+	border: 1px solid var(--lv-border);
+	background: var(--lv-surface-2);
+	color: var(--lv-fg-3);
+	font-size: 11.5px;
+	cursor: pointer;
+	transition: background 0.15s ease, color 0.15s ease;
+}
+
+.lv-btn-calib-reset:hover {
+	background: var(--lv-hover);
+	color: var(--lv-fg);
+}
+
+.lv-pop-footer {
+	margin-top: 14px;
+	padding-top: 10px;
+	border-top: 1px solid var(--lv-border-soft);
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+}
+
+.lv-pop-link {
+	color: var(--lv-accent);
+	text-decoration: none;
+	font-size: 12px;
+	font-weight: 500;
+	display: inline-flex;
+	align-items: center;
+	gap: 4px;
+	cursor: pointer;
+	border: none;
+	background: transparent;
+	padding: 0;
+}
+
+.lv-pop-link:hover {
+	text-decoration: underline;
+}
+
+/* ==========================================================================
+   7. Keyboard Input Floating Card
+   ========================================================================== */
+.lv-input {
+	position: absolute;
+	bottom: calc(var(--lv-chrome-bottom) + 64px);
+	left: 50%;
+	transform: translateX(-50%);
+	width: min(76%, 660px);
 	display: flex;
 	gap: 8px;
 	align-items: center;
-	padding: 8px;
+	padding: 6px 8px 6px 14px;
 	border-radius: 16px;
-	background: rgba(18, 20, 32, 0.88);
-	backdrop-filter: blur(12px);
-	border: 1px solid rgba(255, 255, 255, 0.12);
+	background: var(--lv-glass-bg);
+	backdrop-filter: var(--lv-glass-blur);
+	border: 1px solid var(--lv-glass-border);
+	box-shadow: var(--lv-shadow-pop);
 	z-index: 9;
 }
+
 .lv-input input {
 	flex: 1;
 	border: none;
 	background: transparent;
-	color: #eef0f8;
+	color: var(--lv-fg);
 	font-size: 14px;
-	padding: 6px 8px;
+	font-family: inherit;
 	outline: none;
 }
-.lv-input button {
-	border: none;
-	border-radius: 10px;
-	padding: 7px 14px;
-	background: #3d6fd6;
-	color: #fff;
-	font-size: 13px;
-	cursor: pointer;
-}
-.lv-input button:hover { background: #4c7ce4; }
-.lv-input button:disabled { opacity: 0.5; }
 
-/* ---------- overlays / toast ---------- */
+.lv-input button {
+	padding: 7px 14px;
+	border-radius: 10px;
+	border: none;
+	background: var(--lv-accent);
+	color: #ffffff;
+	font-size: 13px;
+	font-weight: 500;
+	cursor: pointer;
+	display: inline-flex;
+	align-items: center;
+	gap: 4px;
+}
+
+.lv-input button:disabled {
+	opacity: 0.5;
+	cursor: not-allowed;
+}
+
+/* ==========================================================================
+   8. Toast & Center Status Card
+   ========================================================================== */
+.lv-toast {
+	position: absolute;
+	bottom: calc(var(--lv-chrome-bottom) + 120px);
+	left: 50%;
+	transform: translateX(-50%);
+	background: var(--lv-toast-bg);
+	color: #ffffff;
+	padding: 8px 16px;
+	border-radius: 12px;
+	font-size: 13px;
+	font-weight: 500;
+	box-shadow: var(--lv-shadow-pop);
+	z-index: 10;
+	white-space: nowrap;
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	animation: lv-slide-up 0.2s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
 .lv-center {
 	position: absolute;
 	inset: 0;
-	display: grid;
-	place-items: center;
-	z-index: 3;
+	display: flex;
+	align-items: center;
+	justify-content: center;
 	pointer-events: none;
 }
+
 .lv-card {
-	padding: 18px 26px;
-	border-radius: 16px;
-	background: rgba(16, 18, 28, 0.82);
-	border: 1px solid rgba(255, 255, 255, 0.08);
-	color: #c6ccdf;
-	font-size: 13.5px;
+	background: var(--lv-surface);
+	color: var(--lv-fg);
+	padding: 24px 28px;
+	border-radius: 18px;
+	border: 1px solid var(--lv-border);
+	box-shadow: var(--lv-shadow-pop);
 	text-align: center;
-	line-height: 1.7;
-	max-width: 420px;
-}
-.lv-card b { color: #eef0f8; }
-.lv-toast {
-	position: absolute;
-	bottom: 200px;
-	left: 50%;
-	transform: translateX(-50%);
-	padding: 9px 16px;
-	border-radius: 12px;
-	background: rgba(60, 28, 28, 0.92);
-	border: 1px solid rgba(232, 150, 138, 0.35);
-	color: #f0c9c2;
-	font-size: 12.5px;
-	z-index: 10;
-	max-width: 72%;
+	max-width: 440px;
+	line-height: 1.6;
+	font-size: 13px;
+	pointer-events: auto;
 }
 
-/* ---------- fullscreen (immersive mode) ---------- */
+.lv-card b {
+	font-size: 16px;
+	color: var(--lv-fg);
+}
+
+.lv-card.lv-card-error {
+	border-color: rgba(239, 68, 68, 0.35);
+	background: color-mix(in srgb, var(--lv-surface) 92%, #ef4444 8%);
+}
+
+.lv-card-actions {
+	display: flex;
+	gap: 8px;
+	justify-content: center;
+	margin-top: 14px;
+	flex-wrap: wrap;
+}
+
+.lv-card-btn {
+	background: var(--lv-surface-2);
+	color: var(--lv-fg);
+	border: 1px solid var(--lv-border);
+	padding: 6px 14px;
+	border-radius: 9999px;
+	font-size: 12px;
+	font-weight: 500;
+	cursor: pointer;
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+	transition: all 0.15s ease;
+	user-select: none;
+}
+
+.lv-card-btn:hover {
+	background: var(--lv-hover);
+	border-color: var(--lv-accent);
+}
+
+.lv-card-btn.lv-card-btn-primary {
+	background: var(--lv-accent);
+	color: #fff;
+	border-color: transparent;
+}
+
+.lv-card-btn.lv-card-btn-primary:hover {
+	opacity: 0.9;
+}
+
+.lv-card-logs {
+	margin-top: 12px;
+	text-align: left;
+	background: rgba(0, 0, 0, 0.45);
+	padding: 10px 12px;
+	border-radius: 8px;
+	font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+	font-size: 11px;
+	line-height: 1.45;
+	max-height: 140px;
+	overflow-y: auto;
+	white-space: pre-wrap;
+	word-break: break-all;
+	color: var(--lv-fg-2);
+	border: 1px solid var(--lv-border-soft);
+}
+
+/* ==========================================================================
+   9. Fullscreen (Immersive Mode)
+   ========================================================================== */
 .lv-root:fullscreen {
 	width: 100vw;
 	height: 100vh;
-	background: #10121c;
+	background: var(--lv-base);
+	--lv-chrome-bottom: 20px;
 }
-.lv-root:fullscreen .lv-stage { position: absolute; inset: 0; }
 
+.lv-root:fullscreen .lv-ambient {
+	opacity: 1.4;
+}
+
+/* Animations */
+@keyframes lv-slide-up {
+	from { opacity: 0; transform: translate(-50%, 8px); }
+	to   { opacity: 1; transform: translate(-50%, 0); }
+}
+
+@keyframes lv-fade-in {
+	from { opacity: 0; }
+	to   { opacity: 1; }
+}
+
+@keyframes lv-halo {
+	0%   { transform: scale(1); opacity: 0.8; }
+	50%  { transform: scale(1.3); opacity: 0; }
+	100% { transform: scale(1.3); opacity: 0; }
+}
+
+@keyframes lv-pulse {
+	0%, 100% { opacity: 0.4; }
+	50%      { opacity: 1; }
+}
+
+@keyframes lv-spin {
+	from { transform: rotate(0deg); }
+	to   { transform: rotate(360deg); }
+}
+
+.lv-spin {
+	animation: lv-spin 0.9s linear infinite;
+}
+
+/* ==========================================================================
+   10. Gaze Smart Calibration Overlay & Reticle
+   ========================================================================== */
+.lv-calib-overlay {
+	position: absolute;
+	inset: 0;
+	z-index: 25;
+	pointer-events: auto;
+	background: radial-gradient(circle at 50% 35%, transparent 0%, rgba(10, 14, 26, 0.28) 100%);
+	display: flex;
+	flex-direction: column;
+	justify-content: space-between;
+	align-items: center;
+	padding: 24px 20px;
+	box-sizing: border-box;
+	animation: lv-fade-in 0.28s ease;
+	user-select: none;
+}
+
+.lv-calib-header {
+	position: absolute;
+	top: 18px;
+	left: 50%;
+	transform: translateX(-50%);
+	width: min(92%, 480px);
+	padding: 8px 14px 8px 12px;
+	border-radius: 999px;
+	background: var(--lv-glass-bg);
+	backdrop-filter: var(--lv-glass-blur);
+	border: 1px solid var(--lv-glass-border);
+	box-shadow: var(--lv-shadow-pop);
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 12px;
+	box-sizing: border-box;
+}
+
+.lv-calib-header-left {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	overflow: hidden;
+}
+
+.lv-calib-pill {
+	display: inline-block;
+	padding: 3px 9px;
+	border-radius: 999px;
+	background: color-mix(in srgb, var(--lv-accent) 18%, transparent);
+	color: var(--lv-accent);
+	font-size: 11.5px;
+	font-weight: 600;
+	letter-spacing: 0.04em;
+	white-space: nowrap;
+	flex-shrink: 0;
+}
+
+.lv-calib-title {
+	margin: 0;
+	font-size: 13.5px;
+	font-weight: 600;
+	color: var(--lv-fg);
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.lv-calib-cancel {
+	position: static;
+	flex-shrink: 0;
+	padding: 4px 10px;
+	border-radius: 999px;
+	border: 1px solid var(--lv-border-soft);
+	background: var(--lv-hover);
+	color: var(--lv-fg-2);
+	font-size: 12px;
+	font-weight: 500;
+	cursor: pointer;
+	transition: background 0.15s ease, color 0.15s ease;
+}
+
+.lv-calib-cancel:hover {
+	background: var(--lv-active);
+	color: var(--lv-fg);
+}
+
+/* Calibration Reticle Targeting Character Eyes */
+.lv-calib-reticle {
+	position: absolute;
+	transform: translate(-50%, -50%);
+	pointer-events: none;
+	transition: left 0.35s cubic-bezier(0.2, 0.8, 0.2, 1), top 0.35s cubic-bezier(0.2, 0.8, 0.2, 1);
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	justify-content: center;
+	border-radius: 50%;
+	background: radial-gradient(circle, color-mix(in srgb, var(--lv-accent) 18%, transparent) 0%, transparent 70%);
+}
+
+.lv-calib-svg {
+	display: block;
+	transform: rotate(-90deg);
+}
+
+.lv-calib-track {
+	stroke: color-mix(in srgb, var(--lv-fg) 20%, transparent);
+}
+
+body[data-ds-dark-theme] .lv-calib-track,
+.lv-root.lv-dark .lv-calib-track {
+	stroke: rgba(255, 255, 255, 0.16);
+}
+
+.lv-calib-prog {
+	stroke: var(--lv-accent);
+	stroke-linecap: round;
+	transition: stroke-dashoffset 0.1s linear, stroke 0.2s ease;
+	filter: drop-shadow(0 0 8px var(--lv-accent));
+}
+
+.lv-calib-center-dot {
+	position: absolute;
+	top: 50%;
+	left: 50%;
+	transform: translate(-50%, -50%);
+	width: 8px;
+	height: 8px;
+	border-radius: 50%;
+	background: var(--lv-accent);
+	box-shadow: 0 0 10px var(--lv-accent), 0 0 2px #ffffff;
+	transition: transform 0.2s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.lv-face-searching .lv-calib-center-dot {
+	background: var(--lv-accent);
+	opacity: 0.6;
+	animation: lv-pulse 1.2s infinite;
+}
+
+.lv-face-searching .lv-calib-prog {
+	stroke: color-mix(in srgb, var(--lv-accent) 45%, transparent);
+	stroke-dasharray: 4 4;
+	filter: drop-shadow(0 0 4px var(--lv-accent));
+}
+
+.lv-pulse-success .lv-calib-center-dot {
+	transform: translate(-50%, -50%) scale(1.6);
+	background: #10b981;
+	box-shadow: 0 0 16px #10b981;
+}
+
+.lv-pulse-success .lv-calib-prog {
+	stroke: #10b981;
+	filter: drop-shadow(0 0 10px #10b981);
+}
+
+.lv-calib-badge {
+	margin-top: 10px;
+	padding: 4px 12px;
+	border-radius: 999px;
+	background: rgba(15, 17, 26, 0.82);
+	backdrop-filter: blur(10px);
+	border: 1px solid var(--lv-glass-border);
+	color: #ffffff;
+	font-size: 12px;
+	font-weight: 500;
+	box-shadow: var(--lv-shadow-panel);
+	letter-spacing: 0.02em;
+	white-space: nowrap;
+}
+
+.lv-calib-footer {
+	padding: 8px 16px;
+	border-radius: 12px;
+	background: color-mix(in srgb, var(--lv-surface) 70%, transparent);
+	backdrop-filter: blur(10px);
+	border: 1px solid var(--lv-border-soft);
+	text-align: center;
+	max-width: min(92%, 520px);
+}
+
+.lv-calib-hint {
+	font-size: 12px;
+	color: var(--lv-fg-2);
+	line-height: 1.4;
+}
+
+/* ── Model selector (provider/model/effort picker) ────────────────── */
+.lv-model-list {
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+}
+.lv-model-group {
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
+}
+.lv-model-provider {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 8px;
+	padding: 6px 10px;
+	border-radius: 8px;
+	border: 1px solid var(--lv-border);
+	background: color-mix(in srgb, var(--lv-surface) 30%, transparent);
+	color: var(--lv-fg-2);
+	font-size: 12px;
+	cursor: pointer;
+	transition: background 0.15s, color 0.15s;
+}
+.lv-model-provider:hover {
+	background: var(--lv-hover);
+	color: var(--lv-fg);
+}
+.lv-model-provider.lv-current {
+	border-color: var(--lv-accent);
+	background: color-mix(in srgb, var(--lv-accent) 10%, transparent);
+	color: var(--lv-fg);
+}
+.lv-model-provider-name {
+	font-weight: 600;
+}
+.lv-model-provider-count {
+	font-size: 10px;
+	color: var(--lv-fg-caption);
+	background: var(--lv-active);
+	padding: 1px 6px;
+	border-radius: 999px;
+}
+.lv-model-models {
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+	padding-left: 12px;
+	margin-top: 2px;
+}
+.lv-model-entry {
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+}
+.lv-model-btn {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 6px;
+	padding: 5px 10px;
+	border-radius: 6px;
+	border: none;
+	background: transparent;
+	color: var(--lv-fg-3);
+	font-size: 12px;
+	cursor: pointer;
+	transition: background 0.15s, color 0.15s;
+}
+.lv-model-btn:hover:not(:disabled) {
+	background: var(--lv-hover);
+	color: var(--lv-fg);
+}
+.lv-model-btn.lv-current {
+	color: var(--lv-accent);
+	font-weight: 600;
+}
+.lv-model-btn:disabled {
+	opacity: 0.5;
+	cursor: default;
+}
+.lv-model-dot {
+	width: 6px;
+	height: 6px;
+	border-radius: 50%;
+	background: var(--lv-accent);
+	flex: none;
+}
+.lv-effort-row {
+	display: flex;
+	gap: 4px;
+	flex-wrap: wrap;
+	padding-left: 10px;
+}
+.lv-effort-btn {
+	padding: 3px 8px;
+	border-radius: 999px;
+	border: 1px solid var(--lv-border-soft);
+	background: transparent;
+	color: var(--lv-fg-caption);
+	font-size: 11px;
+	cursor: pointer;
+	transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+.lv-effort-btn:hover:not(:disabled) {
+	background: var(--lv-hover);
+	color: var(--lv-fg-2);
+}
+.lv-effort-btn.lv-current {
+	border-color: var(--lv-accent);
+	color: var(--lv-accent);
+	background: color-mix(in srgb, var(--lv-accent) 10%, transparent);
+}
+.lv-effort-btn:disabled {
+	opacity: 0.5;
+	cursor: default;
+}
+
+/* ── Live entry button (session header utilities) ──────────────────── */
+.lv-live-entry {
+	display: inline-flex;
+	align-items: center;
+	gap: 5px;
+	padding: 4px 10px;
+	border-radius: 999px;
+	border: 1px solid var(--lv-border, rgba(0,0,0,0.10));
+	background: transparent;
+	color: var(--lv-fg, inherit);
+	font-size: 12px;
+	font-weight: 600;
+	font-family: inherit;
+	cursor: pointer;
+	transition: background 0.15s, color 0.15s, transform 0.1s;
+	white-space: nowrap;
+}
+.lv-live-entry:hover {
+	background: color-mix(in srgb, var(--lv-accent, #4176e6) 8%, transparent);
+}
+.lv-live-entry:active {
+	transform: scale(0.96);
+}
+/* Active/selected state: shows when the Live2D view is current */
+.lv-live-entry[data-pressed] {
+	background: color-mix(in srgb, var(--lv-accent-soft, #e4edfd) 50%, transparent);
+	color: var(--lv-accent, #4176e6);
+}
+.lv-live-entry[data-pressed]:active {
+	transform: scale(0.96);
+}
+.lv-live-entry svg {
+	flex: none;
+}
 `;
 
 let injected = false;

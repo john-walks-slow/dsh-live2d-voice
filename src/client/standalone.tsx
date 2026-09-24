@@ -17,8 +17,10 @@ import type { FC } from "react";
 import { postMessage } from "./api.js";
 import { injectLiveStyles } from "./styles.js";
 import { makeLive2DView, type SubmitPrompt } from "./view.js";
+import { logger } from "./logger.js";
 
 injectLiveStyles();
+logger.installGlobalErrorHandlers();
 
 const params = new URLSearchParams(window.location.search);
 const sessionId = params.get("session")?.trim() ?? "";
@@ -33,7 +35,7 @@ const submitPrompt: SubmitPrompt = (sid, text, mode) => {
 function StandaloneApp() {
 	if (!sessionId) {
 		return (
-			<div className="lv-root">
+			<div className="lv-root" data-no-gesture>
 				<div className="lv-center">
 					<div className="lv-card">
 						<b>缺少会话参数</b>

@@ -112,8 +112,15 @@ export class TiltParallax {
 		// Portrait assumption: gamma = roll, beta = pitch.
 		const dx = clampNorm(reading.gamma - this.neutral.gamma);
 		const dy = clampNorm(reading.beta - this.neutral.beta);
-		// "Window" physics: the character shifts opposite to the tilt.
-		const target: TiltState = { dx, dy, px: -dx * 0.7, py: dy * 0.7 };
+		// Parallax design:
+		// Emphasize position PAN (px, py) to make the model float like an object inside a 3D box,
+		// and use subtle, gentle rotation (dx, dy) to avoid unnatural robotic head twisting.
+		const target: TiltState = {
+			dx: dx * 0.45,
+			dy: dy * 0.45,
+			px: -dx * 1.2,
+			py: dy * 1.0,
+		};
 		const k = SMOOTHING;
 		this.smoothed = {
 			dx: this.smoothed.dx + (target.dx - this.smoothed.dx) * k,

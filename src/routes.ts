@@ -226,6 +226,19 @@ export function installRoutes(ctx: Context, deps: RouteDeps): (() => void) | und
 						}
 						patch.emotionMap = emotionMap;
 					}
+					// liveModel: object (provider+model+optional effort) or null to clear.
+					if (body.liveModel === null) {
+						patch.liveModel = null;
+					} else if (typeof body.liveModel === "object" && !Array.isArray(body.liveModel)) {
+						const lm = body.liveModel as Record<string, unknown>;
+						if (typeof lm.provider === "string" && typeof lm.model === "string") {
+							patch.liveModel = {
+								provider: lm.provider,
+								model: lm.model,
+								...(typeof lm.reasoningEffort === "string" && lm.reasoningEffort ? { reasoningEffort: lm.reasoningEffort } : {}),
+							};
+						}
+					}
 					const saved = deps.saveConfig(patch);
 					writeJson(res, 200, { config: publicConfig(saved, deps.resolveKeys(saved).length) });
 				})
@@ -499,12 +512,140 @@ export function installRoutes(ctx: Context, deps: RouteDeps): (() => void) | und
 		} })
 	);
 
+	// Client diagnostics / error logger: records browser-side crashes,
+	// WebGL context lost, unhandled rejections, and ErrorBoundary events to host logs.
+	disposers.push(
+		webServer.register({ kind: "exact", path: "/live2d-voice/client-log", handler: async (req, res) => {
+			if (req.method !== "POST") {
+				res.writeHead(405, { allow: "POST" });
+				res.end();
+				return;
+			}
+			try {
+				const body = await readJsonBody(req, 32 * 1024);
+				const level = String(body.level || "info").toLowerCase();
+				const msg = String(body.message || "(empty message)");
+				const details = body.details ? ` | ${typeof body.details === "object" ? JSON.stringify(body.details) : String(body.details)}` : "";
+				const sid = body.sessionId ? ` [sid:${String(body.sessionId).slice(0, 8)}]` : "";
+				const logLine = `[dsh-live2d-voice:client]${sid} ${msg}${details}`;
+				if (level === "error") {
+					ctx.logger.error(logLine);
+				} else if (level === "warn") {
+					ctx.logger.warn(logLine);
+				} else {
+					ctx.logger.info(logLine);
+				}
+				writeJson(res, 200, { ok: true });
+			} catch (error) {
+				writeJson(res, 400, { ok: false, error: String((error as Error)?.message ?? error) });
+			}
+		} })
+	);
+
 	// Load Cubism Core on every index.html render (pixi-live2d-display needs
 	// window.Live2DCubismCore before the first model loads).
 	disposers.push(
 		ctx.on("webserver/index-inject", (table) => {
 			table.push({ kind: "script-src", placement: "head", src: CORE_SCRIPT_PATH });
 		})
+	);
+
+	// Model catalog: the full provider-grouped list of available models plus
+	// the deployment default selection.  Served to the Live view's model
+	// selector.  Uses the session controller's modelCatalog() method.
+	disposers.push(
+		webServer.register({ kind: "exact", path: "/live2d-voice/model-catalog", handler: (req, res) => {
+			if (req.method !== "GET") {
+				writeJson(res, 405, { code: "method_not_allowed" });
+				return;
+			}
+			void (async () => {
+				try {
+					const sc = (ctx as unknown as { sessionController: { modelCatalog(): Promise<unknown> } }).sessionController;
+					const catalog = await sc.modelCatalog();
+					writeJson(res, 200, catalog);
+				} catch (error) {
+					writeJson(res, 500, { code: "catalog_error", message: error instanceof Error ? error.message : String(error) });
+				}
+			})();
+		} })
+	);
+
+	// Current model selection for one session: reads the agent's last request
+	// header (provider/model/reasoningEffort), falling back to the catalog
+	// default when no request has been made yet (blank session).
+	disposers.push(
+		webServer.register({ kind: "exact", path: "/live2d-voice/model-selection", handler: (req, res) => {
+			if (req.method !== "GET") {
+				writeJson(res, 405, { code: "method_not_allowed" });
+				return;
+			}
+			void (async () => {
+				const sessionId = new URL(req.url ?? "/", "http://localhost").searchParams.get("session")?.trim() ?? "";
+				if (!sessionId) {
+					writeJson(res, 400, { code: "session_required", message: "query parameter `session` is required" });
+					return;
+				}
+				try {
+					const sc = (ctx as unknown as {
+						sessionController: {
+							resolveAgent(id: SessionId): Promise<{ agent?: unknown; error?: { message?: string } }>;
+							modelCatalog(): Promise<{ default: { provider: string; model: string; reasoningEffort?: string } }>;
+						};
+					}).sessionController;
+					const found = await sc.resolveAgent(sessionId as SessionId);
+					const agent = found?.agent as
+						| { session?: { requestHeader?: () => { config?: { provider: string; model: string; reasoningEffort?: string } } | undefined } }
+						| undefined;
+					const header = agent?.session?.requestHeader?.();
+					if (header?.config) {
+						writeJson(res, 200, {
+							provider: header.config.provider,
+							model: header.config.model,
+							...header.config.reasoningEffort === undefined ? {} : { reasoningEffort: header.config.reasoningEffort },
+						});
+						return;
+					}
+					// No request header yet — fall back to the catalog default.
+					const catalog = await sc.modelCatalog();
+					writeJson(res, 200, catalog.default);
+				} catch (error) {
+					writeJson(res, 500, { code: "selection_error", message: error instanceof Error ? error.message : String(error) });
+				}
+			})();
+		} })
+	);
+
+	// Select a model for one session: delegates to the session controller's
+	// selectModel() which validates and installs the selection.
+	disposers.push(
+		webServer.register({ kind: "exact", path: "/live2d-voice/select-model", handler: (req, res) => {
+			if (req.method !== "POST") {
+				writeJson(res, 405, { code: "method_not_allowed" });
+				return;
+			}
+			void readJsonBody(req)
+				.then(async (body) => {
+					const sessionId = typeof body.sessionId === "string" ? body.sessionId : "";
+					const provider = typeof body.provider === "string" ? body.provider : "";
+					const model = typeof body.model === "string" ? body.model : "";
+					const reasoningEffort = typeof body.reasoningEffort === "string" ? body.reasoningEffort : undefined;
+					if (!sessionId || !provider || !model) {
+						writeJson(res, 400, { code: "bad_request", message: "sessionId, provider, and model are required" });
+						return;
+					}
+					const sc = (ctx as unknown as {
+						sessionController: {
+							selectModel(request: { sessionId: SessionId; provider: string; model: string; reasoningEffort?: string }): Promise<{ selected: { provider: string; model: string; reasoningEffort?: string } }>;
+						};
+					}).sessionController;
+					const result = await sc.selectModel({ sessionId: sessionId as SessionId, provider, model, reasoningEffort });
+					writeJson(res, 200, result);
+				})
+				.catch((error: unknown) => {
+					writeJson(res, 400, { code: "bad_request", message: error instanceof Error ? error.message : String(error) });
+				});
+		} })
 	);
 
 	return () => {

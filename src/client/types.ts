@@ -19,6 +19,8 @@ export interface PublicConfig {
 	emotionMap: Record<string, number | string>;
 	apiKeyCount: number;
 	asrConfigured: boolean;
+	/** When set, the Live view auto-switches to this model on entry. */
+	liveModel?: { provider: string; model: string; reasoningEffort?: string } | null;
 }
 
 export interface VoicePreset {
@@ -85,6 +87,48 @@ export interface SpeechEndPayload {
 
 export interface ErrorPayload {
 	message: string;
+}
+
+/** One selectable reasoning effort level for a model. */
+export interface ModelReasoningEffort {
+	id: string;
+	name: string;
+	description?: string;
+}
+
+/** Reasoning metadata for one model route. */
+export interface ModelReasoning {
+	efforts: readonly ModelReasoningEffort[];
+	defaultEffort?: string;
+}
+
+/** One model inside a provider group. */
+export interface ModelCatalogModel {
+	id: string;
+	name: string;
+	description?: string;
+	reasoning?: ModelReasoning;
+}
+
+/** One provider and its models. */
+export interface ModelProviderGroup {
+	id: string;
+	name: string;
+	models: readonly ModelCatalogModel[];
+}
+
+/** Complete model selection (provider + model + optional effort). */
+export interface ModelSelection {
+	provider: string;
+	model: string;
+	reasoningEffort?: string;
+}
+
+/** The full catalog returned by GET /live2d-voice/model-catalog. */
+export interface ModelCatalog {
+	default: ModelSelection;
+	routableProviders: readonly string[];
+	groups: readonly ModelProviderGroup[];
 }
 
 export interface StreamHandlers {

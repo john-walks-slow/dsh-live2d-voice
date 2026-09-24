@@ -11,12 +11,15 @@
 
 import { Application } from "pixi.js";
 import { Live2DModel } from "pixi-live2d-display-lipsyncpatch/cubism4";
+import { logger } from "./logger.js";
 
 export interface Live2DHandle {
 	/** Apply an expression by name or index; unknown ids are ignored. */
 	setExpression(expression: number | string): void;
 	/** Make the character look at a stage-local point (pixels). */
 	focus(x: number, y: number): void;
+	/** Approximate screen pixel position of character eyes. */
+	getEyePosition(): { x: number; y: number };
 	/** When true, camera gaze owns the focus and the mouse is ignored. */
 	setGazeMode(enabled: boolean): void;
 	/**
@@ -31,17 +34,48 @@ export function isCubismCoreLoaded(): boolean {
 	return typeof (globalThis as { Live2DCubismCore?: unknown }).Live2DCubismCore === "object";
 }
 
-export async function mountModel(container: HTMLElement, modelUrl: string, getMouth: () => number): Promise<Live2DHandle> {
-	const app = new Application({ backgroundAlpha: 0, resizeTo: container, antialias: true });
-	container.appendChild(app.view as unknown as HTMLCanvasElement);
+export async function mountModel(
+	container: HTMLElement,
+	modelUrl: string,
+	getMouth: () => number,
+	onContextLost?: () => void,
+): Promise<Live2DHandle> {
+	const dpr = typeof window !== "undefined" ? (window.devicePixelRatio || 1) : 1;
+	const app = new Application({
+		backgroundAlpha: 0,
+		resizeTo: container,
+		antialias: true,
+		autoDensity: true,
+		resolution: Math.max(1, Math.min(dpr, 3)),
+	});
+	const canvas = app.view as unknown as HTMLCanvasElement;
+	container.appendChild(canvas);
+
+	const onWebglLost = (e: Event) => {
+		e.preventDefault();
+		logger.warn("WebGL context lost! High load / GPU reset detected. Triggering model reload...", {
+			url: modelUrl,
+		});
+		if (onContextLost) onContextLost();
+	};
+	canvas.addEventListener("webglcontextlost", onWebglLost, false);
+
+	const onWebglRestored = () => {
+		logger.info("WebGL context restored. Triggering model re-mount...");
+		if (onContextLost) onContextLost();
+	};
+	canvas.addEventListener("webglcontextrestored", onWebglRestored, false);
 
 	// A failed load must not leave an orphan canvas + WebGL context behind.
 	let model: Awaited<ReturnType<typeof Live2DModel.from>>;
 	try {
+		logger.info(`Loading Live2D model from: ${modelUrl}`);
 		// Drive model updates from the app's own ticker (v7 Application does
 		// not use Ticker.shared by default; one rAF loop for render + update).
 		model = await Live2DModel.from(modelUrl, { autoInteract: false, ticker: app.ticker });
+		logger.info(`Live2D model loaded successfully (${model.internalModel.originalWidth}x${model.internalModel.originalHeight})`);
 	} catch (error) {
+		logger.error(`Failed to load Live2D model from ${modelUrl}`, error);
 		app.destroy(true, { children: true });
 		throw error;
 	}
@@ -50,17 +84,28 @@ export async function mountModel(container: HTMLElement, modelUrl: string, getMo
 	let tilt: { dx: number; dy: number; px: number; py: number } | null = null;
 	let baseX = 0;
 	let baseY = 0;
+	let baseScale = 1;
+	let userScale = 1;
+	let userPanX = 0;
+	let userPanY = 0;
+
+	const applyTransform = () => {
+		model.scale.set(baseScale * userScale);
+		const tiltX = tilt ? tilt.px * (container.clientWidth || 1) * 0.12 : 0;
+		const tiltY = tilt ? tilt.py * (container.clientHeight || 1) * 0.10 : 0;
+		model.position.set(baseX + userPanX + tiltX, baseY + userPanY + tiltY);
+	};
+
 	const fit = () => {
 		const width = container.clientWidth;
 		const height = container.clientHeight;
 		if (width === 0 || height === 0) return;
 		const internal = model.internalModel;
-		const scale = Math.min(width / internal.originalWidth, height / internal.originalHeight) * 0.98;
-		model.scale.set(scale);
+		baseScale = Math.min(width / internal.originalWidth, height / internal.originalHeight) * 0.98;
 		model.anchor.set(0.5, 0.5);
 		baseX = width / 2;
 		baseY = height / 2 + height * 0.02;
-		model.position.set(baseX, baseY);
+		applyTransform();
 	};
 	fit();
 	const observer = new ResizeObserver(fit);
@@ -88,40 +133,191 @@ export async function mountModel(container: HTMLElement, modelUrl: string, getMo
 		// over) focus/motion angle values, exactly like the mouth drive.
 		if (tilt !== null) {
 			const angles: Array<[string, number]> = [
-				["ParamAngleX", -tilt.dx * 24],
-				["ParamAngleY", -tilt.dy * 18],
-				["ParamAngleZ", tilt.dx * 12],
-				["ParamBodyAngleX", -tilt.dx * 10],
-				["ParamBodyAngleY", -tilt.dy * 7],
-				["ParamEyeBallX", -tilt.dx * 0.8],
-				["ParamEyeBallY", -tilt.dy * 0.5],
+				["ParamAngleX", -tilt.dx * 18],
+				["ParamAngleY", -tilt.dy * 14],
+				["ParamAngleZ", tilt.dx * 16],
+				["ParamBodyAngleX", -tilt.dx * 12],
+				["ParamBodyAngleY", -tilt.dy * 8],
+				["ParamEyeBallX", -tilt.dx * 0.6],
+				["ParamEyeBallY", -tilt.dy * 0.4],
 			];
 			for (const [id, v] of angles) internal.coreModel.setParameterValueById(id, v);
-			const width = container.clientWidth || 1;
-			const height = container.clientHeight || 1;
-			model.position.set(baseX + tilt.px * width * 0.06, baseY + tilt.py * height * 0.05);
+			applyTransform();
 		}
 	});
 
-	// Mouse gaze: the character follows the pointer (desktop). Camera gaze
-	// (experimental) can override this by calling focus() itself.
+	// Touch / mouse interaction:
+	// - 1 finger / mouse drag: pan/drag character
+	// - 2 fingers pinch: zoom & pan
+	// - Wheel: zoom around cursor
+	// - Double click/tap: reset zoom & pan
 	const stage = container;
 	let gazeMode = false;
+	const activeTouches = new Map<number, { x: number; y: number }>();
+	let lastPinchDist = 0;
+	let lastPinchMidX = 0;
+	let lastPinchMidY = 0;
+	let isMousePanning = false;
+	let lastMouseX = 0;
+	let lastMouseY = 0;
+	let lastSingleTouchX = 0;
+	let lastSingleTouchY = 0;
+
+	const onPointerDown = (event: PointerEvent) => {
+		// Stop event from propagating to external gesture listeners
+		event.stopPropagation();
+
+		if (event.pointerType === "touch") {
+			activeTouches.set(event.pointerId, { x: event.clientX, y: event.clientY });
+			// Capture pointer so pointermove and pointerup stream to stage even if finger drifts
+			try {
+				stage.setPointerCapture(event.pointerId);
+			} catch {}
+			if (activeTouches.size === 1) {
+				lastSingleTouchX = event.clientX;
+				lastSingleTouchY = event.clientY;
+			} else if (activeTouches.size === 2) {
+				const points = [...activeTouches.values()];
+				lastPinchDist = Math.hypot(points[0].x - points[1].x, points[0].y - points[1].y);
+				lastPinchMidX = (points[0].x + points[1].x) / 2;
+				lastPinchMidY = (points[0].y + points[1].y) / 2;
+			}
+		} else if (event.button === 0 || event.button === 1 || event.button === 2) {
+			// Left click drag, middle click, or right click initiates pan on desktop
+			isMousePanning = true;
+			lastMouseX = event.clientX;
+			lastMouseY = event.clientY;
+			try {
+				stage.setPointerCapture(event.pointerId);
+			} catch {}
+		}
+	};
+
 	const onPointerMove = (event: PointerEvent) => {
+		event.stopPropagation();
+
+		if (event.pointerType === "touch") {
+			if (activeTouches.has(event.pointerId)) {
+				activeTouches.set(event.pointerId, { x: event.clientX, y: event.clientY });
+			}
+			if (activeTouches.size === 1) {
+				// Single finger drag = pan
+				const deltaX = event.clientX - lastSingleTouchX;
+				const deltaY = event.clientY - lastSingleTouchY;
+				userPanX += deltaX;
+				userPanY += deltaY;
+				lastSingleTouchX = event.clientX;
+				lastSingleTouchY = event.clientY;
+				applyTransform();
+				return;
+			} else if (activeTouches.size >= 2) {
+				// Two fingers pinch = zoom & pan
+				const points = [...activeTouches.values()];
+				const dist = Math.hypot(points[0].x - points[1].x, points[0].y - points[1].y);
+				const midX = (points[0].x + points[1].x) / 2;
+				const midY = (points[0].y + points[1].y) / 2;
+
+				if (lastPinchDist > 0) {
+					const zoomFactor = dist / lastPinchDist;
+					userScale = Math.max(0.4, Math.min(4.0, userScale * zoomFactor));
+				}
+				if (lastPinchMidX !== 0 && lastPinchMidY !== 0) {
+					userPanX += midX - lastPinchMidX;
+					userPanY += midY - lastPinchMidY;
+				}
+				lastPinchDist = dist;
+				lastPinchMidX = midX;
+				lastPinchMidY = midY;
+				applyTransform();
+				return;
+			}
+		}
+
+		if (isMousePanning) {
+			userPanX += event.clientX - lastMouseX;
+			userPanY += event.clientY - lastMouseY;
+			lastMouseX = event.clientX;
+			lastMouseY = event.clientY;
+			applyTransform();
+			return;
+		}
+
 		if (gazeMode) return; // camera gaze owns the focus
 		const rect = stage.getBoundingClientRect();
 		model.focus(event.clientX - rect.left, event.clientY - rect.top);
 	};
+
+	const onPointerUp = (event: PointerEvent) => {
+		event.stopPropagation();
+		try {
+			if (stage.hasPointerCapture(event.pointerId)) {
+				stage.releasePointerCapture(event.pointerId);
+			}
+		} catch {}
+
+		if (event.pointerType === "touch") {
+			activeTouches.delete(event.pointerId);
+			if (activeTouches.size === 1) {
+				const remaining = [...activeTouches.values()][0];
+				lastSingleTouchX = remaining.x;
+				lastSingleTouchY = remaining.y;
+				lastPinchDist = 0;
+			} else if (activeTouches.size === 0) {
+				lastPinchDist = 0;
+				lastPinchMidX = 0;
+				lastPinchMidY = 0;
+			}
+		} else {
+			isMousePanning = false;
+		}
+	};
+
+	const onWheel = (event: WheelEvent) => {
+		event.preventDefault();
+		event.stopPropagation();
+		const zoomFactor = event.deltaY < 0 ? 1.08 : 0.92;
+		userScale = Math.max(0.4, Math.min(4.0, userScale * zoomFactor));
+		applyTransform();
+	};
+
+	const onDblClick = (event: MouseEvent) => {
+		event.stopPropagation();
+		userScale = 1;
+		userPanX = 0;
+		userPanY = 0;
+		applyTransform();
+	};
+
+	stage.addEventListener("pointerdown", onPointerDown);
 	stage.addEventListener("pointermove", onPointerMove);
+	stage.addEventListener("pointerup", onPointerUp);
+	stage.addEventListener("pointercancel", onPointerUp);
+	stage.addEventListener("wheel", onWheel, { passive: false });
+	stage.addEventListener("dblclick", onDblClick);
 
 	return {
 		setExpression(expression) {
 			void model.expression(expression).catch((error) => {
-				console.warn(`[dsh-live2d-voice] expression ${String(expression)} failed`, error);
+				logger.warn(`expression ${String(expression)} failed`, error);
 			});
 		},
 		focus(x, y) {
 			model.focus(x, y);
+		},
+		getEyePosition() {
+			const width = container.clientWidth || 1;
+			const height = container.clientHeight || 1;
+			const internal = model.internalModel;
+			const origH = internal.originalHeight || 1000;
+			const currentScale = baseScale * userScale;
+			// The eyes in standard models are approximately 22% of logical height above center anchor (0.5)
+			const currentCenterX = baseX + userPanX;
+			const currentCenterY = baseY + userPanY;
+			const eyeY = currentCenterY - 0.22 * origH * currentScale;
+			return {
+				x: Math.round(currentCenterX),
+				y: Math.round(Math.max(20, Math.min(height - 20, eyeY))),
+			};
 		},
 		setGazeMode(enabled) {
 			gazeMode = enabled;
@@ -135,10 +331,25 @@ export async function mountModel(container: HTMLElement, modelUrl: string, getMo
 			if (next === null) model.position.set(baseX, baseY);
 		},
 		destroy() {
+			canvas.removeEventListener("webglcontextlost", onWebglLost);
+			canvas.removeEventListener("webglcontextrestored", onWebglRestored);
+			stage.removeEventListener("pointerdown", onPointerDown);
 			stage.removeEventListener("pointermove", onPointerMove);
+			stage.removeEventListener("pointerup", onPointerUp);
+			stage.removeEventListener("pointercancel", onPointerUp);
+			stage.removeEventListener("wheel", onWheel);
+			stage.removeEventListener("dblclick", onDblClick);
 			observer.disconnect();
-			model.destroy();
-			app.destroy(true, { children: true });
+			try {
+				model.destroy();
+			} catch (err) {
+				logger.warn("Live2DModel.destroy threw error, safely suppressed", err);
+			}
+			try {
+				app.destroy(true, { children: true });
+			} catch (err) {
+				logger.warn("Pixi Application.destroy threw error, safely suppressed", err);
+			}
 		},
 	};
 }

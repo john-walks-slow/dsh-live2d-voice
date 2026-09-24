@@ -1,32 +1,25 @@
 /**
- * Browser half of dsh-live2d-voice: the "Live2D" conversation view tab.
- *
- * Registering on the conversation.view slot adds a tab beside Chat /
- * Trajectory. Message submission goes through the GUI session channel
- * (ctx.sessions → SessionFace.prompt → session/prompt RPC), which works for
- * cold sessions too — the host creates or resumes the agent server-side.
- * Mounting problems are logged, never thrown — an external plugin must not
- * take the GUI down.
+ * Browser half of dsh-live2d-voice:
+ *   - "conversation.view" tab: Live2D session view
+ *   - "settings.section": Global Live2D & Voice configuration panel
  */
 
 import type { ClientContext, ISessions, SessionId } from "@deepseek-ai/dsh-client-runtime/client";
 import type {} from "@deepseek-ai/dsh-client-ui-conversation/client";
 import { injectLiveStyles } from "./styles.js";
 import { makeLive2DView } from "./view.js";
+import { Live2DSettingsSection } from "./settings-section.js";
+import { LiveButton } from "./live-button.js";
 
 export const inject = ["slots", "sessions"];
 
 export function apply(ctx: ClientContext): void {
 	injectLiveStyles();
+
+	// 1. Register Live2D view tab
 	try {
-		// The browser runtime's sessions face. Cast needed: the host-side
-		// dsh-session types also merge `Context.sessions` (SessionStore) and,
-		// with skipLibCheck, that declaration wins the merge order in this
-		// compilation — the runtime value in the browser is ISessions.
 		const sessions = ctx.sessions as unknown as ISessions;
 
-		// Submit through the same channel the Chat composer uses, so the host
-		// handles agent creation/resume, attribution and queueing for us.
 		const submitPrompt = (sessionId: string, text: string, mode: "queue" | "steer" = "queue") => {
 			const binding = sessions.binding?.(sessionId as SessionId);
 			const session = binding?.session;
@@ -55,5 +48,44 @@ export function apply(ctx: ClientContext): void {
 		console.info("[dsh-live2d-voice] Live2D view mounted");
 	} catch (error) {
 		console.error("[dsh-live2d-voice] conversation.view registration failed", error);
+	}
+
+	// 2. Register Live2D Global Settings Section
+	try {
+		const slots = ctx.slots as unknown as {
+			inject: (name: string, fn: () => void) => void;
+			register: (spec: Record<string, unknown>, component: unknown) => void;
+		};
+		slots.inject("settings.section", () =>
+			slots.register(
+				{
+					name: "settings.section",
+					id: "live2d-voice",
+					order: 130,
+					label: () => "Live2D 角色与语音",
+				},
+				Live2DSettingsSection
+			)
+		);
+		console.info("[dsh-live2d-voice] settings.section mounted");
+	} catch (error) {
+		console.error("[dsh-live2d-voice] settings.section registration failed", error);
+	}
+
+	// 3. Register "Live" entry button in the session header utilities
+	try {
+		ctx.slots.inject("conversation.session.header.utilities", () =>
+			ctx.slots.register(
+				{
+					name: "conversation.session.header.utilities",
+					id: "live2d-enter",
+					order: 100,
+				},
+				LiveButton
+			)
+		);
+		console.info("[dsh-live2d-voice] header.utilities Live button mounted");
+	} catch (error) {
+		console.error("[dsh-live2d-voice] header.utilities registration failed", error);
 	}
 }
