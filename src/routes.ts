@@ -29,6 +29,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import type { Context } from "@deepseek-ai/cordis";
 import type {} from "@deepseek-ai/dsh-agent";
 import type {} from "@deepseek-ai/dsh-host-webserver";
+import type {} from "@deepseek-ai/dsh-api-session-controller";
 import { createUserMessage, type ContentBlock } from "@deepseek-ai/dsh-llm";
 import type { SessionId } from "@deepseek-ai/dsh-session";
 import { LANGUAGE_OPTIONS, VOICE_PRESETS, resolveModelCatalog, resolveModelSelection, resolveSessionConfig, type ModelEntry, type PluginConfig } from "./config.js";
@@ -99,6 +100,7 @@ function publicConfig(config: PluginConfig, keyCount: number) {
 }
 
 function mimeOf(path: string): string {
+	if (path.endsWith(".html")) return "text/html; charset=utf-8";
 	if (path.endsWith(".js") || path.endsWith(".mjs")) return "text/javascript; charset=utf-8";
 	if (path.endsWith(".json")) return "application/json; charset=utf-8";
 	if (path.endsWith(".png")) return "image/png";
@@ -241,20 +243,36 @@ export function installRoutes(ctx: Context, deps: RouteDeps): (() => void) | und
 				return;
 			}
 			void readJsonBody(req)
-				.then((body) => {
+				.then(async (body) => {
 					const sessionId = typeof body.sessionId === "string" ? body.sessionId : "";
 					const text = typeof body.text === "string" ? body.text.trim() : "";
+					const mode = body.mode === "steer" ? "steer" : "queue";
 					if (!sessionId || !text) {
 						writeJson(res, 400, { code: "bad_message", message: "sessionId and text are required" });
 						return;
 					}
-					const agent = ctx.agents.get(sessionId as SessionId);
+					let agent = ctx.agents.get(sessionId as SessionId);
 					if (agent === undefined) {
-						writeJson(res, 404, { code: "session_not_found", message: `no live session ${sessionId}` });
-						return;
+						// Cold session (e.g. after a host restart): resolve through
+						// the session controller so the agent resumes WITH its
+						// preset (a bare registry resume would skip setup).
+						const found = await (
+							ctx as unknown as {
+								sessionController: { resolveAgent(id: SessionId): Promise<{ agent?: unknown; error?: { message?: string } }> };
+							}
+						).sessionController.resolveAgent(sessionId as SessionId);
+						if (found !== undefined && "agent" in found && found.agent !== undefined) {
+							agent = found.agent as NonNullable<typeof agent>;
+						} else {
+							const detail = found !== undefined && "error" in found ? String(found.error?.message ?? "session not found") : "session not found";
+							writeJson(res, 404, { code: "session_not_found", message: detail });
+							return;
+						}
 					}
 					const content: ContentBlock[] = [{ type: "text", text }];
-					agent.followup(createUserMessage({ content, source: { kind: "user" } }));
+					const message = createUserMessage({ content, source: { kind: "user" } });
+					if (mode === "steer") agent.steer(message);
+					else agent.followup(message);
 					deps.hub.emit(sessionId, "subtitle", { role: "user", text });
 					writeJson(res, 200, { accepted: true });
 				})
@@ -455,6 +473,21 @@ export function installRoutes(ctx: Context, deps: RouteDeps): (() => void) | und
 			})().catch((error: unknown) => {
 				writeJson(res, 502, { code: "gaze_asset_error", message: error instanceof Error ? error.message : String(error) });
 			});
+		} })
+	);
+
+	// Standalone Live2D entry: a self-contained page for one session —
+	// no GUI chrome, just the character. /live2d-voice/app?session=<id>
+	disposers.push(
+		webServer.register({ kind: "exact", path: "/live2d-voice/app", handler: (_req, res) => {
+			const page = resolve(dirname(fileURLToPath(import.meta.url)), "../assets/standalone.html");
+			if (!serveFile(res, page, 0)) writeJson(res, 404, { code: "standalone_missing" });
+		} })
+	);
+	disposers.push(
+		webServer.register({ kind: "exact", path: "/live2d-voice/app/bundle.js", handler: (_req, res) => {
+			const bundle = resolve(dirname(fileURLToPath(import.meta.url)), "../lib/standalone.js");
+			if (!serveFile(res, bundle, 0)) writeJson(res, 404, { code: "standalone_bundle_missing" });
 		} })
 	);
 

@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.3.0 (2026-09-24)
+
+- 独立入口 /live2d-voice/app?session=<id>：无 GUI chrome 的单会话角色页（独立 bundle 全内联 813KB，复用全部视图组件）；冷会话经 ctx.sessionController.resolveAgent 恢复（带完整 preset setup——裸 registry.resume 会缺 preset 致 turn 无法组装）；message 路由支持 mode=steer（agent.steer）；e2e 12/12（含冷恢复与语音回路）
+- 模型库新增 deepseek娘：v0 贴图重皮管线产物（gemini-3.1-flash-image 整图重绘双 atlas + 原 alpha 逐像素回贴 + 半透明去混合 + 84 drawable UV 覆盖校验 0 失败 + headless 参数扫描与基座 25/3/54 逐位一致）；AI 二创仅本机使用（CATALOG.md 注明）
+- 修复：/app 路由 .html MIME（曾触发浏览器下载）
+
 ## 1.2.0 (2026-09-24)
 
 - 实验性·陀螺仪视差：DeviceOrientation（iOS 需手势授权）→ EMA 平滑 + 开启时校准正中姿势 → ParamAngle/BodyAngle/EyeBall + 模型位置偏移，营造"角色在屏幕玻璃后"的立体错觉；⚙ 实验区开关（与视线追踪并排）；合成方向事件 e2e 15/15

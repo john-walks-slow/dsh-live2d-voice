@@ -74,4 +74,16 @@ const dts = [
 ].join("\n");
 await writeFile("lib/types/client/index.d.ts", dts, "utf8");
 
-console.log("build complete: lib/index.js + lib/client.js");
+// Standalone entry: /live2d-voice/app — fully self-contained (react, pixi,
+// live2d all inlined; no host runtime services exist on that page).
+await build({
+	entryPoints: ["src/client/standalone.tsx"],
+	bundle: true,
+	format: "iife",
+	platform: "browser",
+	target: ["es2022"],
+	minify: true,
+	outfile: "lib/standalone.js",
+	loader: { ".ts": "ts", ".tsx": "tsx" },
+});
+console.log("build complete: lib/index.js + lib/client.js + lib/standalone.js");

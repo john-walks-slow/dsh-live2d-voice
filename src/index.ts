@@ -22,7 +22,7 @@ import { installRoutes } from "./routes.js";
 import { applyCameraTool, CameraBridge } from "./camera-tool.js";
 
 export const name = "dsh-live2d-voice";
-export const inject = ["agents", "llm", "attachments"];
+export const inject = ["agents", "llm", "attachments", "sessionController"];
 
 export function apply(ctx: Context): () => void {
 	const hub = new SseHub();

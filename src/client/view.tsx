@@ -521,9 +521,10 @@ export function Live2DView(props: ViewProps) {
 				// The client channel emits no SSE user line — mirror it locally.
 				pushSubtitle("user", text);
 			} else {
-				// Fallback: plugin host route (requires an already-live agent);
-				// it emits the user subtitle over SSE itself.
-				await postMessage(sessionId, text);
+				// Fallback: plugin host route (cold-resumes the session via the
+				// session controller and supports steer); it emits the user
+				// subtitle over SSE itself.
+				await postMessage(sessionId, text, mode);
 			}
 			// A new turn is coming — release any barge-in muzzle.
 			engineRef.current?.unmuzzle();

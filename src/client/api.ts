@@ -50,11 +50,11 @@ export async function saveConfig(patch: Partial<PublicConfig> & { apiKeys?: stri
 	return (await response.json()) as { config: PublicConfig };
 }
 
-export async function postMessage(sessionId: string, text: string): Promise<void> {
+export async function postMessage(sessionId: string, text: string, mode: "queue" | "steer" = "queue"): Promise<void> {
 	const response = await fetch("/live2d-voice/message", {
 		method: "POST",
 		headers: { "content-type": "application/json" },
-		body: JSON.stringify({ sessionId, text }),
+		body: JSON.stringify({ sessionId, text, mode }),
 	});
 	if (!response.ok) {
 		const body = (await response.json().catch(() => ({}))) as { message?: string };
