@@ -409,13 +409,12 @@ export function Live2DView(props: ViewProps) {
 				lastLevelAtRef.current = now;
 				lastLevelRef.current = level;
 				setMicLevel(level);
-				// Barge-in: talking over the character silences it. When a
-				// segment is in flight the whole turn gets muzzled (its
-				// remaining sentences must not resume over the user); an
-				// isolated loud blip only stops the current sentence.
+				// Barge-in: talking over the character silences it — the whole
+				// turn gets muzzled (its remaining sentences must not resume
+				// over the user). engine.muzzle() carries its own 8s safety
+				// that re-allows audio when no segment ever settles.
 				if (engineRef.current?.speaking() && MicCapture.isBargeLevel(level)) {
-					if (micRef.current?.speechActive) engineRef.current.muzzle();
-					else engineRef.current.stop();
+					engineRef.current.muzzle();
 					activeUtterance.current = ""; // Drop the rest of its audio too.
 				}
 			},
@@ -519,7 +518,7 @@ export function Live2DView(props: ViewProps) {
 				</div>
 			)}
 
-			<SubtitleOverlay lines={subtitles} visible={subtitlesOn} />
+			<SubtitleOverlay lines={subtitles} visible={subtitlesOn} raised={micState === "listening" || micState === "requesting"} />
 
 			{micState === "listening" && (
 				<div className="lv-micbar">
@@ -559,7 +558,7 @@ export function Live2DView(props: ViewProps) {
 				</form>
 			)}
 
-			{toast && <div className="lv-toast">{toast}</div>}
+			{toast && <div className={`lv-toast${micState === "listening" || micState === "requesting" ? " lv-toast-raised" : ""}`}>{toast}</div>}
 
 			<Hud
 				faded={faded}

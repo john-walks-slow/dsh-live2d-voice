@@ -90,7 +90,7 @@ pnpm install && sv restart dsh   # 重启 dsh 生效
 | `sttLanguage` | `"auto"` | 语音识别语言；auto 用火山 `enable_auto_lang` 自动检测 |
 | `speechLanguage` | `"ja"` | 角色说话语言，注入"始终用 X 语言交流"指令 |
 | `subtitleLanguage` | `"zh"` | 角色台词的翻译目标语言（`off` 关闭；与会话生效的 `speechLanguage` 相同或 `speechLanguage=auto` 时可能整句透传，按需配置；可覆盖于 workspaces） |
-| `emotionMap` | 8 情绪默认表 | 标签 → 表情索引/名称 |
+| `emotionMap` | 9 情绪默认表 | 标签 → 表情索引/名称（neutral/joy/sappiness/sadness/anger/surprise/fear/disgust/shy） |
 | `speechPrompt` | `""` | 自定义提示词，仅语音模式生效（HUD ⚙ 里也能编辑） |
 | `workspaces` | `{}` | per-workspace 覆盖：`{ "<工作区绝对路径>": { voiceId, modelPath, modelSelection, speechLanguage, sttLanguage, subtitleLanguage, speechPrompt, emotionMap 任选 } }`；凭证类字段只在全局层 |
 
@@ -189,7 +189,9 @@ npm run typecheck
 npm run build      # lib/index.js (host ESM) + lib/client.js (浏览器 bundle)
 node e2e/verify-live.mjs     # Phase 1 端到端回归 21 项（需 e2e 实例跑在 4188，见 dsh-e2e skill）
 node e2e/verify-voice.mjs    # Phase 2 语音闭环 17 项（同上；需 /tmp/t-zh-16k.pcm 与 /tmp/t-ja-16k.pcm 测试音频）
-node e2e/verify-phase3.mjs   # Phase 3 翻译/多模型/workspace 17 项（需 /root/.dsh-e2e-test-models 多模型夹具）
+node e2e/verify-phase3.mjs   # Phase 3 翻译/多模型/workspace 19 项（需 /root/.dsh-e2e-test-models 多模型夹具）
+
+> 语音/Phase 3 脚本默认硬编码本机 playwright-core（/root/projects/camoufox-mcp/node_modules）与 chromium 路径；`E2E_URL`/`E2E_CFG` 环境变量可覆盖实例地址与配置文件。
 ```
 
 源码结构：`src/`（host：config/events/tts/sentence/speech/asr/system-prompt/routes）+ `src/client/`（view/engine/model/hud/subtitle/mic/api）。构建产物 `lib/client.js` 是浏览器 bundle（react/pixi/live2d 打包进去，`@deepseek-ai/*` external 由宿主提供）。

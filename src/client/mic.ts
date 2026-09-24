@@ -126,10 +126,6 @@ export class MicCapture {
 		return this.running;
 	}
 
-	get speechActive(): boolean {
-		return this.inSpeech;
-	}
-
 	async start(): Promise<void> {
 		if (this.running) return;
 		this.stream = await navigator.mediaDevices.getUserMedia({

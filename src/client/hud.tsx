@@ -44,7 +44,7 @@ export function Hud(props: HudProps) {
 	const promptValue = draftPrompt ?? props.speechPrompt;
 	const micOn = props.micState === "listening" || props.micState === "requesting";
 	return (
-		<div className={`lv-hud${props.faded ? " lv-faded" : ""}`}>
+		<div className={`lv-hud${props.faded ? " lv-faded" : ""}${micOn ? " lv-mic-live" : ""}`}>
 			<button
 				type="button"
 				className={`lv-btn lv-mic${micOn ? " lv-on lv-mic-live" : ""}`}

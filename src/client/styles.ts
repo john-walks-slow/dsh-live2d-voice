@@ -16,7 +16,7 @@ const CSS = `
 /* ---------- HUD capsule ---------- */
 .lv-hud {
 	position: absolute;
-	bottom: 84px;
+	bottom: 140px;
 	left: 50%;
 	transform: translateX(-50%);
 	display: flex;
@@ -33,6 +33,8 @@ const CSS = `
 }
 .lv-hud.lv-faded { opacity: 0.16; }
 .lv-hud.lv-faded:hover { opacity: 1; }
+/* While the mic is live the stop control must stay findable. */
+.lv-hud.lv-mic-live.lv-faded { opacity: 0.75; }
 .lv-btn {
 	width: 38px;
 	height: 38px;
@@ -119,10 +121,11 @@ const CSS = `
 
 /* ---------- subtitles ---------- */
 .lv-subs {
+	transition: bottom 0.25s ease;
 	position: absolute;
 	left: 50%;
 	transform: translateX(-50%);
-	bottom: 146px;
+	bottom: 200px;
 	width: min(72%, 640px);
 	text-align: center;
 	z-index: 4;
@@ -131,6 +134,9 @@ const CSS = `
 	flex-direction: column;
 	gap: 4px;
 }
+.lv-subs.lv-subs-raised { bottom: 266px; }
+.lv-toast-raised { bottom: 266px; }
+
 .lv-sub {
 	color: #f0f2fa;
 	text-shadow: 0 1px 6px rgba(0, 0, 0, 0.85), 0 0 2px rgba(0, 0, 0, 0.9);
@@ -151,7 +157,7 @@ const CSS = `
 /* ---------- voice input ---------- */
 .lv-micbar {
 	position: absolute;
-	bottom: 196px;
+	bottom: 204px;
 	left: 50%;
 	transform: translateX(-50%);
 	display: flex;
@@ -246,7 +252,7 @@ const CSS = `
 /* ---------- text input ---------- */
 .lv-input {
 	position: absolute;
-	bottom: 196px;
+	bottom: 204px;
 	left: 50%;
 	transform: translateX(-50%);
 	width: min(72%, 640px);
@@ -304,7 +310,7 @@ const CSS = `
 .lv-card b { color: #eef0f8; }
 .lv-toast {
 	position: absolute;
-	bottom: 146px;
+	bottom: 200px;
 	left: 50%;
 	transform: translateX(-50%);
 	padding: 9px 16px;

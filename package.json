@@ -1,6 +1,6 @@
 {
 	"name": "dsh-live2d-voice",
-	"version": "0.3.0",
+	"version": "1.0.0",
 	"description": "Live2D session view with realtime voice: continuous voice input, subtitle translation, multi-model catalog, per-workspace overrides",
 	"type": "module",
 	"main": "./lib/index.js",
@@ -16,7 +16,8 @@
 		"lib/types",
 		"assets/cubism4/live2dcubismcore.min.js",
 		"cordis.patch.yml",
-		"README.md"
+		"README.md",
+		"LICENSE"
 	],
 	"scripts": {
 		"build": "node build.mjs",

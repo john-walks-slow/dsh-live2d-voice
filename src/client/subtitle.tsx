@@ -17,7 +17,7 @@ export interface SubtitleLine {
 
 export const SUBTITLE_TTL_MS = 14_000;
 
-export function SubtitleOverlay(props: { lines: SubtitleLine[]; visible: boolean }) {
+export function SubtitleOverlay(props: { lines: SubtitleLine[]; visible: boolean; raised?: boolean }) {
 	if (!props.visible) return null;
 	const live = props.lines.filter((line) => Date.now() - line.at < SUBTITLE_TTL_MS);
 	const current = live[live.length - 1];
@@ -29,7 +29,7 @@ export function SubtitleOverlay(props: { lines: SubtitleLine[]; visible: boolean
 		</p>
 	);
 	return (
-		<div className="lv-subs">
+		<div className={`lv-subs${props.raised ? " lv-subs-raised" : ""}`}>
 			{older.map((line) =>
 				render(line, `lv-sub lv-old${line.role === "user" ? " lv-user" : ""}${line.role === "error" ? " lv-err" : ""}`),
 			)}
