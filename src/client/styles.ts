@@ -138,8 +138,32 @@ body[data-live2d-active="true"] [class*="taskBoard"] {
 	display: inline-block;
 	max-width: 100%;
 	margin: 0 auto;
-	animation: lv-slide-up 0.24s cubic-bezier(0.2, 0.8, 0.2, 1);
+	animation: lv-sub-enter 0.28s cubic-bezier(0.16, 1, 0.3, 1);
+	will-change: transform, opacity;
 }
+
+/* Third-person: transient "酝酿中…" placeholder while the player line is
+   being polished — grayed, italic, clearly not a real line yet. */
+.lv-sub-pending {
+	opacity: 0.55;
+	font-style: italic;
+}
+
+/* Third-person: the player avatar's lines carry a small "你" badge so the
+   two characters stay distinguishable at a glance. */
+.lv-sub-speaker {
+	display: inline-block;
+	font-size: 10px;
+	font-weight: 600;
+	line-height: 1;
+	padding: 3px 5px;
+	margin-right: 8px;
+	vertical-align: -0.1em;
+	border-radius: 6px;
+	background: color-mix(in srgb, var(--lv-accent) 18%, transparent);
+	color: var(--lv-accent);
+}
+
 
 .lv-sub-old {
 	font-size: 13px;
@@ -149,6 +173,7 @@ body[data-live2d-active="true"] [class*="taskBoard"] {
 	border: none;
 	box-shadow: none;
 	backdrop-filter: none;
+	transition: opacity 0.25s ease, transform 0.25s ease;
 }
 
 .lv-sub-user {
@@ -901,6 +926,17 @@ body[data-live2d-active="true"] [class*="taskBoard"] {
 }
 
 /* Animations */
+@keyframes lv-sub-enter {
+	from {
+		opacity: 0;
+		transform: translateY(10px) scale(0.97);
+	}
+	to {
+		opacity: 1;
+		transform: translateY(0) scale(1);
+	}
+}
+
 @keyframes lv-slide-up {
 	from { opacity: 0; transform: translate(-50%, 8px); }
 	to   { opacity: 1; transform: translate(-50%, 0); }

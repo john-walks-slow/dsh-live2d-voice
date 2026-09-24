@@ -97,6 +97,9 @@ function liveSection(config: PluginConfig): string {
 		`  ${emotions.map((emotion) => `[${emotion}]`).join(" ")}`,
 		"- 标签只用于控制角色表情，不会被朗读；没有情绪变化时省略标签即可。",
 	];
+	if (config.thirdPerson) {
+		lines.push("- 当前为第三人称模式：用户的消息由其角色化身说出（可能已经过润色或翻译），请把它当作角色扮演中对方的台词来回应。");
+	}
 	const language = speechLanguageInstruction(config.speechLanguage, config.subtitleLanguage);
 	if (language) lines.push(`- ${language}`);
 	const custom = config.speechPrompt.trim();

@@ -1,0 +1,81 @@
+{
+  "checks": [
+    {
+      "id": "redo.session",
+      "ok": true,
+      "note": "session-95bcd03e-0f8"
+    },
+    {
+      "id": "redo.stage",
+      "ok": true,
+      "note": "dual stage ready (data-lv-player=\"deepseek-chan\")"
+    },
+    {
+      "id": "F3a.gearToggle",
+      "ok": true,
+      "note": "润色 toggled off via ⚙ (playerPolish=false)"
+    },
+    {
+      "id": "F3a2.inputReady",
+      "ok": true,
+      "note": "input reopened after ⚙ (exists=true, active=INPUT)"
+    },
+    {
+      "id": "F3b.rawSpoken",
+      "ok": true,
+      "note": "player speaks raw verbatim: \"今天天气不错，我出去买了杯咖啡\" (audio×111, typed=\"今天天气不错，我出去买了杯咖啡\")"
+    },
+    {
+      "id": "F3c.logRaw",
+      "ok": true,
+      "note": "session log records the raw line"
+    },
+    {
+      "id": "F4a.toggleOff",
+      "ok": true,
+      "note": "player avatar unmounted (true), thirdPerson=false"
+    },
+    {
+      "id": "F4b.gearCollapsed",
+      "ok": true,
+      "note": "⚙ keeps 第三人称 h4, switch=false, sub-controls collapsed=true"
+    },
+    {
+      "id": "F4a2.inputReady",
+      "ok": true,
+      "note": "input reopened after ⚙ (exists=true, active=INPUT)"
+    },
+    {
+      "id": "F4c.noPlayerEvents",
+      "ok": true,
+      "note": "no player SSE events after off (0)"
+    },
+    {
+      "id": "F4d.firstPerson",
+      "ok": true,
+      "note": "first-person chain: assistant replied \"あ、切り替わったんですね、了解です。…\" (+9171ms, audio×63, hostUserEcho=none)"
+    },
+    {
+      "id": "F4e.logRaw",
+      "ok": true,
+      "note": "log records the raw first-person line"
+    },
+    {
+      "id": "Z.pageErrors",
+      "ok": true,
+      "note": "pageerror count=0"
+    }
+  ],
+  "texts": {},
+  "timings": {
+    "f3": {
+      "tEnter": 1790290149738,
+      "tSub": 3878,
+      "tAsstSub": 12719
+    },
+    "f4": {
+      "tEnter": 1790290167587,
+      "tAsstSub": 9171
+    }
+  }
+}

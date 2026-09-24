@@ -61,19 +61,46 @@ export interface Live2DHandle {
 	getEyePosition(): { x: number; y: number };
 	setLook(camera: { dx: number; dy: number } | null, gyro: { dx: number; dy: number } | null): void;
 	setLookParams(params: Partial<LookParams>): void;
+	/**
+	 * Update the stage layout (third-person mode shifts the two avatars
+	 * apart) and refit — no model reload.
+	 */
+	setLayout(layout: Partial<StageLayout>): void;
 	destroy(): void;
 }
 
-export function isCubismCoreLoaded(): boolean {
-	return typeof (globalThis as { Live2DCubismCore?: unknown }).Live2DCubismCore === "object";
+/**
+ * Where a model sits on the stage: the horizontal anchor as a fraction of
+ * the container width (0.5 = centered) and a scale multiplier. Third-person
+ * mode puts the player's avatar left (~0.28) and the AI's right (~0.72),
+ * both slightly smaller.
+ */
+export interface StageLayout {
+	xFraction: number;
+	scaleGain: number;
 }
 
-export async function mountModel(
-	container: HTMLElement,
-	modelUrl: string,
-	getMouth: () => number,
-	onContextLost?: () => void,
-): Promise<Live2DHandle> {
+export function isCubismCoreLoaded(): boolean {
+	const g = globalThis as { Live2DCubismCore?: unknown; Live2D?: unknown };
+	return typeof g.Live2DCubismCore === "object" || typeof g.Live2D === "object";
+}
+
+/**
+ * A shared Pixi application (one canvas, one WebGL context) that can host
+ * several Live2D models.
+ *
+ * Why shared: the Cubism SDK keeps a process-global WebGLManager whose `gl`
+ * pointer is captured by the most recent context. Two Pixi applications =
+ * two WebGL contexts, and the earlier model's per-frame texture binds then
+ * fail with "object does not belong to this context" (the first avatar
+ * renders blank). One application hosting both avatars keeps Cubism happy.
+ */
+export interface SharedStage {
+	app: Application;
+	canvas: HTMLCanvasElement;
+}
+
+export function createLive2DStage(container: HTMLElement): SharedStage {
 	const dpr = typeof window !== "undefined" ? (window.devicePixelRatio || 1) : 1;
 	const app = new Application({
 		backgroundAlpha: 0,
@@ -84,6 +111,23 @@ export async function mountModel(
 	});
 	const canvas = app.view as unknown as HTMLCanvasElement;
 	container.appendChild(canvas);
+	return { app, canvas };
+}
+
+export async function mountModel(
+	container: HTMLElement,
+	modelUrl: string,
+	getMouth: () => number,
+	onContextLost?: () => void,
+	layout?: Partial<StageLayout>,
+	shared?: SharedStage,
+): Promise<Live2DHandle> {
+	// Owner mode creates (and later destroys) its own application; shared
+	// mode reuses one — the model is just added to that stage and its
+	// destroy never touches the application or canvas.
+	const app = shared?.app ?? createLive2DStage(container).app;
+	const canvas = app.view as unknown as HTMLCanvasElement;
+	const stageLayout: StageLayout = { xFraction: 0.5, scaleGain: 1, ...layout };
 
 	const onWebglLost = (e: Event) => {
 		e.preventDefault();
@@ -128,10 +172,12 @@ export async function mountModel(
 		logger.info(`Live2D model loaded successfully (${model.internalModel.originalWidth}x${model.internalModel.originalHeight})`);
 	} catch (error) {
 		logger.error(`Failed to load Live2D model from ${modelUrl}`, error);
-		try {
-			app.destroy(true, { children: true });
-		} catch {}
-		if (canvas.parentNode) canvas.remove();
+		if (!shared) {
+			try {
+				app.destroy(true, { children: true });
+			} catch {}
+			if (canvas.parentNode) canvas.remove();
+		}
 		throw error;
 	}
 	app.stage.addChild(model as never);
@@ -182,9 +228,9 @@ export async function mountModel(
 		const height = container.clientHeight;
 		if (width === 0 || height === 0) return;
 		const internal = model.internalModel;
-		baseScale = Math.min(width / internal.originalWidth, height / internal.originalHeight) * 0.98;
+		baseScale = Math.min(width / internal.originalWidth, height / internal.originalHeight) * 0.98 * stageLayout.scaleGain;
 		model.anchor.set(0.5, 0.5);
-		baseX = width / 2;
+		baseX = width * stageLayout.xFraction;
 		baseY = height / 2 + height * 0.02;
 		applyTransform();
 	};
@@ -384,12 +430,16 @@ export async function mountModel(
 		applyTransform();
 	};
 
-	stage.addEventListener("pointerdown", onPointerDown);
-	stage.addEventListener("pointermove", onPointerMove);
-	stage.addEventListener("pointerup", onPointerUp);
-	stage.addEventListener("pointercancel", onPointerUp);
-	stage.addEventListener("wheel", onWheel, { passive: false });
-	stage.addEventListener("dblclick", onDblClick);
+	// Shared-mode models are pure visuals (the player avatar): the owner
+	// model's listeners already handle all interaction on the stage.
+	if (!shared) {
+		stage.addEventListener("pointerdown", onPointerDown);
+		stage.addEventListener("pointermove", onPointerMove);
+		stage.addEventListener("pointerup", onPointerUp);
+		stage.addEventListener("pointercancel", onPointerUp);
+		stage.addEventListener("wheel", onWheel, { passive: false });
+		stage.addEventListener("dblclick", onDblClick);
+	}
 
 	return {
 		setExpression(expression) {
@@ -422,25 +472,40 @@ export async function mountModel(
 			lookParams = { ...lookParams, ...params };
 			applyTransform();
 		},
+		setLayout(next) {
+			Object.assign(stageLayout, next);
+			fit();
+		},
 		destroy() {
 			canvas.removeEventListener("webglcontextlost", onWebglLost);
 			canvas.removeEventListener("webglcontextrestored", onWebglRestored);
-			stage.removeEventListener("pointerdown", onPointerDown);
-			stage.removeEventListener("pointermove", onPointerMove);
-			stage.removeEventListener("pointerup", onPointerUp);
-			stage.removeEventListener("pointercancel", onPointerUp);
-			stage.removeEventListener("wheel", onWheel);
-			stage.removeEventListener("dblclick", onDblClick);
+			if (!shared) {
+				stage.removeEventListener("pointerdown", onPointerDown);
+				stage.removeEventListener("pointermove", onPointerMove);
+				stage.removeEventListener("pointerup", onPointerUp);
+				stage.removeEventListener("pointercancel", onPointerUp);
+				stage.removeEventListener("wheel", onWheel);
+				stage.removeEventListener("dblclick", onDblClick);
+			}
 			observer.disconnect();
 			try {
 				model.destroy();
 			} catch (err) {
 				logger.warn("Live2DModel.destroy threw error, safely suppressed", err);
 			}
+			if (shared) return; // the owner owns the application + canvas
+			try {
+				const gl = (app.renderer as unknown as { gl?: WebGLRenderingContext })?.gl;
+				const ext = gl?.getExtension("WEBGL_lose_context");
+				if (ext) ext.loseContext();
+			} catch {}
 			try {
 				app.destroy(true, { children: true });
 			} catch (err) {
 				logger.warn("Pixi Application.destroy threw error, safely suppressed", err);
+			}
+			if (canvas.parentNode) {
+				canvas.remove();
 			}
 		},
 	};

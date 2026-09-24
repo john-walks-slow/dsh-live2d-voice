@@ -107,6 +107,14 @@ export interface PluginConfig {
 	 */
 	subtitleLanguage: string;
 	/**
+	 * Sentence-by-sentence subtitles/TTS (default on): each sentence gets its
+	 * own Fish TTS call and its own subtitle line anchored to that audio
+	 * (voice–subtitle sync). When off, sentences are batched into paragraph
+	 * chunks — one TTS call per chunk, one subtitle line per chunk (smoother
+	 * speech, subtitles appear in larger blocks).
+	 */
+	sentenceSubtitles: boolean;
+	/**
 	 * User-authored extra instructions appended to the Live2D speech-format
 	 * system-prompt section (e.g. "总是用日语自然交流"). Live-mode only — the
 	 * exit reminder tells the model these constraints are gone in chat mode.
@@ -126,6 +134,27 @@ export interface PluginConfig {
 	gyroParallax: boolean;
 	/** Emotion tag → model expression name/index map. */
 	emotionMap: Record<string, number | string>;
+	/**
+	 * Third-person mode: the user's input is first polished into the player
+	 * persona's spoken line (optional), spoken by the player's own avatar
+	 * (own model + voice), and only then answered by the AI's avatar.
+	 */
+	thirdPerson: boolean;
+	/** The player avatar's model (a catalog entry name); empty = voice only. */
+	playerModelSelection: string;
+	/**
+	 * The player avatar's Fish Audio voice. Defaults to a preset distinct
+	 * from the AI's default voice so the two characters sound different.
+	 */
+	playerVoiceId: string;
+	/** Polish/translate the user's input into the player persona's line. */
+	playerPolish: boolean;
+	/** The language the player avatar speaks (polish target); auto = keep. */
+	playerSpeechLanguage: string;
+	/** The player persona description fed to the polish prompt. */
+	playerPrompt: string;
+	/** Emotion tag → player model expression name/index map. */
+	playerEmotionMap: Record<string, number | string>;
 	/**
 	 * When set, entering the Live2D view automatically switches the session
 	 * to this model; exiting restores the previous selection.  Null/undefined
@@ -197,10 +226,18 @@ export const DEFAULT_CONFIG: PluginConfig = {
 	asrCredentialsFile: join(homedir(), ".config/volc-asr/credentials.json"),
 	speechLanguage: "ja",
 	subtitleLanguage: "zh",
+	sentenceSubtitles: true,
 	speechPrompt: "",
 	eyeTracking: false,
 	gyroParallax: false,
 	emotionMap: { ...DEFAULT_EMOTION_MAP },
+	thirdPerson: false,
+	playerModelSelection: "",
+	playerVoiceId: "ed3a1c523b524870a85a5a76cb1e0c3d",
+	playerPolish: true,
+	playerSpeechLanguage: "zh",
+	playerPrompt: "",
+	playerEmotionMap: { ...DEFAULT_EMOTION_MAP },
 	workspaces: {},
 	liveModel: null,
 };
@@ -218,6 +255,7 @@ export function loadConfig(): PluginConfig {
 			...structuredClone(DEFAULT_CONFIG),
 			...raw,
 			emotionMap: { ...DEFAULT_EMOTION_MAP, ...(raw.emotionMap ?? {}) },
+			playerEmotionMap: { ...DEFAULT_EMOTION_MAP, ...(raw.playerEmotionMap ?? {}) },
 			workspaces: raw.workspaces ?? {},
 			apiKeys: Array.isArray(raw.apiKeys) ? raw.apiKeys.filter((k) => typeof k === "string" && k) : [],
 		};
@@ -304,6 +342,51 @@ export const MODEL_LABELS: Record<string, string> = {
 	unitychan: "Unity酱",
 	wanko: "碗中小年糕 · 犬系吉祥物",
 	zundamon: "俊达萌 · 豆粉吉祥物",
+	// moc2 老格式（Cubism 2.1，食物语拆包重制 settings）
+	fotiaoqiang: "佛跳墙 · 闽菜拟人（旧版）",
+	qingtuan: "青团 · 点心拟人（旧版）",
+	sixiwangzi: "四喜丸子 · 鲁菜拟人（旧版）",
+	lonjingxiaren: "龙井虾仁 · 浙菜拟人（旧版）",
+	jiaozi: "饺子 · 面点拟人（旧版）",
+	zongzi: "粽子 · 端午拟人（旧版）",
+	// 游戏拆包 · 少女前线（moc3 normal 形态，仅个人学习）
+	hk416: "HK416 · 战术少女",
+	m4a1: "M4A1 · 战术少女",
+	ar15: "AR-15 · 战术少女",
+	sopmod2: "SOPMOD II · 战术少女",
+	type95: "95式 · 战术少女",
+	vector: "Vector · 战术少女",
+	wa2000: "WA2000 · 战术少女",
+	g11: "G11 · 战术少女",
+	g36: "G36 · 战术少女",
+	m16a1: "M16A1 · 战术少女",
+	ump45: "UMP45 · 战术少女",
+	g41: "G41 · 战术少女",
+	// 游戏拆包 · 素晴日 Fantastic Days（moc3，仅个人学习）
+	aqua: "阿库娅 · 水之女神",
+	"aqua-priest": "阿库娅 · 祭司装",
+	megumin: "惠惠 · 爆裂魔法使",
+	"megumin-cape": "惠惠 · 披风装",
+	darkness: "达克妮丝 · 十字骑士",
+	"darkness-armor": "达克妮丝 · 骑士装甲",
+	wiz: "维兹 · 魔道具店长",
+	yunyun: "悠悠 · 红魔族",
+	"yunyun-casual": "悠悠 · 便服",
+	eris: "厄里斯 · 幸运女神",
+	chris: "克里斯 · 盗贼",
+	// 游戏拆包 · 碧蓝航线（moc3，仅个人学习）
+	enterprise: "企业 · 碧蓝航线",
+	belfast: "贝尔法斯特 · 碧蓝航线",
+	laffey: "拉菲 · 碧蓝航线",
+	ayanami: "绫波 · 碧蓝航线",
+	taihou: "大凤 · 碧蓝航线",
+	atago: "爱宕 · 碧蓝航线",
+	takao: "高雄 · 碧蓝航线",
+	bismarck: "俾斯麦 · 碧蓝航线",
+	eugen: "欧根亲王 · 碧蓝航线",
+	zeppelin: "齐柏林伯爵 · 碧蓝航线",
+	unicorn: "独角兽 · 碧蓝航线",
+	shinano: "信浓 · 碧蓝航线",
 };
 
 export interface ModelEntry {
@@ -313,12 +396,48 @@ export interface ModelEntry {
 	label: string;
 	/** File name of the .model3.json, relative to the model root. */
 	relative: string;
+	/** 渲染格式：moc3 (Cubism 3+/4/5) 或 moc2 (Cubism 2.1 老格式)。 */
+	kind: "moc2" | "moc3";
+	/** 分类（一级目录名）；模型直接位于 modelPath 下时为 undefined。 */
+	group?: string;
+}
+
+/** 分类显示名：一级目录名 → 中文名（未命中回退目录名）。 */
+export const GROUP_LABELS: Record<string, string> = {
+	official: "官方示例",
+	brand: "品牌拟人",
+	"game-ripped-food": "游戏拆包 · 食物语",
+	"game-girls-frontline": "游戏拆包 · 少女前线",
+	"game-fantastic-days": "游戏拆包 · 素晴日",
+	"game-azur-lane": "游戏拆包 · 碧蓝航线",
+};
+
+/** 探测一个目录的模型设置文件（moc3 优先，其次任意 moc2 设置 JSON）。 */
+function findModelSettings(dirPath: string): { file: string; kind: "moc2" | "moc3" } | null {
+	const entry = readdirSync(dirPath).find((file) => file.endsWith(".model3.json"));
+	if (entry) return { file: entry, kind: "moc3" };
+	for (const file of readdirSync(dirPath).filter((f) => /\.json$/i.test(f))) {
+		try {
+			const raw = JSON.parse(readFileSync(join(dirPath, file), "utf-8"));
+			if (raw && raw.type === "Live2D Model Setting" && typeof raw.model === "string" && /\.moc$/i.test(raw.model)) {
+				return { file, kind: "moc2" };
+			}
+		} catch {
+			// not a moc2 settings file — try the next one
+		}
+	}
+	return null;
 }
 
 /**
- * Scan modelPath into a catalog. A flat directory (one or more .model3.json
- * files directly inside) keeps Phase 1 behavior; otherwise every
- * first-level subdirectory containing a .model3.json becomes a model.
+ * Scan modelPath into a catalog. Layout rules:
+ * - flat: a .model3.json directly in modelPath → each file is a model;
+ * - one level: every first-level subdirectory holding a settings file is a model;
+ * - two levels (分类): a first-level directory holding no settings file of its
+ *   own is a *category* — each of its subdirectories holding a settings file
+ *   becomes a model with `group` = category name.
+ * A broken symlink or unreadable directory must not wipe the whole catalog —
+ * probe entries individually and skip the bad ones.
  */
 export function resolveModelCatalog(config: PluginConfig): ModelEntry[] {
 	if (!config.modelPath) return [];
@@ -333,18 +452,39 @@ export function resolveModelCatalog(config: PluginConfig): ModelEntry[] {
 	if (direct.length > 0) {
 		for (const entry of direct) {
 			const name = entry.replace(/\.model3\.json$/, "");
-			models.push({ name, label: MODEL_LABELS[name] ?? name, relative: entry });
+			models.push({ name, label: MODEL_LABELS[name] ?? name, relative: entry, kind: "moc3" });
 		}
 		return models;
 	}
 	for (const dir of rootEntries.slice().sort((a, b) => a.localeCompare(b))) {
-		// One broken symlink or unreadable directory must not wipe the
-		// whole catalog — probe entries individually and skip the bad ones.
 		try {
 			const dirPath = join(config.modelPath, dir);
 			if (!statSync(dirPath).isDirectory()) continue;
-			const entry = readdirSync(dirPath).find((file) => file.endsWith(".model3.json"));
-			if (entry) models.push({ name: dir, label: MODEL_LABELS[dir] ?? dir, relative: `${dir}/${entry}` });
+			// 1) the dir itself is a model
+			const own = findModelSettings(dirPath);
+			if (own) {
+				models.push({ name: dir, label: MODEL_LABELS[dir] ?? dir, relative: `${dir}/${own.file}`, kind: own.kind });
+				continue;
+			}
+			// 2) the dir is a category — one level deeper
+			for (const leaf of readdirSync(dirPath).sort((a, b) => a.localeCompare(b))) {
+				try {
+					const leafPath = join(dirPath, leaf);
+					if (!statSync(leafPath).isDirectory()) continue;
+					const found = findModelSettings(leafPath);
+					if (found) {
+						models.push({
+							name: leaf,
+							label: MODEL_LABELS[leaf] ?? leaf,
+							relative: `${dir}/${leaf}/${found.file}`,
+							kind: found.kind,
+							group: dir,
+						});
+					}
+				} catch {
+					continue;
+				}
+			}
 		} catch {
 			continue;
 		}

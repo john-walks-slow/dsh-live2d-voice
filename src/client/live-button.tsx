@@ -10,9 +10,9 @@
  * model generates no reply. The Live2D speech-format system prompt is
  * injected automatically once the view's SSE stream is up.
  *
- * On active sessions the button hides itself (the header tablist exists, so
- * the Live2D tab is the normal way to switch). The button shows a "selected"
- * visual state only while the Live2D tab is the active view.
+ * On active sessions the button hides itself (the Live2D tab exists, so
+ * the header tablist is the normal way to switch). The button shows a
+ * "selected" visual state only while the Live2D tab is the active view.
  *
  * Implementation note: child slot entries do not receive the parent's
  * `selectView` injection, so we rely on DOM queries — finding the tab by its
@@ -115,13 +115,17 @@ async function enterLiveMode(sessionId: string): Promise<void> {
 export const LiveButton: FC<LiveButtonProps> = (props) => {
 	const [active, setActive] = useState(false);
 	const [entering, setEntering] = useState(false);
-	const [hasTabs, setHasTabs] = useState(false);
+	const [liveTabExists, setLiveTabExists] = useState(false);
 
-	// Poll the DOM: track whether the header tablist exists (active session)
-	// and whether the Live2D tab is the current view.
+	// Poll the DOM: track whether the Live2D tab exists (active session —
+	// the header tablist is the normal way in, so we hide) and whether it is
+	// the currently selected view.  Note: we check for the Live2D tab
+	// specifically, never a global tablist, because other parts of the DSH
+	// shell may contain unrelated tablists that would wrongly hide this
+	// button on the hero page.
 	useEffect(() => {
 		const check = () => {
-			setHasTabs(document.querySelector('[role="tablist"]') !== null);
+			setLiveTabExists(findLive2DTab() !== null);
 			setActive(isLive2DActive());
 		};
 		check();
@@ -130,9 +134,7 @@ export const LiveButton: FC<LiveButtonProps> = (props) => {
 	}, []);
 
 	const handleClick = useCallback(() => {
-		// Active session with visible tabs: the LiveButton only shows on the
-		// hero page, but when it is visible and a tab exists (e.g. just after
-		// activation), fall back to a direct tab click instead of re-injecting.
+		// Active session with a visible Live2D tab: toggle directly.
 		if (findLive2DTab()) {
 			if (isLive2DActive()) {
 				findFirstOtherTab()?.click();
@@ -153,10 +155,10 @@ export const LiveButton: FC<LiveButtonProps> = (props) => {
 			.finally(() => window.setTimeout(() => setEntering(false), 2000));
 	}, [props.sessionId]);
 
-	// Hide entirely on active sessions — the header tablist is the normal way
-	// in. Only render on hero/blank sessions (or in the brief window where
-	// the session just activated but the poll hasn't re-rendered yet).
-	if (hasTabs && !active) return null;
+	// Hide entirely once the Live2D tab exists — on active sessions the
+	// header tablist is the normal way in. Only the hero/blank page (no tab)
+	// shows this button.
+	if (liveTabExists) return null;
 
 	return (
 		<button

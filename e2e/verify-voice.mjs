@@ -146,8 +146,8 @@ page.on('websocket', (ws) => {
 const ev = (fn, ...args) => page.evaluate(fn, ...args);
 const sleep = (ms) => page.waitForTimeout(ms);
 const lvState = async () => JSON.parse(await ev(() => window.__lvState()));
-const subs = () => ev(() => JSON.stringify([...document.querySelectorAll('.lv-sub')].map((el) => ({
-  user: el.classList.contains('lv-user'), err: el.classList.contains('lv-err'), text: el.textContent,
+const subs = () => ev(() => JSON.stringify([...document.querySelectorAll('.lv-sub-card, .lv-sub-old')].map((el) => ({
+  user: el.classList.contains('lv-sub-user'), err: el.classList.contains('lv-sub-err'), text: el.textContent,
 }))));
 const micbar = () => ev(() => JSON.stringify({
   present: !!document.querySelector('.lv-micbar'),

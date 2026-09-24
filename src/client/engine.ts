@@ -10,7 +10,15 @@
  * The AudioContext is created lazily and starts suspended until a user
  * gesture; PCM arriving while suspended parks in a byte queue and is flushed
  * on resume.
+ *
+ * Third-person mode: chunks are tagged with their speaker (the AI's avatar
+ * or the player's). The engine tracks which speaker's audio is currently on
+ * the timeline; each model's mouth callback asks for its own speaker's
+ * envelope, so only the talking avatar moves its mouth while both share one
+ * playback queue.
  */
+
+import type { Speaker } from "./types.js";
 
 const SCHEDULE_AHEAD_SECONDS = 0.12;
 
@@ -31,8 +39,16 @@ export class SpeechEngine {
 	private muzzleTimer = 0;
 	/** Unscheduled raw PCM bytes (may split samples across SSE chunks). */
 	private pending: Uint8Array[] = [];
+	/** Host-side seq for each pending chunk (parallel to `pending`). */
+	private pendingSeqs: number[] = [];
+	/** Speaker for each pending chunk (parallel to `pending`). */
+	private pendingSpeakers: Speaker[] = [];
 	private carry: number[] = [];
 	private nextTime = 0;
+	/** Scheduled chunk start times, in playback order (for subtitle sync). */
+	private chunkStarts: Array<{ seq: number; startAt: number; speaker: Speaker }> = [];
+	/** Scheduled chunk spans per speaker (which avatar talks when). */
+	private speakerSpans: Array<{ speaker: Speaker; startAt: number; endAt: number }> = [];
 	private readonly sources = new Set<AudioBufferSourceNode>();
 	private mouth = 0;
 	private lastTick = 0;
@@ -56,13 +72,43 @@ export class SpeechEngine {
 		return this.sources.size > 0;
 	}
 
-	/** Current mouth-open value (0..1, smoothed envelope). */
-	mouthValue(): number {
+	/**
+	 * Current mouth-open value (0..1, smoothed envelope). With `speaker`
+	 * (third-person mode) it returns 0 unless that speaker's audio is the
+	 * one playing right now — each avatar animates its own mouth only while
+	 * it talks, even though both share one playback queue.
+	 */
+	mouthValue(speaker?: Speaker): number {
+		if (speaker !== undefined && speaker !== this.currentSpeaker()) return 0;
 		return this.mouth;
 	}
 
-	/** Enqueue one base64 PCM chunk. */
-	enqueueBase64(b64: string): void {
+	/**
+	 * Which avatar's audio occupies the timeline now. Chunks are scheduled
+	 * back-to-back; during a span it is that span's speaker, and in the tiny
+	 * gaps/silence between spans the previous speaker stands (its envelope
+	 * is ~0 there anyway).
+	 */
+	currentSpeaker(): Speaker {
+		if (!this.context || this.context.state !== "running" || this.speakerSpans.length === 0) return "assistant";
+		const now = this.context.currentTime;
+		// Prune spans that ended long ago (safety; stop() clears them all).
+		while (this.speakerSpans.length > 1 && this.speakerSpans[0].endAt < now - 30) this.speakerSpans.shift();
+		let current = this.speakerSpans[0].speaker;
+		for (const span of this.speakerSpans) {
+			if (span.startAt <= now) current = span.speaker;
+			else break;
+		}
+		return current;
+	}
+
+	/**
+	 * Enqueue one base64 PCM chunk. `seq` is the host-side audio sequence
+	 * number of this chunk (when provided) — recorded so the subtitle
+	 * scheduler can tell which chunk is playing now. `speaker` tags the
+	 * chunk's avatar (third-person mode; absent = assistant).
+	 */
+	enqueueBase64(b64: string, seq?: number, speaker: Speaker = "assistant"): void {
 		if (this.muzzled) return;
 		const binary = atob(b64);
 		const bytes = new Uint8Array(this.carry.length + binary.length);
@@ -71,8 +117,31 @@ export class SpeechEngine {
 		this.carry = [];
 		const usable = bytes.length - (bytes.length % 2);
 		if (usable < bytes.length) this.carry.push(bytes[usable]);
-		if (usable > 0) this.pending.push(bytes.subarray(0, usable));
+		if (usable > 0) {
+			this.pending.push(bytes.subarray(0, usable));
+			if (typeof seq === "number") this.pendingSeqs.push(seq);
+			this.pendingSpeakers.push(speaker);
+		}
 		this.pump();
+	}
+
+	/**
+	 * Highest audio seq of `speaker` whose chunk has already started
+	 * playing, or -1 when nothing has been scheduled/played yet (and -1
+	 * while suspended). Seq spaces are per-speaker — host counters are
+	 * per-utterance and independent between the two avatars, so the
+	 * subtitle scheduler must ask for the line's own speaker:
+	 * `line.audioSeq <= currentSeq(line.speaker)`.
+	 */
+	currentSeq(speaker: Speaker = "assistant"): number {
+		if (!this.context || this.context.state !== "running" || this.chunkStarts.length === 0) return -1;
+		const now = this.context.currentTime;
+		let last = -1;
+		for (const entry of this.chunkStarts) {
+			if (entry.startAt > now) break;
+			if (entry.speaker === speaker) last = entry.seq;
+		}
+		return last;
 	}
 
 	/** Create the AudioContext if needed and try to unlock playback. */
@@ -125,24 +194,31 @@ export class SpeechEngine {
 	/** Schedule every parked PCM chunk onto the timeline. */
 	private pump(): void {
 		if (!this.context || this.context.state !== "running" || this.pending.length === 0) return;
-		for (const bytes of this.pending) {
+		for (let i = 0; i < this.pending.length; i++) {
+			const bytes = this.pending[i];
 			if (bytes.length === 0) continue;
+			const speaker = this.pendingSpeakers[i] ?? "assistant";
 			const ints = new Int16Array(bytes.buffer, bytes.byteOffset, bytes.byteLength / 2);
 			const buffer = this.context.createBuffer(1, ints.length, this.sampleRate);
 			const channel = buffer.getChannelData(0);
-			for (let i = 0; i < ints.length; i++) channel[i] = ints[i] / 32768;
+			for (let j = 0; j < ints.length; j++) channel[j] = ints[j] / 32768;
 			const source = this.context.createBufferSource();
 			source.buffer = buffer;
 			source.connect(this.gainNode!);
 			const startAt = Math.max(this.nextTime, this.context.currentTime + SCHEDULE_AHEAD_SECONDS);
 			source.start(startAt);
 			this.nextTime = startAt + buffer.duration;
+			this.speakerSpans.push({ speaker, startAt, endAt: this.nextTime });
+			const seq = this.pendingSeqs[i];
+			if (typeof seq === "number") this.chunkStarts.push({ seq, startAt, speaker });
 			source.onended = () => {
 				this.sources.delete(source);
 			};
 			this.sources.add(source);
 		}
 		this.pending = [];
+		this.pendingSeqs = [];
+		this.pendingSpeakers = [];
 	}
 
 	/** Stop everything immediately (an aborted or superseded speech turn). */
@@ -156,8 +232,12 @@ export class SpeechEngine {
 		}
 		this.sources.clear();
 		this.pending = [];
+		this.pendingSeqs = [];
+		this.pendingSpeakers = [];
 		this.carry = [];
 		this.nextTime = 0;
+		this.chunkStarts = [];
+		this.speakerSpans = [];
 	}
 
 	/**

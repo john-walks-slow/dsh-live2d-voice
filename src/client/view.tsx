@@ -8,15 +8,15 @@
 
 import { useEffect, useRef, useState, useCallback, type FC } from "react";
 import type { ConvViewProps } from "@deepseek-ai/dsh-client-ui-conversation/client";
-import { fetchConfig, fetchModelInfo, fetchModelCatalog, fetchModelSelection, openStream, postMessage, recognizeUtterance, saveConfig, selectModel, postCameraResult, startAsrUpload, type AsrUpload } from "./api.js";
+import { fetchConfig, fetchModelInfo, fetchModelCatalog, fetchModelSelection, openStream, postMessage, postPlayerLine, recognizeUtterance, saveConfig, selectModel, postCameraResult, startAsrUpload, type AsrUpload } from "./api.js";
 import { SpeechEngine } from "./engine.js";
 import { Hud } from "./hud.js";
-import { isCubismCoreLoaded, mountModel, DEFAULT_LOOK_PARAMS, type Live2DHandle, type LookParams } from "./model.js";
+import { isCubismCoreLoaded, mountModel, createLive2DStage, DEFAULT_LOOK_PARAMS, type Live2DHandle, type LookParams, type SharedStage } from "./model.js";
 import { MicCapture, type MicState } from "./mic.js";
 import { GazeTracker, capturePhoto } from "./gaze.js";
 import { TiltParallax } from "./tilt.js";
 import { SubtitleOverlay, SUBTITLE_TTL_MS, type SubtitleLine } from "./subtitle.js";
-import type { LanguageOption, ModelCatalog, ModelInfo, ModelSelection, VoicePreset } from "./types.js";
+import type { LanguageOption, ModelCatalog, ModelInfo, ModelSelection, Speaker, VoicePreset } from "./types.js";
 import { LevelMeter } from "./level-meter.js";
 import { IconSpinner, IconSend } from "./icons.js";
 import { logger } from "./logger.js";
@@ -57,10 +57,27 @@ export function Live2DView(props: ViewProps) {
 	const sessionId = String(props.sessionId);
 	const rootRef = useRef<HTMLDivElement>(null);
 	const stageRef = useRef<HTMLDivElement>(null);
+	/**
+	 * The stage's single Pixi application — one canvas, one WebGL context,
+	 * hosting BOTH avatars in third-person mode (the Cubism SDK keeps a
+	 * global gl pointer; a second context would blank the first model).
+	 */
+	const sharedStageRef = useRef<SharedStage | null>(null);
 	const inputRef = useRef<HTMLInputElement>(null);
 	const engineRef = useRef<SpeechEngine | null>(null);
 	const modelRef = useRef<Live2DHandle | null>(null);
+	/** The player's own avatar (third-person mode); null = voice only. */
+	const playerModelRef = useRef<Live2DHandle | null>(null);
+	/** Latest player expression that arrived before the avatar finished mounting. */
+	const pendingPlayerExpressionRef = useRef<number | string | null>(null);
 	const nextLineId = useRef(1);
+	/**
+	 * Subtitle lines held until their audio actually starts playing (host
+	 * synthesis runs ahead of browser playback) — assistant lines and
+	 * third-person player lines alike. Lines without audioSeq are shown
+	 * immediately and never enter this queue.
+	 */
+	const pendingSubsRef = useRef<Array<{ role: SubtitleLine["role"]; text: string; lineId?: string; utteranceId?: string; audioSeq: number; at: number; translation?: string; speaker?: Speaker }>>([]);
 
 	useEffect(() => {
 		logger.setSessionId(sessionId);
@@ -94,7 +111,21 @@ export function Live2DView(props: ViewProps) {
 	const [popoverOpen, setPopoverOpen] = useState(false);
 	const [fullscreen, setFullscreen] = useState(false);
 	const [faded, setFaded] = useState(false);
-	const activeUtterance = useRef("");
+	/**
+	 * Per-speaker active utterance ids: which utterance's expression/audio is
+	 * still current for each avatar. A new player utterance interrupts
+	 * everything (the user said something new); a new assistant utterance
+	 * only supersedes the assistant's own audio.
+	 */
+	const activeAssistantUtterance = useRef("");
+	const activePlayerUtterance = useRef("");
+	// Third-person mode state (drives submitText routing + HUD toggles).
+	const [thirdPerson, setThirdPerson] = useState(false);
+	const [playerVoiceId, setPlayerVoiceId] = useState("");
+	const [playerPolish, setPlayerPolish] = useState(true);
+	/** thirdPerson at submit time must match what the host believes. */
+	const thirdPersonRef = useRef(false);
+	thirdPersonRef.current = thirdPerson;
 
 	// Voice input (continuous listening).
 	const [micState, setMicState] = useState<MicState>("idle");
@@ -138,19 +169,52 @@ export function Live2DView(props: ViewProps) {
 	const asrPendingCount = useRef(0);
 	const segmentWhileSpeakingRef = useRef(false);
 	const assistantEchoRef = useRef("");
+	/** Recent player lines (third-person) — the other echo-suppression side. */
+	const playerEchoRef = useRef("");
 	/** The live upload feeding the current speech segment (streaming ASR). */
 	const asrUploadRef = useRef<AsrUpload | null>(null);
 	/** The upload id of the utterance this view is currently speaking into. */
 	const currentUploadRef = useRef<string | null>(null);
 
-	const pushSubtitle = (role: SubtitleLine["role"], text: string, lineId?: string) => {
+	const showSubtitle = (role: SubtitleLine["role"], text: string, lineId: string | undefined, at: number, translation?: string, speaker?: Speaker) => {
 		if (role === "assistant") {
 			assistantEchoRef.current = `${assistantEchoRef.current}\n${text}`.split("\n").slice(-3).join("\n");
+		} else if (role === "user" && speaker === "player") {
+			playerEchoRef.current = `${playerEchoRef.current}\n${text}`.split("\n").slice(-3).join("\n");
 		}
-		setSubtitles((prev) => [...prev.slice(-5), { id: nextLineId.current++, role, text, lineId, at: Date.now() }]);
+		// A real line arrived — the third-person "酝酿中…" placeholder retires.
+		setSubtitles((prev) => [
+			...prev.slice(-5).filter((line) => !line.pending),
+			{ id: nextLineId.current++, role, text, lineId, at, ...(translation ? { translation } : {}), ...(speaker ? { speaker } : {}) },
+		]);
+	};
+
+	const pushSubtitle = (role: SubtitleLine["role"], text: string, lineId?: string, audioSeq?: number, utteranceId?: string, speaker?: Speaker) => {
+		if (typeof audioSeq === "number") {
+			// Voice-synced line (assistant or third-person player): hold
+			// until that speaker's audio chunk starts playing.
+			pendingSubsRef.current.push({ role, text, lineId, utteranceId, audioSeq, at: Date.now(), ...(speaker ? { speaker } : {}) });
+			pendingSubsRef.current.sort((a, b) => a.audioSeq - b.audioSeq);
+			return;
+		}
+		showSubtitle(role, text, lineId, Date.now(), undefined, speaker);
+	};
+
+	/**
+	 * Third-person submit placeholder: a grayed transient line right after
+	 * acceptance, replaced the moment the polished line arrives over SSE
+	 * (or swept by the subtitle TTL if the pipeline failed).
+	 */
+	const pushPendingPlaceholder = () => {
+		setSubtitles((prev) => [
+			...prev.slice(-5),
+			{ id: nextLineId.current++, role: "user" as const, text: "酝酿中…", pending: true, at: Date.now() },
+		]);
 	};
 
 	const attachTranslation = (lineId: string, text: string) => {
+		// The line may still be held (not yet shown) — tag it so it appears translated.
+		pendingSubsRef.current = pendingSubsRef.current.map((line) => (line.lineId === lineId ? { ...line, translation: text } : line));
 		setSubtitles((prev) => prev.map((line) => (line.lineId === lineId ? { ...line, translation: text } : line)));
 	};
 
@@ -162,6 +226,26 @@ export function Live2DView(props: ViewProps) {
 			engineRef.current = null;
 			engine.destroy();
 		};
+	}, []);
+
+	// Voice–subtitle sync: flush held lines as their audio starts playing.
+	useEffect(() => {
+		const id = window.setInterval(() => {
+			const engine = engineRef.current;
+			if (!engine || pendingSubsRef.current.length === 0) return;
+			// Seq spaces are per-speaker (host counters are per-utterance and
+			// independent between the avatars) — check each held line against
+			// its own speaker's playback cursor.
+			const cursors: Record<Speaker, number> = { assistant: engine.currentSeq("assistant"), player: engine.currentSeq("player") };
+			const now = Date.now();
+			const due = (line: (typeof pendingSubsRef.current)[number]): boolean =>
+				line.audioSeq <= cursors[line.speaker ?? "assistant"] || now - line.at > 30_000;
+			const ready = pendingSubsRef.current.filter(due);
+			if (ready.length === 0) return;
+			pendingSubsRef.current = pendingSubsRef.current.filter((line) => !due(line));
+			for (const line of ready) showSubtitle(line.role, line.text, line.lineId, line.at, line.translation, line.speaker);
+		}, 250);
+		return () => window.clearInterval(id);
 	}, []);
 
 	useEffect(() => {
@@ -179,6 +263,9 @@ export function Live2DView(props: ViewProps) {
 				micNsRef.current = config.micNoiseSuppression !== false;
 				setEyeTracking(config.eyeTracking);
 				setGyroParallax(config.gyroParallax);
+				setThirdPerson(config.thirdPerson === true);
+				setPlayerVoiceId(config.playerVoiceId || "");
+				setPlayerPolish(config.playerPolish !== false);
 			})
 			.catch((error) => console.error("[dsh-live2d-voice] config load failed", error));
 
@@ -258,7 +345,24 @@ export function Live2DView(props: ViewProps) {
 		setModelInfo((prev) => (prev ? { ...prev } : prev));
 	}, []);
 
-	// Live2D model lifecycle.
+	// The stage's shared Pixi application — created once per view (both
+	// avatars mount into it; see sharedStageRef). Destroyed on unmount.
+	useEffect(() => {
+		if (!stageRef.current) return undefined;
+		const stage = createLive2DStage(stageRef.current);
+		sharedStageRef.current = stage;
+		return () => {
+			sharedStageRef.current = null;
+			try {
+				stage.app.destroy(true, { children: true });
+			} catch {
+				/* best-effort */
+			}
+			if (stage.canvas.parentNode) stage.canvas.remove();
+		};
+	}, []);
+
+	// Live2D model lifecycle (the AI's avatar).
 	useEffect(() => {
 		const rawUrl = modelInfo?.url;
 		if (!rawUrl || !stageRef.current) return;
@@ -267,6 +371,8 @@ export function Live2DView(props: ViewProps) {
 			setStatus("core-missing");
 			return;
 		}
+		// Third-person: two avatars share the stage — this one shifts right.
+		const dual = modelInfo?.thirdPerson === true && Boolean(modelInfo?.player?.url);
 		// Append cache-busting timestamp to model URL so updated textures or models are not stuck on old browser cache
 		const url = rawUrl.includes("?") ? `${rawUrl}&_v=${Date.now()}` : `${rawUrl}?_v=${Date.now()}`;
 		let cancelled = false;
@@ -274,19 +380,20 @@ export function Live2DView(props: ViewProps) {
 		setStatus("loading");
 		logger.info(`Mounting Live2D model: ${modelInfo?.name || "unknown"}`);
 
-		// Add a microtask / short debounce to prevent rapid consecutive model switching from trampling WebGL context
 		const mountPromise = mountModel(
 			stageRef.current,
 			url,
 			() => {
 				engineRef.current?.tick();
-				return engineRef.current?.mouthValue() ?? 0;
+				return engineRef.current?.mouthValue("assistant") ?? 0;
 			},
 			() => {
 				// WebGL context lost or restored: reload model
 				logger.warn("WebGL context lost callback triggered, requesting model reload");
 				reloadModel();
 			},
+			dual ? { xFraction: 0.72, scaleGain: 0.8 } : undefined,
+			sharedStageRef.current ?? undefined,
 		);
 
 		mountPromise
@@ -321,8 +428,92 @@ export function Live2DView(props: ViewProps) {
 					logger.warn("handle.destroy threw error, safely suppressed", err);
 				}
 			}
+			mountPromise.then((mounted) => {
+				try {
+					mounted.destroy();
+				} catch {}
+			}).catch(() => {});
 		};
 	}, [modelInfo?.url, reloadModel]);
+
+	// Third-person toggle shifts the AI avatar between centered and the
+	// right half — refit without reloading the model.
+	useEffect(() => {
+		const dual = modelInfo?.thirdPerson === true && Boolean(modelInfo?.player?.url);
+		modelRef.current?.setLayout({ xFraction: dual ? 0.72 : 0.5, scaleGain: dual ? 0.8 : 1 });
+	}, [modelInfo?.thirdPerson, modelInfo?.player?.url]);
+
+	// The player's own avatar (third-person mode): a second model on the
+	// left half of the SAME shared stage (one WebGL context — see above).
+	// Voice-only third-person (no player model selected) simply skips this.
+	useEffect(() => {
+		const rawUrl = modelInfo?.thirdPerson === true ? modelInfo?.player?.url : undefined;
+		const stage = sharedStageRef.current;
+		if (!rawUrl || !stageRef.current || !stage) return undefined;
+		if (!isCubismCoreLoaded()) return undefined;
+		const url = rawUrl.includes("?") ? `${rawUrl}&_v=${Date.now()}` : `${rawUrl}?_v=${Date.now()}`;
+		let cancelled = false;
+		let handle: Live2DHandle | null = null;
+		logger.info(`Mounting player Live2D model: ${modelInfo?.player?.name ?? url}`);
+		const mountPromise = mountModel(
+			stageRef.current,
+			url,
+			() => engineRef.current?.mouthValue("player") ?? 0,
+			() => {
+				// Player model context loss: remount via the same effect.
+				logger.warn("Player model WebGL context lost, remounting");
+				setModelInfo((prev) => (prev ? { ...prev, player: prev.player ? { ...prev.player } : prev.player } : prev));
+			},
+			{ xFraction: 0.28, scaleGain: 0.8 },
+			stage,
+		);
+		mountPromise
+			.then((mounted) => {
+				if (cancelled) {
+					try {
+						mounted.destroy();
+					} catch {
+						/* best-effort */
+					}
+					return;
+				}
+				handle = mounted;
+				playerModelRef.current = mounted;
+				// An expression may have arrived while the avatar was still
+				// mounting — apply the latest one now.
+				const pendingExpression = pendingPlayerExpressionRef.current;
+				if (pendingExpression !== null) {
+					pendingPlayerExpressionRef.current = null;
+					mounted.setExpression(pendingExpression);
+				}
+				if (stageRef.current) stageRef.current.dataset.lvPlayer = String(modelInfo?.player?.name ?? "");
+				logger.info(`Player Live2D model ready: ${modelInfo?.player?.name}`);
+			})
+			.catch((error) => {
+				if (cancelled) return;
+				logger.error(`Player Live2D mount failed for ${modelInfo?.player?.name}`, error);
+				showToast(`玩家模型加载失败：${String((error as Error)?.message ?? error)}`);
+			});
+		return () => {
+			cancelled = true;
+			playerModelRef.current = null;
+			delete stageRef.current?.dataset.lvPlayer;
+			if (handle) {
+				try {
+					handle.destroy();
+				} catch (err) {
+					logger.warn("player handle.destroy threw error, safely suppressed", err);
+				}
+			}
+			mountPromise
+				.then((mounted) => {
+					try {
+						mounted.destroy();
+					} catch {}
+				})
+				.catch(() => {});
+		};
+	}, [modelInfo?.thirdPerson, modelInfo?.player?.url]);
 
 	// Gaze tracking lifecycle: the tracker owns the front camera while the
 	// config says so; normalized gaze (dx/dy in -1..1) lands in camLookRef.
@@ -405,30 +596,58 @@ export function Live2DView(props: ViewProps) {
 	useEffect(() => {
 		if (!sessionId) return undefined;
 		const close = openStream(sessionId, {
-			onExpression: ({ expression, utteranceId }) => {
-				if (utteranceId !== activeUtterance.current) return;
+			onExpression: ({ expression, utteranceId, speaker }) => {
+				const isPlayer = speaker === "player";
+				const active = isPlayer ? activePlayerUtterance : activeAssistantUtterance;
+				if (utteranceId !== active.current) return;
+				if (isPlayer) {
+					const model = playerModelRef.current;
+					if (model) model.setExpression(expression);
+					// Avatar still mounting — replay the latest expression once
+					// it is ready (the first player line can win that race).
+					else pendingPlayerExpressionRef.current = expression;
+					return;
+				}
 				modelRef.current?.setExpression(expression);
 			},
-			onSpeechStart: ({ utteranceId }) => {
-				if (utteranceId !== activeUtterance.current) {
-					activeUtterance.current = utteranceId;
-					engineRef.current?.stop();
+			onSpeechStart: ({ utteranceId, speaker }) => {
+				const isPlayer = speaker === "player";
+				const active = isPlayer ? activePlayerUtterance : activeAssistantUtterance;
+				if (utteranceId !== active.current) {
+					// A new player line interrupts whatever is playing (the
+					// user said something new); a new assistant utterance only
+					// supersedes the assistant's own audio — the player's line
+					// keeps its queue and the reply naturally lines up after.
+					if (isPlayer || engineRef.current?.currentSpeaker() === "assistant") engineRef.current?.stop();
+					active.current = utteranceId;
+					// The superseded utterance will never play — drop its held
+					// lines. A new player line also kills the assistant's turn
+					// (the host supersedes its TTS); a new assistant utterance
+					// never touches the player's still-queued line.
+					pendingSubsRef.current = pendingSubsRef.current.filter((line) => {
+						if (line.utteranceId === utteranceId) return true; // the new utterance's own lines
+						if (isPlayer) return false; // a new player line superseded everything else
+						return line.speaker === "player"; // an assistant utterance never kills the player's queued line
+					});
 				}
 				void engineRef.current?.resume();
 			},
-			onSpeechEnd: ({ utteranceId, reason }) => {
-				if (utteranceId !== activeUtterance.current) return;
+			onSpeechEnd: ({ utteranceId, reason, speaker }) => {
+				const active = speaker === "player" ? activePlayerUtterance : activeAssistantUtterance;
+				if (utteranceId !== active.current) return;
 				if (reason === "aborted") engineRef.current?.stop();
 			},
-			onAudioStart: ({ sampleRate, utteranceId }) => {
-				if (utteranceId !== activeUtterance.current) return;
+			onAudioStart: ({ sampleRate, utteranceId, speaker }) => {
+				const active = speaker === "player" ? activePlayerUtterance : activeAssistantUtterance;
+				if (utteranceId !== active.current) return;
 				engineRef.current?.setSampleRate(sampleRate);
 			},
-			onAudio: ({ b64, utteranceId }) => {
-				if (utteranceId !== activeUtterance.current) return;
-				engineRef.current?.enqueueBase64(b64);
+			onAudio: ({ b64, seq, utteranceId, speaker }) => {
+				const active = speaker === "player" ? activePlayerUtterance : activeAssistantUtterance;
+				if (utteranceId !== active.current) return;
+				engineRef.current?.enqueueBase64(b64, seq, speaker ?? "assistant");
 			},
-			onSubtitle: ({ role, text, lineId }) => pushSubtitle(role, text, lineId),
+			onSubtitle: ({ role, text, lineId, audioSeq, utteranceId, speaker }) => pushSubtitle(role, text, lineId, audioSeq, utteranceId, speaker),
 			onSubtitleTranslation: ({ lineId, text }) => attachTranslation(lineId, text),
 			onCameraCapture: ({ requestId }) => {
 				void (async () => {
@@ -695,6 +914,54 @@ export function Live2DView(props: ViewProps) {
 		}
 	};
 
+	// ---- Third-person controls (⚙ popover + settings share these) ----
+
+	const toggleThirdPerson = async () => {
+		const next = !thirdPerson;
+		try {
+			const { config } = await saveConfig({ thirdPerson: next });
+			setThirdPerson(config.thirdPerson === true);
+			// Remount the player avatar / re-layout the AI one.
+			const info = await fetchModelInfo(sessionId);
+			setModelInfo(info);
+			showToast(config.thirdPerson ? "第三人称模式已开启" : "第三人称模式已关闭");
+		} catch (error) {
+			showToast(`切换失败：${String((error as Error)?.message ?? error)}`);
+		}
+	};
+
+	const pickPlayerModel = async (name: string) => {
+		try {
+			await saveConfig({ playerModelSelection: name });
+			const info = await fetchModelInfo(sessionId);
+			setModelInfo(info);
+			showToast(info.player?.name === name ? `玩家角色已切换：${info.player?.label ?? name}` : `已保存玩家角色 ${name}（需开启第三人称）`);
+		} catch (error) {
+			showToast(`玩家角色切换失败：${String((error as Error)?.message ?? error)}`);
+		}
+	};
+
+	const pickPlayerVoice = async (preset: VoicePreset) => {
+		try {
+			const { config } = await saveConfig({ playerVoiceId: preset.voiceId });
+			setPlayerVoiceId(config.playerVoiceId);
+			showToast(`玩家音色已切换：${preset.label}`);
+		} catch (error) {
+			showToast(`玩家音色切换失败：${String((error as Error)?.message ?? error)}`);
+		}
+	};
+
+	const togglePlayerPolish = async () => {
+		const next = !playerPolish;
+		try {
+			const { config } = await saveConfig({ playerPolish: next });
+			setPlayerPolish(config.playerPolish !== false);
+			showToast(config.playerPolish !== false ? "台词润色已开启" : "台词润色已关闭（原话直出）");
+		} catch (error) {
+			showToast(`切换失败：${String((error as Error)?.message ?? error)}`);
+		}
+	};
+
 	const handleSelectModel = async (provider: string, model: string, reasoningEffort?: string) => {
 		try {
 			const { selected } = await selectModel(sessionId, provider, model, reasoningEffort);
@@ -718,13 +985,22 @@ export function Live2DView(props: ViewProps) {
 	const submitText = async (text: string, mode: "queue" | "steer" = "queue"): Promise<boolean> => {
 		if (!text.trim()) return false;
 		try {
-			const viaClient = props.submitPrompt?.(sessionId, text, mode);
-			if (viaClient) {
-				const result = await viaClient;
-				if (!result.ok) throw new Error(result.error ?? "session/prompt rejected");
-				pushSubtitle("user", text);
+			if (thirdPersonRef.current) {
+				// Third-person: the line goes through the player pipeline —
+				// polish → player avatar speaks → only then the agent hears
+				// it. The polished line arrives over SSE (replacing the
+				// pending placeholder), so no local echo here.
+				await postPlayerLine(sessionId, text, mode);
+				pushPendingPlaceholder();
 			} else {
-				await postMessage(sessionId, text, mode);
+				const viaClient = props.submitPrompt?.(sessionId, text, mode);
+				if (viaClient) {
+					const result = await viaClient;
+					if (!result.ok) throw new Error(result.error ?? "session/prompt rejected");
+					pushSubtitle("user", text);
+				} else {
+					await postMessage(sessionId, text, mode);
+				}
 			}
 			engineRef.current?.unmuzzle();
 			return true;
@@ -760,8 +1036,8 @@ export function Live2DView(props: ViewProps) {
 	useEffect(() => stopListening, [sessionId]);
 
 	const looksLikeEcho = (text: string): boolean => {
-		const recent = assistantEchoRef.current;
-		if (!recent) return false;
+		const recent = `${assistantEchoRef.current}\n${playerEchoRef.current}`;
+		if (!recent.trim()) return false;
 		const normalize = (s: string) => s.replace(/[\s，。！？、,.!?…~～「」『』（）()・]/g, "");
 		const target = normalize(text);
 		if (target.length === 0) return false;
@@ -813,7 +1089,8 @@ export function Live2DView(props: ViewProps) {
 				setMicLevel(level);
 				if (engineRef.current?.speaking() && MicCapture.isBargeLevel(level)) {
 					engineRef.current.muzzle();
-					activeUtterance.current = "";
+					activeAssistantUtterance.current = "";
+					activePlayerUtterance.current = "";
 				}
 			},
 			// Streaming path (default): relay every in-speech frame into the
@@ -937,7 +1214,7 @@ export function Live2DView(props: ViewProps) {
 				</div>
 			)}
 
-			<SubtitleOverlay lines={subtitles} visible={subtitlesOn} raised={micState === "listening" || micState === "requesting"} />
+			<SubtitleOverlay lines={subtitles} visible={subtitlesOn} raised={micState === "listening" || micState === "requesting" || inputOpen} />
 
 			{micState === "listening" && (
 				<div className="lv-micbar">
@@ -983,7 +1260,7 @@ export function Live2DView(props: ViewProps) {
 				</form>
 			)}
 
-			{toast && <div className={`lv-toast${micState === "listening" || micState === "requesting" ? " lv-toast-raised" : ""}`}>{toast}</div>}
+			{toast && <div className={`lv-toast${micState === "listening" || micState === "requesting" || inputOpen ? " lv-toast-raised" : ""}`}>{toast}</div>}
 
 			<Hud
 				faded={faded}
@@ -1013,6 +1290,14 @@ export function Live2DView(props: ViewProps) {
 				models={modelInfo?.models ?? []}
 				currentModel={modelInfo?.current}
 				onPickModel={(name) => void pickModel(name)}
+				thirdPerson={thirdPerson}
+				playerPolish={playerPolish}
+				onToggleThirdPerson={() => void toggleThirdPerson()}
+				onTogglePlayerPolish={() => void togglePlayerPolish()}
+				currentPlayerModel={modelInfo?.player?.name}
+				onPickPlayerModel={(name) => void pickPlayerModel(name)}
+				currentPlayerVoiceId={playerVoiceId}
+				onPickPlayerVoice={(preset) => void pickPlayerVoice(preset)}
 				modelCatalog={modelCatalog}
 				currentModelSelection={currentModelSelection}
 				onSelectModel={(provider, model, effort) => void handleSelectModel(provider, model, effort)}

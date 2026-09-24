@@ -215,7 +215,7 @@ body[data-ds-dark-theme] .lv-set-textarea {
 export function Live2DSettingsSection() {
 	const [config, setConfig] = useState<PublicConfig | null>(null);
 	const [presets, setPresets] = useState<VoicePreset[]>([]);
-	const [models, setModels] = useState<{ name: string; label?: string; url: string }[]>([]);
+	const [models, setModels] = useState<{ name: string; label?: string; kind?: "moc2" | "moc3"; group?: string; groupLabel?: string; url: string }[]>([]);
 	const [loading, setLoading] = useState(true);
 	const [statusMsg, setStatusMsg] = useState<{ type: "success" | "warn"; text: string } | null>(null);
 
@@ -227,11 +227,19 @@ export function Live2DSettingsSection() {
 	const [asrFile, setAsrFile] = useState("");
 	const [speechLang, setSpeechLang] = useState("ja");
 	const [subLang, setSubLang] = useState("zh");
+	const [sentenceSubs, setSentenceSubs] = useState(true);
 	const [sttLang, setSttLang] = useState("auto");
 	const [asrMode, setAsrMode] = useState("stream");
 	const [micNs, setMicNs] = useState(true);
 	const [prompt, setPrompt] = useState("");
 	const [saving, setSaving] = useState(false);
+	// Third-person mode drafts
+	const [thirdPerson, setThirdPerson] = useState(false);
+	const [playerModelSel, setPlayerModelSel] = useState("");
+	const [playerVoiceId, setPlayerVoiceId] = useState("");
+	const [playerPolish, setPlayerPolish] = useState(true);
+	const [playerLang, setPlayerLang] = useState("zh");
+	const [playerPrompt, setPlayerPrompt] = useState("");
 	// Live model auto-switch config
 	const [modelCatalog, setModelCatalog] = useState<ModelCatalog | null>(null);
 	const [liveProvider, setLiveProvider] = useState("");
@@ -251,10 +259,17 @@ export function Live2DSettingsSection() {
 				setAsrFile(data.config.asrCredentialsFile || "");
 				setSpeechLang(data.config.speechLanguage || "ja");
 				setSubLang(data.config.subtitleLanguage || "zh");
+				setSentenceSubs(data.config.sentenceSubtitles ?? true);
 				setSttLang(data.config.sttLanguage || "auto");
 				setAsrMode(data.config.asrMode || "stream");
 				setMicNs(data.config.micNoiseSuppression !== false);
 				setPrompt(data.config.speechPrompt || "");
+				setThirdPerson(data.config.thirdPerson === true);
+				setPlayerModelSel(data.config.playerModelSelection || "");
+				setPlayerVoiceId(data.config.playerVoiceId || "");
+				setPlayerPolish(data.config.playerPolish !== false);
+				setPlayerLang(data.config.playerSpeechLanguage || "zh");
+				setPlayerPrompt(data.config.playerPrompt || "");
 				setLoading(false);
 			})
 			.catch((err: unknown) => {
@@ -376,24 +391,47 @@ export function Live2DSettingsSection() {
 						指向单个包含 <code>.model3.json</code> 的文件夹，或包含多个角色子文件夹的上级目录。
 					</div>
 				</div>
-				{models.length > 0 && (
-					<div className="lv-set-field" style={{ marginTop: "12px" }}>
-						<label className="lv-set-label">已扫描到的可用模型 ({models.length} 个)</label>
-						<div style={{ display: "flex", gap: "6px", flexWrap: "wrap", marginTop: "6px" }}>
-							{models.map((m) => (
-								<button
-									key={m.name}
-									type="button"
-									title={m.name}
-									className={`lv-set-btn ${config?.modelSelection === m.name ? "lv-set-btn-primary" : ""}`}
-									onClick={() => handleSave({ modelSelection: m.name })}
-								>
-									{m.label ?? m.name} {config?.modelSelection === m.name ? "✓" : ""}
-								</button>
-							))}
-						</div>
-					</div>
-				)}
+				{models.length > 0 &&
+					(() => {
+						// 按分类（二级目录）分组显示
+						const groups: { label: string; items: (typeof models)[number][] }[] = [];
+						for (const m of models) {
+							const key = m.groupLabel ?? m.group ?? "";
+							let g = groups.find((x) => x.label === key);
+							if (!g) {
+								g = { label: key, items: [] };
+								groups.push(g);
+							}
+							g.items.push(m);
+						}
+						return (
+							<div className="lv-set-field" style={{ marginTop: "12px" }}>
+								<label className="lv-set-label">已扫描到的可用模型 ({models.length} 个)</label>
+								{groups.map((g) => (
+									<div key={g.label || "misc"} style={{ marginTop: "10px" }}>
+										{g.label && (
+											<div style={{ fontSize: "12px", fontWeight: 600, opacity: 0.75, marginBottom: "6px" }}>
+												{g.label}
+											</div>
+										)}
+										<div style={{ display: "flex", gap: "6px", flexWrap: "wrap" }}>
+											{g.items.map((m) => (
+												<button
+													key={m.name}
+													type="button"
+													title={m.name}
+													className={`lv-set-btn ${config?.modelSelection === m.name ? "lv-set-btn-primary" : ""}`}
+													onClick={() => handleSave({ modelSelection: m.name })}
+												>
+													{m.label ?? m.name}{m.kind === "moc2" ? "（旧版）" : ""} {config?.modelSelection === m.name ? "✓" : ""}
+												</button>
+											))}
+										</div>
+									</div>
+								))}
+							</div>
+						);
+					})()}
 			</div>
 
 			{/* 模块 2：语音合成 TTS */}
@@ -575,6 +613,21 @@ export function Live2DSettingsSection() {
 					</select>
 				</div>
 				<div className="lv-set-field">
+					<label className="lv-set-label">逐句字幕 (sentenceSubtitles)</label>
+					<select
+						className="lv-set-select"
+						value={sentenceSubs ? "on" : "off"}
+						onChange={(e) => {
+							const next = e.target.value === "on";
+							setSentenceSubs(next);
+							handleSave({ sentenceSubtitles: next });
+						}}
+					>
+						<option value="on">开启 (逐句合成语音，字幕逐句跟随发音)</option>
+						<option value="off">关闭 (段落级合成，字幕按段落显示)</option>
+					</select>
+				</div>
+				<div className="lv-set-field">
 					<label className="lv-set-label">自定义指令 (speechPrompt)</label>
 					<textarea
 						className="lv-set-textarea"
@@ -744,6 +797,128 @@ export function Live2DSettingsSection() {
 						</div>
 					</div>
 				</div>
+
+			{/* 模块 7：第三人称模式 */}
+			<div className="lv-set-card">
+				<div className="lv-set-card-head">
+					<h3 className="lv-set-card-title">⑦ 第三人称模式（玩家化身）</h3>
+				</div>
+				<div className="lv-set-help" style={{ marginBottom: "12px" }}>
+					开启后，你的输入先润色成你角色的台词（可选），由<b>你的模型与音色</b>先说出来，AI 的角色再开口回应——像一场双人剧。
+				</div>
+				<div className="lv-set-field">
+					<label className="lv-set-label">模式开关 (thirdPerson)</label>
+					<select
+						className="lv-set-select"
+						value={thirdPerson ? "on" : "off"}
+						onChange={(e) => {
+							const next = e.target.value === "on";
+							setThirdPerson(next);
+							handleSave({ thirdPerson: next });
+						}}
+					>
+						<option value="off">关闭（第一人称：输入直接交给 AI）</option>
+						<option value="on">开启（第三人称：玩家化身先说，AI 再答）</option>
+					</select>
+				</div>
+				<div className="lv-set-field">
+					<label className="lv-set-label">台词润色 / 翻译 (playerPolish)</label>
+					<select
+						className="lv-set-select"
+						value={playerPolish ? "on" : "off"}
+						onChange={(e) => {
+							const next = e.target.value === "on";
+							setPlayerPolish(next);
+							handleSave({ playerPolish: next });
+						}}
+					>
+						<option value="on">开启（口语 / 外语输入润色成角色台词）</option>
+						<option value="off">关闭（原话直出）</option>
+					</select>
+					<div className="lv-set-help">润色使用当前会话的模型，保留全部信息点；关闭则你的原话就是台词。</div>
+				</div>
+				<div className="lv-set-field">
+					<label className="lv-set-label">玩家台词语言 (playerSpeechLanguage)</label>
+					<select
+						className="lv-set-select"
+						value={playerLang}
+						onChange={(e) => {
+							setPlayerLang(e.target.value);
+							handleSave({ playerSpeechLanguage: e.target.value });
+						}}
+					>
+						<option value="auto">跟随输入语言</option>
+						<option value="zh">简体中文</option>
+						<option value="ja">日语</option>
+						<option value="en">English</option>
+					</select>
+					<div className="lv-set-help">润色开启时，台词最终用这种语言说出（例：中文输入 → 日语台词）。</div>
+				</div>
+				{models.length > 0 && (
+					<div className="lv-set-field">
+						<label className="lv-set-label">玩家角色模型 (playerModelSelection)</label>
+						<div style={{ display: "flex", gap: "6px", flexWrap: "wrap", marginTop: "6px" }}>
+							{models.map((m) => (
+								<button
+									key={m.name}
+									type="button"
+									title={m.name}
+									className={`lv-set-btn ${playerModelSel === m.name ? "lv-set-btn-primary" : ""}`}
+									onClick={() => {
+										setPlayerModelSel(m.name);
+										handleSave({ playerModelSelection: m.name });
+									}}
+								>
+									{m.label ?? m.name} {playerModelSel === m.name ? "✓" : ""}
+								</button>
+							))}
+						</div>
+						<div className="lv-set-help">不选则第三人称只有玩家音色（无独立模型）；双人同台时玩家居左、AI 居右。</div>
+					</div>
+				)}
+				<div className="lv-set-field">
+					<label className="lv-set-label">玩家音色 (playerVoiceId)</label>
+					<div style={{ display: "flex", gap: "6px", flexWrap: "wrap", marginTop: "6px" }}>
+						{presets.map((p) => (
+							<button
+								key={p.id}
+								type="button"
+								className={`lv-set-btn ${playerVoiceId === p.voiceId ? "lv-set-btn-primary" : ""}`}
+								onClick={() => {
+									setPlayerVoiceId(p.voiceId);
+									handleSave({ playerVoiceId: p.voiceId });
+								}}
+							>
+								{p.label} {playerVoiceId === p.voiceId ? "✓" : ""}
+							</button>
+						))}
+					</div>
+					<div className="lv-set-help">
+						玩家化身的 Fish Audio 音色 ID；与 AI 音色相同时会缺少「两个角色」的听感，建议选不同音色。
+					</div>
+				</div>
+				<div className="lv-set-field">
+					<label className="lv-set-label">玩家人设 (playerPrompt)</label>
+					<textarea
+						className="lv-set-textarea"
+						rows={3}
+						value={playerPrompt}
+						placeholder="例如：元气少年，说话爽朗带点冲劲，偶尔用「学长」称呼对方…"
+						onChange={(e) => setPlayerPrompt(e.target.value)}
+					/>
+					<div style={{ marginTop: "6px" }}>
+						<button
+							type="button"
+							className="lv-set-btn lv-set-btn-primary"
+							disabled={saving}
+							onClick={() => handleSave({ playerPrompt })}
+						>
+							保存人设
+						</button>
+					</div>
+					<div className="lv-set-help">润色时作为你角色的口吻参考；留空则只做通用润色。</div>
+				</div>
+			</div>
 		</div>
 	);
 }

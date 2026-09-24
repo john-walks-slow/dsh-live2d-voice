@@ -123,7 +123,7 @@ try {
     // bilingual subtitle rendered in DOM
     let domTr = null;
     for (let i = 0; i < 10; i++) {
-      domTr = await ev(() => [...document.querySelectorAll('.lv-sub .lv-sub-tr')].map((el) => el.textContent).join('|'));
+      domTr = await ev(() => [...document.querySelectorAll('.lv-sub-card .lv-sub-tr')].map((el) => el.textContent).join('|'));
       if (domTr) break;
       await sleep(1000);
     }
@@ -140,7 +140,7 @@ try {
   check('P2a', (modelInfo.models ?? []).length === 2 && modelInfo.current === 'haru',
     `catalog=${(modelInfo.models ?? []).map((m) => m.name).join(',')} current=${modelInfo.current}`);
   // open ⚙, model section visible
-  await ev(() => document.querySelector('.lv-hud [title="语音设置"]')?.click());
+  await ev(() => document.querySelector('.lv-hud [title*="快捷调整"]')?.click());
   await sleep(400);
   const popInfo = await ev(() => {
     const section = [...document.querySelectorAll('.lv-pop h4')].find((h) => h.textContent === '角色模型');

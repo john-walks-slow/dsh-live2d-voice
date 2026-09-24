@@ -2,6 +2,8 @@
  * Subtitle overlay: the recent dialogue lines rendered as refined glass caption cards.
  */
 
+import type { Speaker } from "./types.js";
+
 export interface SubtitleLine {
 	id: number;
 	role: "assistant" | "user" | "error";
@@ -11,6 +13,13 @@ export interface SubtitleLine {
 	/** Translation into the subtitle language (subtitleLanguage). */
 	translation?: string;
 	at: number;
+	/**
+	 * Third-person transient placeholder ("酝酿中…") pushed right after the
+	 * line is accepted; any real subtitle replaces it.
+	 */
+	pending?: boolean;
+	/** Which avatar said the line (third-person player lines are tagged). */
+	speaker?: Speaker;
 }
 
 export const SUBTITLE_TTL_MS = 14_000;
@@ -24,12 +33,14 @@ export function SubtitleOverlay(props: { lines: SubtitleLine[]; visible: boolean
 	return (
 		<div className={`lv-subs${props.raised ? " lv-subs-raised" : ""}`}>
 			{older.map((line) => (
-				<div key={line.id} className="lv-sub-old">
+				<div key={line.id} className={`lv-sub-old${line.pending ? " lv-sub-pending" : ""}`}>
+					{line.speaker === "player" && <span className="lv-sub-speaker">你</span>}
 					{line.text}
 				</div>
 			))}
 			{current && (
-				<div className={`lv-sub-card${current.role === "user" ? " lv-sub-user" : ""}`}>
+				<div className={`lv-sub-card${current.role === "user" ? " lv-sub-user" : ""}${current.pending ? " lv-sub-pending" : ""}`}>
+					{current.speaker === "player" && <span className="lv-sub-speaker">你</span>}
 					<p className="lv-sub-text">{current.text}</p>
 					{current.translation && <span className="lv-sub-tr">{current.translation}</span>}
 				</div>

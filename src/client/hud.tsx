@@ -41,8 +41,20 @@ export interface HudProps {
 	currentVoiceId: string;
 	currentSttLanguage: string;
 	/** Live2D model catalog */
-	models: { name: string; label?: string; url: string }[];
+	models: { name: string; label?: string; kind?: "moc2" | "moc3"; group?: string; groupLabel?: string; url: string }[];
 	currentModel?: string;
+	/** Third-person mode: the player's own avatar + voice speaks the user's line first. */
+	thirdPerson: boolean;
+	/** Polish/translate the user's input into the player persona's line. */
+	playerPolish: boolean;
+	onToggleThirdPerson: () => void;
+	onTogglePlayerPolish: () => void;
+	/** The player avatar's current model (undefined = none selected). */
+	currentPlayerModel?: string;
+	onPickPlayerModel: (name: string) => void;
+	/** The player avatar's current voice preset id. */
+	currentPlayerVoiceId: string;
+	onPickPlayerVoice: (preset: VoicePreset) => void;
 	apiKeyCount: number;
 	speechPrompt: string;
 	eyeTracking: boolean;
@@ -248,22 +260,111 @@ export function Hud(props: HudProps) {
 					</div>
 
 					<div className="lv-pop-body">
-						{/* 角色模型快切 */}
+						{/* 角色模型快切（按分类分组） */}
 						{props.models.length > 1 && (
 							<>
 								<h4>角色模型</h4>
 								<div className="lv-langs">
-									{props.models.map((model) => (
+									{(() => {
+										const groups: { label: string; items: (typeof props.models)[number][] }[] = [];
+										for (const model of props.models) {
+											const key = model.groupLabel ?? model.group ?? "";
+											let g = groups.find((x) => x.label === key);
+											if (!g) {
+												g = { label: key, items: [] };
+												groups.push(g);
+											}
+											g.items.push(model);
+										}
+										return groups.map((g) => (
+											<div key={g.label || "misc"} style={{ marginBottom: "6px" }}>
+												{g.label && (
+													<div style={{ fontSize: "11px", fontWeight: 600, opacity: 0.6, margin: "4px 0 4px 2px" }}>
+														{g.label}
+													</div>
+												)}
+												{/* 保持同一分组内按钮成行 */}
+												<div style={{ display: "flex", gap: "4px", flexWrap: "wrap" }}>
+													{g.items.map((model) => (
+														<button
+															key={model.name}
+															type="button"
+															className={`lv-lang${model.name === props.currentModel ? " lv-current" : ""}`}
+															title={model.name}
+															onClick={() => props.onPickModel(model.name)}
+														>
+															{model.label ?? model.name}{model.kind === "moc2" ? "（旧版）" : ""}
+														</button>
+													))}
+												</div>
+											</div>
+										));
+									})()}
+								</div>
+							</>
+						)}
+
+						{/* 第三人称模式：玩家的台词先由玩家的化身说出 */}
+						<h4>第三人称</h4>
+						<div className="lv-switch-row">
+							<span>第三人称模式</span>
+							<button
+								type="button"
+								role="switch"
+								aria-checked={props.thirdPerson}
+								className={`lv-switch${props.thirdPerson ? " lv-on" : ""}`}
+								onClick={props.onToggleThirdPerson}
+							>
+								<span className="lv-switch-knob" />
+							</button>
+						</div>
+						{props.thirdPerson && (
+							<>
+								{props.models.length > 1 && (
+									<>
+										<div className="lv-look-hint">玩家角色</div>
+										<div className="lv-langs">
+											{props.models.map((model) => (
+												<button
+													key={model.name}
+													type="button"
+													className={`lv-lang${model.name === props.currentPlayerModel ? " lv-current" : ""}`}
+													title={model.name}
+													onClick={() => props.onPickPlayerModel(model.name)}
+												>
+													{model.label ?? model.name}{model.kind === "moc2" ? "（旧版）" : ""}
+												</button>
+											))}
+										</div>
+									</>
+								)}
+								<div className="lv-look-hint">玩家音色</div>
+								<div className="lv-langs">
+									{props.presets.map((preset) => (
 										<button
-											key={model.name}
+											key={preset.id}
 											type="button"
-											className={`lv-lang${model.name === props.currentModel ? " lv-current" : ""}`}
-											title={model.name}
-											onClick={() => props.onPickModel(model.name)}
+											className={`lv-lang${preset.voiceId === props.currentPlayerVoiceId ? " lv-current" : ""}`}
+											onClick={() => props.onPickPlayerVoice(preset)}
 										>
-											{model.label ?? model.name}
+											{preset.label}
 										</button>
 									))}
+								</div>
+								{props.currentPlayerVoiceId === props.currentVoiceId && (
+									<div className="lv-look-hint">玩家音色与 AI 相同，建议换一个更好分辨</div>
+								)}
+								<div className="lv-switch-row">
+									<span>台词润色 / 翻译</span>
+									<button
+										type="button"
+										role="switch"
+										aria-checked={props.playerPolish}
+										className={`lv-switch${props.playerPolish ? " lv-on" : ""}`}
+										onClick={props.onTogglePlayerPolish}
+									>
+										<span className="lv-switch-knob" />
+									</button>
 								</div>
 							</>
 						)}

@@ -17,9 +17,10 @@
  *                                           the full model catalog
  *   GET  /live2d-voice/models/*              model assets (traversal-guarded)
  *   GET  /live2d-voice/core/live2dcubismcore.min.js  Cubism Core runtime
+ *   GET  /live2d-voice/core/live2d.min.js    Cubism 2.1 legacy core (.moc)
  *
- * Plus a `webserver/index-inject` row loading the Cubism Core script on every
- * index.html render (the model loader requires window.Live2DCubismCore).
+ * Plus `webserver/index-inject` rows loading both cores on every index.html
+ * render (the model loaders require window.Live2DCubismCore / window.Live2D).
  */
 
 import { readFileSync, statSync, existsSync, mkdirSync, writeFileSync, createWriteStream, rmSync } from "node:fs";
@@ -37,7 +38,7 @@ import type {} from "@deepseek-ai/dsh-api-session-controller";
 import { WebSocketServer } from "ws";
 import { createUserMessage, type ContentBlock } from "@deepseek-ai/dsh-llm";
 import type { SessionId } from "@deepseek-ai/dsh-session";
-import { LANGUAGE_OPTIONS, VOICE_PRESETS, resolveModelCatalog, resolveModelSelection, resolveSessionConfig, type ModelEntry, type PluginConfig } from "./config.js";
+import { LANGUAGE_OPTIONS, VOICE_PRESETS, resolveModelCatalog, resolveModelSelection, resolveSessionConfig, GROUP_LABELS, type ModelEntry, type PluginConfig } from "./config.js";
 import type { SseHub } from "./events.js";
 import { loadVolcCredentials, recognizeUtterance, StreamingAsrSession } from "./asr.js";
 
@@ -51,6 +52,7 @@ const GAZE_PREFIX = "/live2d-voice/gaze";
 const FACE_LANDMARKER_URL = "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task";
 const FACE_LANDMARKER_MAX_BYTES = 16 * 1024 * 1024;
 const CORE_SCRIPT_PATH = "/live2d-voice/core/live2dcubismcore.min.js";
+const CORE2_SCRIPT_PATH = "/live2d-voice/core/live2d.min.js";
 
 interface WebServerLike {
 	register(route: { kind: "exact" | "prefix"; path: string; handler: (req: IncomingMessage, res: ServerResponse) => void | Promise<void> }): () => void;
@@ -64,6 +66,8 @@ export interface RouteDeps {
 	resolveKeys: (config: PluginConfig) => string[];
 	/** The camera tool's pending-capture bridge. */
 	cameraBridge: { deliver(requestId: string, shot: { dataUrl: string; width: number; height: number } | null): boolean };
+	/** Third-person player pipeline (POST /live2d-voice/player-line). */
+	playerPipeline: { submit(sessionId: string, text: string, mode: "queue" | "steer"): void };
 }
 
 function writeJson(res: ServerResponse, status: number, body: unknown): void {
@@ -301,11 +305,14 @@ export function installRoutes(ctx: Context, deps: RouteDeps): (() => void) | und
 			void readJsonBody(req)
 				.then((body) => {
 					const patch: Partial<PluginConfig> = {};
-					for (const key of ["modelPath", "modelSelection", "voiceId", "ttsModel", "apiKeyFile", "sttLanguage", "asrMode", "asrCredentialsFile", "speechLanguage", "subtitleLanguage", "speechPrompt"] as const) {
+					for (const key of ["modelPath", "modelSelection", "voiceId", "ttsModel", "apiKeyFile", "sttLanguage", "asrMode", "asrCredentialsFile", "speechLanguage", "subtitleLanguage", "speechPrompt", "playerModelSelection", "playerVoiceId", "playerSpeechLanguage", "playerPrompt"] as const) {
 						if (typeof body[key] === "string") patch[key] = body[key] as string;
 					}
 					if (typeof body.eyeTracking === "boolean") patch.eyeTracking = body.eyeTracking;
 					if (typeof body.gyroParallax === "boolean") patch.gyroParallax = body.gyroParallax;
+					if (typeof body.sentenceSubtitles === "boolean") patch.sentenceSubtitles = body.sentenceSubtitles;
+					if (typeof body.thirdPerson === "boolean") patch.thirdPerson = body.thirdPerson;
+					if (typeof body.playerPolish === "boolean") patch.playerPolish = body.playerPolish;
 					if (Array.isArray(body.apiKeys)) {
 						patch.apiKeys = body.apiKeys.filter((key): key is string => typeof key === "string" && key.length > 0);
 					}
@@ -315,6 +322,14 @@ export function installRoutes(ctx: Context, deps: RouteDeps): (() => void) | und
 							if (typeof expression === "number" || typeof expression === "string") emotionMap[emotion] = expression;
 						}
 						patch.emotionMap = emotionMap;
+					}
+					// playerEmotionMap: third-person player avatar expression map.
+					if (typeof body.playerEmotionMap === "object" && body.playerEmotionMap !== null && !Array.isArray(body.playerEmotionMap)) {
+						const playerEmotionMap: Record<string, number | string> = {};
+						for (const [emotion, expression] of Object.entries(body.playerEmotionMap as Record<string, unknown>)) {
+							if (typeof expression === "number" || typeof expression === "string") playerEmotionMap[emotion] = expression;
+						}
+						patch.playerEmotionMap = playerEmotionMap;
 					}
 					// liveModel: object (provider+model+optional effort) or null to clear.
 					if (body.liveModel === null) {
@@ -385,6 +400,33 @@ export function installRoutes(ctx: Context, deps: RouteDeps): (() => void) | und
 		} })
 	);
 
+	// Third-person player line: enqueue into the player pipeline (polish →
+	// player TTS → agent submit). Accepted immediately — the polished line,
+	// its audio, and the reply all arrive over the session SSE.
+	disposers.push(
+		webServer.register({ kind: "exact", path: "/live2d-voice/player-line", handler: (req, res) => {
+			if (req.method !== "POST") {
+				writeJson(res, 405, { code: "method_not_allowed" });
+				return;
+			}
+			void readJsonBody(req)
+				.then((body) => {
+					const sessionId = typeof body.sessionId === "string" ? body.sessionId : "";
+					const text = typeof body.text === "string" ? body.text.trim() : "";
+					const mode = body.mode === "steer" ? "steer" : "queue";
+					if (!sessionId || !text) {
+						writeJson(res, 400, { code: "bad_message", message: "sessionId and text are required" });
+						return;
+					}
+					deps.playerPipeline.submit(sessionId, text, mode);
+					writeJson(res, 200, { accepted: true });
+				})
+				.catch((error: unknown) => {
+					writeJson(res, 400, { code: "bad_request", message: error instanceof Error ? error.message : String(error) });
+				});
+		} })
+	);
+
 	// Camera tool result: the browser delivers the captured frame for a
 	// pending `camera-capture` request (or reports failure with null).
 	disposers.push(
@@ -431,8 +473,14 @@ export function installRoutes(ctx: Context, deps: RouteDeps): (() => void) | und
 				: deps.getConfig();
 			const catalog = resolveModelCatalog(config);
 			const entry = resolveModelSelection(config, catalog);
+			// Third-person: the player avatar (another catalog entry, if selected).
+			const playerEntry = config.playerModelSelection ? catalog.find((model) => model.name === config.playerModelSelection) : undefined;
+			const thirdPerson = config.thirdPerson === true;
+			const player = thirdPerson && playerEntry
+				? { name: playerEntry.name, label: playerEntry.label, kind: playerEntry.kind, url: modelUrl(playerEntry) }
+				: undefined;
 			if (entry === undefined) {
-				writeJson(res, 200, { configured: Boolean(config.modelPath), url: undefined });
+				writeJson(res, 200, { configured: Boolean(config.modelPath), url: undefined, thirdPerson, player });
 				return;
 			}
 			writeJson(res, 200, {
@@ -440,12 +488,20 @@ export function installRoutes(ctx: Context, deps: RouteDeps): (() => void) | und
 				url: modelUrl(entry),
 				name: entry.name,
 				label: entry.label,
+				kind: entry.kind,
+				group: entry.group,
+				groupLabel: entry.group ? (GROUP_LABELS[entry.group] ?? entry.group) : undefined,
 				current: entry.name,
 				models: catalog.map((model) => ({
 					name: model.name,
 					label: model.label,
+					kind: model.kind,
+					group: model.group,
+					groupLabel: model.group ? (GROUP_LABELS[model.group] ?? model.group) : undefined,
 					url: modelUrl(model),
 				})),
+				thirdPerson,
+				player,
 			});
 		} })
 	);
@@ -606,6 +662,14 @@ export function installRoutes(ctx: Context, deps: RouteDeps): (() => void) | und
 			if (!serveFile(res, corePath, 86_400)) writeJson(res, 404, { code: "core_missing" });
 		} })
 	);
+	// Cubism 2.1 core (legacy .moc models, official SDK retired 2019; kept
+	// from the dylanNew/live2d archive for local personal use).
+	const core2Path = resolve(dirname(fileURLToPath(import.meta.url)), "../assets/cubism2/live2d.min.js");
+	disposers.push(
+		webServer.register({ kind: "exact", path: CORE2_SCRIPT_PATH, handler: (_req, res) => {
+			if (!serveFile(res, core2Path, 86_400)) writeJson(res, 404, { code: "core2_missing" });
+		} })
+	);
 
 	// Client diagnostics / error logger: records browser-side crashes,
 	// WebGL context lost, unhandled rejections, and ErrorBoundary events to host logs.
@@ -637,11 +701,13 @@ export function installRoutes(ctx: Context, deps: RouteDeps): (() => void) | und
 		} })
 	);
 
-	// Load Cubism Core on every index.html render (pixi-live2d-display needs
-	// window.Live2DCubismCore before the first model loads).
+	// Load the Cubism cores on every index.html render (pixi-live2d-display
+	// needs window.Live2DCubismCore for moc3 and window.Live2D for moc2
+	// before the first model loads).
 	disposers.push(
 		ctx.on("webserver/index-inject", (table) => {
 			table.push({ kind: "script-src", placement: "head", src: CORE_SCRIPT_PATH });
+			table.push({ kind: "script-src", placement: "head", src: CORE2_SCRIPT_PATH });
 		})
 	);
 

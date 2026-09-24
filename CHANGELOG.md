@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.5.0 (2026-09-25)
+
+- **第三人称模式**：开启后玩家拥有自己的角色模型与音色，与 AI 角色同台双角色演出（左玩家、右 AI）。用户输入（键盘/语音）先经可选润色/翻译层，改写成玩家角色的台词（按 `playerPrompt` 人设与 `playerSpeechLanguage` 语言，句首情绪标签驱动玩家模型表情），由玩家皮套先念出（TTS + 口型 + 字幕「你」徽章），AI 皮套再回应；润色后的台词才是进入会话日志的 user 消息
+- 顺序保证：玩家台词 TTS 合成完成后才向 agent 提交——SSE 音频事件严格先玩家后 AI，客户端单音频队列天然有序，AI 生成与玩家台词播放并行；玩家开口即打断在途 AI 语音（`applySpeechTap` 新增 supersede）；host 侧每会话串行队列，快速连发不丢句
+- 降级兜底：润色失败/超时/空结果自动回退原文；TTS 失败字幕照发、消息照常提交；`thirdPerson` 关闭时 `/player-line` 直连旧提交链路（⚙ 可即时切换）
+- 双模型共享单个 Pixi Application（Cubism WebGLManager 是全局单例持 gl 指针，双 WebGL context 互相抢占会使先挂载模型每帧 bindTexture INVALID_OPERATION 渲染空白）；AI/玩家模型 `setLayout` 开关切换重排不重载
+- 回声防护：玩家台词与 AI 台词一样进入 ASR 回声参照文本；「酝酿中…」pending 占位（置灰）不进日志、不进回声参照
+- 配置新增 `thirdPerson` / `playerModelSelection` / `playerVoiceId`（默认元气少年音）/ `playerPolish` / `playerSpeechLanguage` / `playerPrompt` / `playerEmotionMap`；⚙ 快捷面板「第三人称」区 + 系统设置「第三人称模式（玩家化身）」模块卡
+- e2e：新增 `verify-third-person.mjs` 28 项（配置面/双模型同台/polish-off 全链路/日志/中→日润色/关闭兜底/pageerror）；`verify-live.mjs`/`verify-voice.mjs` 修复过期选择器（`.lv-sub`→`.lv-sub-card`、键盘→打字输入）并加固断言（22/22、17/17）
+
 ## 1.4.1 (2026-09-25)
 
 - **修复语音消息重复提交**：流式 ASR 事件此前按会话广播，同一会话若有多个 Live2D 视图实例（如 GUI tab 未卸载、或 GUI + 独立入口双开）会各自提交同一句语音 → 对话里出现重复消息。现在每次上行携带随机 `up` 上传标识（WS 查询参数 → SSE `asr-interim`/`asr-final` payload 回传），只有发起该次上传的视图才提交/显示 interim，其余视图静默——单视图、多视图、双设备场景都只提交一次

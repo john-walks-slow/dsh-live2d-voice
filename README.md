@@ -16,6 +16,7 @@ DSH 插件：在会话视图里新增 **Live2D** tab——Live2D 角色随对话
 - 📱 **陀螺仪视差**（v1.2.0 实验性）：倾斜手机，角色的头部/身体/视线与位置随之偏移——"角色在屏幕玻璃后面"的立体错觉（开启时以当前握持姿势为正中；⚙ 可开关）
 - 🚪 **独立入口**（v1.3.0，v1.4.1 起 GUI 的 Live2D 界面有"独立入口"按钮直达）：`/live2d-voice/app?session=<id>`——无 GUI 界面的单会话角色页，自带全部能力（语音/字幕/翻译/设置/全屏/实验特性）；冷会话自动经会话控制器恢复（带完整 preset），支持 steer 插话
 - 🎨 **deepseek娘**（v1.3.0 内容）：AI 生成贴图重皮的角色模型（基座 haru，gemini 整图重绘 + alpha 回贴 + UV 覆盖校验），参数驱动与基座逐位一致；见模型库 CATALOG.md
+- 🎭 **第三人称模式**（v1.5.0）：开启后玩家也有自己的角色与音色——双角色同台（左玩家、右 AI）；输入先经润色/翻译层（可选）变成玩家角色的台词，由玩家皮套先念出（TTS + 口型 + 字幕「你」徽章），AI 皮套再回应
 - ⌨ **键盘输入**：在 Live2D 页直接对话（走 GUI 会话通道，冷会话自动创建/resume agent）
 - ⚙ **音色快切**：HUD 内置 5 个预设音色，即选即生效
 - 🔇 **静音开关**：只看口型不听声
@@ -76,6 +77,22 @@ pnpm install && sv restart dsh   # 重启 dsh 生效
   // 例："无论用户说什么语言，总是用日语自然交流。用户会看到字幕翻译。"
   "speechPrompt": "",
 
+  // ── 第三人称模式（v1.5.0）──
+  // 总开关：开启后输入由玩家化身先说出（润色 → 玩家 TTS → AI 回应）
+  "thirdPerson": false,
+  // 玩家角色（多模型目录中的角色名；空 = 无形象，仅语音"画外音"）
+  "playerModelSelection": "",
+  // 玩家音色（Fish Audio 预设任选；与 AI 同音色时 ⚙ 会提示换一个）
+  "playerVoiceId": "ed3a1c523b524870a85a5a76cb1e0c3d",
+  // 润色/翻译层：把输入改写成玩家角色的台词（失败自动回退原文）
+  "playerPolish": true,
+  // 玩家角色说话语言（润色目标语言；auto = 不限）
+  "playerSpeechLanguage": "zh",
+  // 玩家人设：润色时的角色设定（语气/口癖/自称等）
+  "playerPrompt": "",
+  // 玩家情绪标签 → 玩家模型表情（同 emotionMap 格式）
+  "playerEmotionMap": {},
+
   // per-workspace 覆盖（可选）：按会话工作区的绝对路径覆盖表现层配置
   // "workspaces": {
   //   "/root/projects/xxx": { "voiceId": "abf4fa2e25634b41aadc4e0ef9ddaea5", "speechLanguage": "zh" }
@@ -97,10 +114,18 @@ pnpm install && sv restart dsh   # 重启 dsh 生效
 | `asrMode` | `"stream"` | 语音识别传输：`stream`（默认）实时推流（边说边出字幕、说完 ≈0.6s 定稿；不支持日语/韩语输入）；`nostream` 一次性整句识别（延迟 ≈1.3s；25 语种含日语） |
 | `speechLanguage` | `"ja"` | 角色说话语言，注入"始终用 X 语言交流"指令；`auto` 跟随用户语言（不注入语言指令）。日语指令中的"（用户会看到字幕翻译）"承诺仅在 `subtitleLanguage` 实际生效（非 `off` 且不同于角色语言）时出现 |
 | `subtitleLanguage` | `"zh"` | 角色台词的翻译目标语言（`off` 关闭；与会话生效的 `speechLanguage` 相同或 `speechLanguage=auto` 时可能整句透传，按需配置；可覆盖于 workspaces） |
+| `sentenceSubtitles` | `true` | 逐句字幕：开启（默认）时每句独立 TTS、字幕逐句跟随发音；关闭时句子攒成段落块，一次 TTS 合成、字幕按段显示（语音更连贯、首音稍晚） |
 | `eyeTracking` | `false` | 实验性：前置摄像头视线追踪（⚙ 面板可切换；首次开启经插件路由下载视线模型） |
 | `gyroParallax` | `false` | 实验性：陀螺仪视差（DeviceOrientation → 头部/身体/眼球角度 + 位置偏移；开启时校准正中姿势） |
 | `emotionMap` | 9 情绪默认表 | 标签 → 表情索引/名称（neutral/joy/sappiness/sadness/anger/surprise/fear/disgust/shy） |
 | `speechPrompt` | `""` | 自定义指令，仅语音模式生效（HUD ⚙ 里也能编辑） |
+| `thirdPerson` | `false` | 第三人称模式总开关（⚙ 面板与系统设置可切，写回配置）；开启后输入由玩家化身先说出 |
+| `playerModelSelection` | `""` | 玩家角色（多模型目录中的角色名）；空 = 无形象仅语音"画外音"，未选模型也可开模式 |
+| `playerVoiceId` | 元气少年音 | 玩家音色（Fish Audio 参考音色 id，预设任选；与 AI 音色相同时 ⚙ 提示换一个） |
+| `playerPolish` | `true` | 润色/翻译层：把输入改写成玩家角色的台词（按 `playerPrompt` 人设与 `playerSpeechLanguage`）；关闭 = 原文直念 |
+| `playerSpeechLanguage` | `"zh"` | 玩家角色说话语言（润色目标语言；`auto` = 不限） |
+| `playerPrompt` | `""` | 玩家人设，润色提示词的一部分（语气/口癖/自称等） |
+| `playerEmotionMap` | 9 情绪默认表 | 玩家情绪标签 → 玩家模型表情索引/名称（同 `emotionMap` 格式） |
 | `workspaces` | `{}` | per-workspace 覆盖：`{ "<工作区绝对路径>": { voiceId, modelPath, modelSelection, speechLanguage, sttLanguage, subtitleLanguage, speechPrompt, emotionMap 任选 } }`；凭证类字段只在全局层 |
 
 **提示词注入是会话级、按需生效的**：只有当前会话打开了 Live2D 视图（SSE 在连）时，才会注入"语音输出格式 + 情绪标签"提示词（含 `speechPrompt` 自定义指令）；普通 Chat 会话完全不受影响。从 Live2D 切回普通对话后的首轮回复会自动附上一段"已退出语音模式"的提醒，模型随即恢复正常 Markdown/代码块输出，对话可以无缝续接。
@@ -143,6 +168,14 @@ cd ~/.dsh/live2d-voice-models
 - `modelPath` 放多个角色子目录时，⚙ 面板出现「角色模型」切换器，点击即换（模型立即重新加载）
 - 角色台词若与 `subtitleLanguage` 不同语言，会自动翻译并以小字附在原句下方（用当前会话同款模型，逐句异步，不影响语音节奏）
 - `workspaces` 按工作区路径覆盖配置：不同工作区的会话可以各有各的音色/角色/语言
+
+第三人称模式（v1.5.0）：
+
+- ⚙ 面板或系统设置开启「第三人称」后，舞台变双角色同台：左侧玩家角色（`playerModelSelection`）、右侧 AI 角色；开关切换即时重排、不重载模型
+- 键盘/语音输入不再直接交给 AI：先（可选，`playerPolish`）润色成玩家角色的台词 → 玩家音色念出（字幕行带「你」徽章）→ AI 角色回应；**润色后的台词才是进入会话日志的消息**（Chat tab 所见即玩家皮套所说）
+- 提交后字幕区先出一行置灰的「酝酿中…」瞬态提示，玩家台词到达即替换；关闭润色则原文直念
+- 未选玩家模型也可开启：无形象的"画外音"模式（润色/语音/字幕照常，仅无口型与形象）
+- 玩家台词播放中再次开口（键盘或语音）会打断当前播放，barge-in 语义与第一人称一致；AI 回应中插话同样切断 AI 语音
 
 语音输入细节：
 
@@ -196,6 +229,7 @@ cd ~/.dsh/live2d-voice-models
 - 防重复提交：每次上行带随机 `up` 标识，`asr-interim`/`asr-final` 事件回传该标识，仅发起上传的视图处理（GUI tab 缓存未卸载、GUI + 独立入口双开、双设备都不再重复提交同一句）
 - 浏览器→host 上行走 WebSocket（每句一连接）：Chromium 的 `ReadableStream` fetch body 只支持 HTTP/2（HTTP/1.1 下 `ERR_ALPN_NEGOTIATION_FAILED`），而 harness webserver 是 HTTP/1.1
 - 字幕翻译是 host 侧一次性 `ctx.llm.stream` 调用（复用会话的 provider/model，无 sessionId/purpose 故不会被本插件 tap 回环）；每会话串行队列、最多积压 2 句，超出丢最旧——字幕时效优先；译文经 SSE `subtitle-translation` 按 `lineId` 回贴
+- 第三人称管线（v1.5.0）：输入 POST `/live2d-voice/player-line` → host 侧每会话串行队列（润色 = 无 sessionId 的一次性 `ctx.llm.stream` → 玩家表情 → Fish TTS(playerVoiceId)）→ SSE 事件带 `speaker:"player"`（事件名全部复用，缺省 = assistant，向后兼容）→ **玩家台词 TTS 合成完成后才向 agent 提交**，音频事件严格先玩家后 AI；双模型共享单个 Pixi Application（Cubism WebGLManager 是全局单例持 gl 指针，双 WebGL context 会互相抢占致先挂载模型渲染空白）
 
 ## 开发
 
@@ -203,13 +237,14 @@ cd ~/.dsh/live2d-voice-models
 npm install        # .npmrc 已设 legacy-peer-deps（client 包 0.1.1-rc.2 peer 与 host 0.1.5-rc.3 冲突）
 npm run typecheck
 npm run build      # lib/index.js (host ESM) + lib/client.js (浏览器 bundle)
-node e2e/verify-live.mjs     # Phase 1 端到端回归 21 项（需 e2e 实例跑在 4188，见 dsh-e2e skill）
+node e2e/verify-live.mjs     # Phase 1 端到端回归 22 项（需 e2e 实例跑在 4188，见 dsh-e2e skill）
 node e2e/verify-voice.mjs    # Phase 2 语音闭环 17 项（同上；需 /tmp/t-zh-16k.pcm 与 /tmp/t-ja-16k.pcm 测试音频；断言 nostream 传输路径）
 node e2e/verify-stream.mjs   # 流式 ASR 全链路：实时推流 → asr-interim/asr-final → 自动提交（同上环境）
 node e2e/verify-phase3.mjs   # Phase 3 翻译/多模型/workspace 19 项（需 /root/.dsh-e2e-test-models 多模型夹具）
 node e2e/verify-v11.mjs      # v1.1.0 全屏/视线追踪资产/MediaPipe 加载/摄像头工具 10 项（需 --use-fake-device-for-media-stream）
 node e2e/verify-soak.mjs     # 长时闲置 soak（默认 6 分钟，SOAK_MINUTES 可调）
 node e2e/verify-standalone.mjs # 独立入口 12 项（无参引导/挂载/键盘提交/冷会话恢复/语音回路）
+node e2e/verify-third-person.mjs # 第三人称模式 28 项（配置面/双模型同台/全链路 SSE/日志/中→日润色/关闭兜底）
 
 > 语音/Phase 3 脚本默认硬编码本机 playwright-core（/root/projects/camoufox-mcp/node_modules）与 chromium 路径；`E2E_URL`/`E2E_CFG` 环境变量可覆盖实例地址与配置文件。
 ```

@@ -66,6 +66,25 @@ export async function postMessage(sessionId: string, text: string, mode: "queue"
 }
 
 /**
+ * Submit one user line through the third-person player pipeline: the host
+ * polishes it into the player persona's line, speaks it with the player's
+ * avatar (SSE speaker:"player" events), and only then submits it to the
+ * agent. Resolves as soon as the line is accepted (draft can clear); the
+ * line itself arrives over SSE.
+ */
+export async function postPlayerLine(sessionId: string, text: string, mode: "queue" | "steer" = "queue"): Promise<void> {
+	const response = await fetch("/live2d-voice/player-line", {
+		method: "POST",
+		headers: { "content-type": "application/json" },
+		body: JSON.stringify({ sessionId, text, mode }),
+	});
+	if (!response.ok) {
+		const body = (await response.json().catch(() => ({}))) as { message?: string };
+		throw new Error(body.message ?? `HTTP ${response.status}`);
+	}
+}
+
+/**
  * Recognize one buffered utterance (VAD-closed by the mic layer): raw 16kHz
  * s16le mono PCM body in, transcript out. Each call is an independent HTTP
  * request, so overlapping segments cannot interleave.

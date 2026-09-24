@@ -1,10 +1,11 @@
 /**
  * The llm/stream tap: sentence the assistant stream, drive expressions and
  * subtitles, and synthesize speech sentence-by-sentence while the model is
- * still writing. Assistant subtitles are additionally translated into the
- * configured subtitle language through one-shot llm calls that reuse the
- * session's own provider/model (never tapped back: they carry no sessionId
- * and no purpose).
+ * still writing. When the stream ends, the whole utterance is translated
+ * into the configured subtitle language through a single one-shot llm call
+ * (one TTFT instead of one per sentence) that reuses the session's own
+ * provider/model (never tapped back: it carries no sessionId and no
+ * purpose); the result is split back onto the per-line subtitles.
  *
  * Only sessions with a live SSE listener (an open Live2D view) are tapped;
  * every other stream passes through untouched — except recently-exited
@@ -80,19 +81,29 @@ class TranslationQueue {
 	}
 }
 
-export function applySpeechTap(ctx: Context, deps: SpeechDeps): void {
+/**
+ * Install the tap. Returns `supersede(sessionId)`: abort the session's
+ * in-flight assistant TTS — the third-person player pipeline calls it when
+ * the user's new line interrupts the AI mid-speech.
+ */
+export function applySpeechTap(ctx: Context, deps: SpeechDeps): (sessionId: string) => void {
 	const active = new Map<string, ActiveSpeech>();
 	const translations = new Map<string, TranslationQueue>();
 
-	const translate = async (
+	/**
+	 * One-shot translation of a whole utterance: one llm call, one TTFT
+	 * (instead of one call per sentence stacking latency). Returns the
+	 * translated text; the caller splits it back onto the per-line
+	 * subtitles. Best-effort: "" means "no translation".
+	 */
+	const translateOnce = async (
 		sessionId: string,
 		model: SessionModel,
-		lineId: string,
 		text: string,
 		targetLanguage: string,
 		signal: AbortSignal,
-	): Promise<void> => {
-		if (signal.aborted || !deps.hub.has(sessionId)) return;
+	): Promise<string> => {
+		if (signal.aborted || !deps.hub.has(sessionId)) return "";
 		let translated = "";
 		try {
 			const stream = ctx.llm.stream({
@@ -103,16 +114,14 @@ export function applySpeechTap(ctx: Context, deps: SpeechDeps): void {
 				signal,
 			});
 			for await (const chunk of stream) {
-				if (signal.aborted) return;
+				if (signal.aborted) return "";
 				if (chunk.type === "text-delta" && chunk.text) translated += chunk.text;
 			}
 		} catch {
-			return; // translation is best-effort; the original line stands
+			return ""; // translation is best-effort; the original line stands
 		}
-		translated = translated.trim();
-		if (translated && translated !== text) {
-			deps.hub.emit(sessionId, "subtitle-translation", { lineId, text: translated });
-		}
+		const trimmed = translated.trim();
+		return trimmed !== text ? trimmed : "";
 	};
 
 	ctx.on("llm/stream", (options, next) => {
@@ -134,7 +143,7 @@ export function applySpeechTap(ctx: Context, deps: SpeechDeps): void {
 			})();
 		}
 		// The conversation's own model — translation calls reuse it.
-		return speak(deps, active, translations, translate, sessionId, { provider: options.provider, model: options.model }, next());
+		return speak(deps, active, translations, translateOnce, sessionId, { provider: options.provider, model: options.model }, next());
 	});
 
 	// REC-05: the last SSE listener for a session left — stop synthesizing
@@ -143,16 +152,20 @@ export function applySpeechTap(ctx: Context, deps: SpeechDeps): void {
 		active.get(sessionId)?.abort.abort();
 		translations.delete(sessionId);
 	});
+
+	// Third-person: a new player line interrupts the AI's pending synthesis.
+	return (sessionId: string) => {
+		active.get(sessionId)?.abort.abort();
+	};
 }
 
-type TranslateFn = (
+type TranslateOnceFn = (
 	sessionId: string,
 	model: SessionModel,
-	lineId: string,
 	text: string,
 	targetLanguage: string,
 	signal: AbortSignal,
-) => Promise<void>;
+) => Promise<string>;
 
 /**
  * Wrap one model stream. Emits speech-start/audio-start up front, feeds each
@@ -165,7 +178,7 @@ async function* speak(
 	deps: SpeechDeps,
 	active: Map<string, ActiveSpeech>,
 	translations: Map<string, TranslationQueue>,
-	translate: TranslateFn,
+	translate: TranslateOnceFn,
 	sessionId: string,
 	model: SessionModel,
 	chunks: AsyncIterable<StreamChunk>,
@@ -179,15 +192,47 @@ async function* speak(
 	active.set(sessionId, { utteranceId, abort: controller });
 
 	const buffer = new SentenceBuffer();
+	// Whole-utterance source lines, fed to one-shot translation once the
+	// stream ends (translation starts in parallel with the TTS drain).
+	const lines: Array<{ lineId: string; text: string }> = [];
 	let seq = 0;
 	let lineSeq = 0;
-	// Serial sentence pipeline: each entry waits for the previous TTS call.
+	// Serial pipeline: each unit waits for the previous TTS call.
 	let queue: Promise<void> = Promise.resolve();
-	const enqueue = (sentence: string): void => {
-		const lineId = `${utteranceId}-${++lineSeq}`;
+	// sentenceSubtitles: per-sentence TTS + subtitle (default, subtitles stay
+	// voice-synced). Off → sentences batch into paragraph chunks: one TTS
+	// call + one subtitle line per chunk (smoother speech, chunk-level
+	// subtitles). Emotion tags still fire per sentence in both modes.
+	const sentenceMode = config.sentenceSubtitles !== false;
+	const BLOCK_SENTENCES = 3;
+	const BLOCK_CHARS = 140;
+	const vocabulary = new Set(Object.keys(config.emotionMap));
+	let blockLines: string[] = [];
+	const enqueueUnit = (lineId: string, text: string): void => {
 		queue = queue.then(() =>
-			speakSentence(deps, translations, translate, sessionId, model, utteranceId, lineId, sentence, config, apiKeys, controller.signal, () => seq++)
+			speakSentence(deps, sessionId, utteranceId, lineId, text, config, apiKeys, controller.signal, () => seq++, lines)
 		);
+	};
+	const flushBlock = (): void => {
+		if (blockLines.length === 0) return;
+		enqueueUnit(`${utteranceId}-${++lineSeq}`, blockLines.join(""));
+		blockLines = [];
+	};
+	const handleSentence = (raw: string): void => {
+		if (sentenceMode) {
+			enqueueUnit(`${utteranceId}-${++lineSeq}`, raw);
+			return;
+		}
+		const { clean, emotions } = extractEmotionTags(raw, vocabulary);
+		const emotion = emotions.at(-1);
+		if (emotion !== undefined) {
+			deps.hub.emit(sessionId, "expression", { utteranceId, emotion, expression: config.emotionMap[emotion] });
+		}
+		const text = clean.trim();
+		if (!text) return;
+		blockLines.push(text);
+		const chars = blockLines.reduce((n, line) => n + line.length, 0);
+		if (blockLines.length >= BLOCK_SENTENCES || chars >= BLOCK_CHARS) flushBlock();
 	};
 
 	let settled = false;
@@ -214,11 +259,25 @@ async function* speak(
 	try {
 		for await (const chunk of chunks) {
 			if (chunk.type === "text-delta" && chunk.text) {
-				for (const sentence of buffer.push(chunk.text)) enqueue(sentence);
+				for (const sentence of buffer.push(chunk.text)) handleSentence(sentence);
 			}
 			yield chunk;
 		}
-		for (const sentence of buffer.flush()) enqueue(sentence);
+		for (const sentence of buffer.flush()) handleSentence(sentence);
+		if (!sentenceMode) flushBlock();
+		// Whole-utterance translation: one call, one TTFT — starts as soon as
+		// the stream ends, in parallel with the TTS drain (never delays
+		// audio). Reuses the serial per-session translation queue.
+		const target = config.subtitleLanguage;
+		if (target && target !== "off" && target !== config.speechLanguage && lines.length > 0 && deps.hub.has(sessionId)) {
+			let tq = translations.get(sessionId);
+			if (tq === undefined) {
+				tq = new TranslationQueue();
+				translations.set(sessionId, tq);
+			}
+			const snapshot = lines.slice();
+			tq.push(() => translateWhole(deps, translate, sessionId, model, snapshot, target, controller.signal));
+		}
 		// BLK-02: do NOT await the queue here — the turn settles now; the
 		// background drain owns audio-end/speech-end.
 		void drain();
@@ -232,18 +291,17 @@ async function* speak(
 
 /**
  * Speak one sentence: expression → TTS (streaming PCM). The subtitle is
- * emitted with the first PCM chunk so it tracks actual playback rather than
- * racing ahead of synthesis; when no TTS runs (no keys / failure) it falls
- * back to an immediate emit. Translation into the subtitle language is
- * enqueued after the subtitle (best-effort, serial per session). Never
- * rejects.
+ * emitted with the first PCM chunk's audioSeq so the client shows it when
+ * that chunk actually starts playing (host synthesis runs ahead of browser
+ * playback — a naive emit would let subtitles race ahead of the voice);
+ * when no TTS runs (no keys / failure) audioSeq stays undefined and the
+ * client shows it immediately. The clean sentence is also collected into
+ * `lines` — the whole utterance is translated once (see translateWhole),
+ * never per sentence. Never rejects.
  */
 async function speakSentence(
 	deps: SpeechDeps,
-	translations: Map<string, TranslationQueue>,
-	translate: TranslateFn,
 	sessionId: string,
-	model: SessionModel,
 	utteranceId: string,
 	lineId: string,
 	raw: string,
@@ -251,6 +309,7 @@ async function speakSentence(
 	apiKeys: string[],
 	signal: AbortSignal,
 	nextSeq: () => number,
+	lines: Array<{ lineId: string; text: string }>,
 ): Promise<void> {
 	const vocabulary = new Set(Object.keys(config.emotionMap));
 	const { clean, emotions } = extractEmotionTags(raw, vocabulary);
@@ -260,11 +319,12 @@ async function speakSentence(
 	}
 	const text = clean.trim();
 	if (!text) return;
+	lines.push({ lineId, text });
 	let subtitled = false;
-	const emitSubtitle = (): void => {
+	const emitSubtitle = (audioSeq?: number): void => {
 		if (subtitled) return;
 		subtitled = true;
-		deps.hub.emit(sessionId, "subtitle", { role: "assistant", text, utteranceId, lineId });
+		deps.hub.emit(sessionId, "subtitle", { role: "assistant", text, utteranceId, lineId, audioSeq });
 	};
 	if (apiKeys.length === 0) {
 		emitSubtitle();
@@ -272,8 +332,9 @@ async function speakSentence(
 	}
 	try {
 		await synthesize({ text, voiceId: config.voiceId, model: config.ttsModel, apiKeys, signal }, (pcm) => {
-			emitSubtitle();
-			deps.hub.emit(sessionId, "audio", { utteranceId, seq: nextSeq(), b64: pcm.toString("base64") });
+			const seq = nextSeq();
+			emitSubtitle(seq);
+			deps.hub.emit(sessionId, "audio", { utteranceId, seq, b64: pcm.toString("base64") });
 		});
 	} catch (error) {
 		if (signal.aborted) return;
@@ -282,14 +343,44 @@ async function speakSentence(
 		// No audio will come (TTS failed or produced nothing) — still subtitle.
 		emitSubtitle();
 	}
-	// Subtitle translation: only when a distinct target language is set.
-	const target = config.subtitleLanguage;
-	if (target && target !== "off" && target !== config.speechLanguage && deps.hub.has(sessionId)) {
-		let queue = translations.get(sessionId);
-		if (queue === undefined) {
-			queue = new TranslationQueue();
-			translations.set(sessionId, queue);
+}
+
+/**
+ * Translate a whole utterance with one llm call, then split the translated
+ * text back onto the original subtitle lines. Sentence boundaries may shift
+ * in translation — attach by index; surplus translated sentences merge into
+ * the last line, missing ones leave their line without a translation.
+ * Best-effort: never throws.
+ */
+async function translateWhole(
+	deps: SpeechDeps,
+	translate: TranslateOnceFn,
+	sessionId: string,
+	model: SessionModel,
+	lines: Array<{ lineId: string; text: string }>,
+	targetLanguage: string,
+	signal: AbortSignal,
+): Promise<void> {
+	const whole = lines.map((line) => line.text).join("");
+	const translated = await translate(sessionId, model, whole, targetLanguage, signal);
+	if (!translated) return;
+	const buffer = new SentenceBuffer();
+	const sentences = buffer.push(translated);
+	sentences.push(...buffer.flush());
+	const perLine: string[] = new Array(lines.length).fill("");
+	let idx = 0;
+	for (const sentence of sentences) {
+		if (idx < lines.length) {
+			perLine[idx] = sentence;
+			idx += 1;
+		} else {
+			// Surplus translated sentences keep flowing into the final line.
+			perLine[perLine.length - 1] += sentence;
 		}
-		queue.push(() => translate(sessionId, model, lineId, text, target, signal));
+	}
+	for (let i = 0; i < lines.length; i++) {
+		if (perLine[i]) {
+			deps.hub.emit(sessionId, "subtitle-translation", { lineId: lines[i].lineId, text: perLine[i] });
+		}
 	}
 }

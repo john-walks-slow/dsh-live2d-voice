@@ -1,0 +1,243 @@
+{
+  "checks": [
+    {
+      "id": "boot.session",
+      "ok": true,
+      "note": "session captured (session-301929be-4…)"
+    },
+    {
+      "id": "boot.view",
+      "ok": true,
+      "note": "Live2D view mounted"
+    },
+    {
+      "id": "F1a.playerAvatar",
+      "ok": true,
+      "note": "stage data-lv-player=\"deepseek-chan\""
+    },
+    {
+      "id": "F1b.sharedCanvas",
+      "ok": true,
+      "note": "single shared canvas (1)"
+    },
+    {
+      "id": "F1c.modelApi",
+      "ok": true,
+      "note": "/model thirdPerson=true player=deepseek-chan(DeepSeek娘 · 品牌拟人)"
+    },
+    {
+      "id": "F1d.gearSection",
+      "ok": true,
+      "note": "⚙ sections: 角色模型/第三人称/模型 · 思考程度/角色音色/识别语言/体感实验"
+    },
+    {
+      "id": "F1e.gearState",
+      "ok": true,
+      "note": "switches: 第三人称=true 润色=true; current pills: 春 · 前台接待版、DeepSeek娘 · 品牌拟人、元气少年音、温柔女仆 · 雷姆、自动"
+    },
+    {
+      "id": "F2a.pending",
+      "ok": true,
+      "note": "「酝酿中…」placeholder shown (+614ms)"
+    },
+    {
+      "id": "F2b.playerSubtitle",
+      "ok": true,
+      "note": "player subtitle over SSE: \"今天好累啊，随便回我一句呗。\" (+3510ms)"
+    },
+    {
+      "id": "F2c.polishedDiffers",
+      "ok": true,
+      "note": "polish transformed the line (changed)"
+    },
+    {
+      "id": "F2d.youBadge",
+      "ok": true,
+      "note": "placeholder retired + 「你」badge on player line"
+    },
+    {
+      "id": "F2e.playerSpeech",
+      "ok": true,
+      "note": "player events: start✓ audio×101 end✓ expr(neutral)"
+    },
+    {
+      "id": "F2f.aiReplies",
+      "ok": true,
+      "note": "assistant replied: \"お疲れさま、今日はゆっくり休んでね。…\" (+12525ms)"
+    },
+    {
+      "id": "F2g.ordering",
+      "ok": true,
+      "note": "wire order: last player chunk #110 < first assistant chunk #116"
+    },
+    {
+      "id": "F2h.chatTabUser",
+      "ok": true,
+      "note": "Chat tab user msg = polished(true) raw-absent(true)"
+    },
+    {
+      "id": "F2i.logPolished",
+      "ok": true,
+      "note": "session log holds the polished user message"
+    },
+    {
+      "id": "F2j.logNoRaw",
+      "ok": true,
+      "note": "raw input never enters the session log"
+    },
+    {
+      "id": "E3a.jaLine",
+      "ok": true,
+      "note": "ja polished line: \"もうほんと限界…今日ずっと残業しててさ、ちょっと慰めてほしい\" (+7116ms, expr=sadness)"
+    },
+    {
+      "id": "E3b.kana",
+      "ok": true,
+      "note": "line is Japanese (kana present)"
+    },
+    {
+      "id": "E3c.log",
+      "ok": true,
+      "note": "log holds ja line, raw zh absent"
+    },
+    {
+      "id": "F3a.gearToggle",
+      "ok": true,
+      "note": "润色 switch toggled off via ⚙ (config playerPolish=false)"
+    },
+    {
+      "id": "F3b.rawSpoken",
+      "ok": false,
+      "note": "player speaks raw line verbatim: \"NONE\" (audio×0)"
+    },
+    {
+      "id": "F3c.logRaw",
+      "ok": false,
+      "note": "session log records the raw line"
+    },
+    {
+      "id": "F4a.toggleOff",
+      "ok": true,
+      "note": "player avatar unmounted (true), thirdPerson=false"
+    },
+    {
+      "id": "F4b.gearCollapsed",
+      "ok": true,
+      "note": "⚙ keeps 第三人称 h4, switch off=false, sub-controls collapsed=true"
+    },
+    {
+      "id": "F4c.noPlayerEvents",
+      "ok": true,
+      "note": "no player SSE events after off (0)"
+    },
+    {
+      "id": "F4d.firstPerson",
+      "ok": false,
+      "note": "first-person chain: assistant replied directly \"…\" (+-ms, audio×0)"
+    },
+    {
+      "id": "F4e.logRaw",
+      "ok": false,
+      "note": "log records the raw first-person line"
+    },
+    {
+      "id": "Z.pageErrors",
+      "ok": true,
+      "note": "pageerror count=0"
+    }
+  ],
+  "timings": {
+    "f2": {
+      "tEnter": 1790289348929,
+      "tPending": 614,
+      "tPlayerSub": 3510,
+      "tPlayerStart": 1982,
+      "tPlayerEnd": 4696,
+      "tAsstSub": 12525,
+      "tAsstAudio": 12525,
+      "playerAudioN": 101,
+      "playerEmotion": "neutral"
+    },
+    "playerBurstShotMs": [
+      1162,
+      1017,
+      1219,
+      689,
+      837
+    ],
+    "aiBurstShotMs": [
+      864,
+      710,
+      790,
+      749,
+      753
+    ],
+    "e3": {
+      "tEnter": 1790289379659,
+      "tSub": 7116,
+      "tEnd": 10799,
+      "audioN": 142,
+      "emotion": "sadness",
+      "tAsstSub": 17631
+    },
+    "f3": {
+      "tEnter": 1790289404521,
+      "tSub": null,
+      "tAsstSub": null
+    },
+    "f4": {
+      "tEnter": 1790289653367,
+      "tAsstSub": null
+    }
+  },
+  "texts": {
+    "sessionId": "session-301929be-4d81-4989-a70a-c1bfc95e7dda",
+    "gear": {
+      "h4s": [
+        "角色模型",
+        "第三人称",
+        "模型 · 思考程度",
+        "角色音色",
+        "识别语言",
+        "体感实验"
+      ],
+      "tpOn": "true",
+      "polishOn": "true",
+      "currentPills": [
+        "春 · 前台接待版",
+        "DeepSeek娘 · 品牌拟人",
+        "元气少年音",
+        "温柔女仆 · 雷姆",
+        "自动"
+      ],
+      "hints": [
+        "玩家角色",
+        "玩家音色"
+      ]
+    },
+    "polishedZh": "今天好累啊，随便回我一句呗。",
+    "polishedJa": "もうほんと限界…今日ずっと残業しててさ、ちょっと慰めてほしい"
+  },
+  "pageErrors": [],
+  "consoleErrors": [
+    "Failed to load resource: the server responded with a status of 404 (Not Found)"
+  ],
+  "tabCheck": {
+    "chatOpened": true,
+    "polishedInChat": true,
+    "rawInChat": false
+  },
+  "shots": [
+    "01-dual-stage.png",
+    "02-gear-panel.png",
+    "m-player-1..5.png",
+    "m-ai-1..5.png",
+    "03-ai-reply.png",
+    "04-chat-log.png",
+    "05-ja-polish.png",
+    "06-gear-polish-off.png",
+    "07-polish-off-raw.png",
+    "08-single-stage.png",
+    "09-first-person.png"
+  ]
+}
