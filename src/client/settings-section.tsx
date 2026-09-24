@@ -229,6 +229,7 @@ export function Live2DSettingsSection() {
 	const [subLang, setSubLang] = useState("zh");
 	const [sttLang, setSttLang] = useState("auto");
 	const [asrMode, setAsrMode] = useState("stream");
+	const [micNs, setMicNs] = useState(true);
 	const [prompt, setPrompt] = useState("");
 	const [saving, setSaving] = useState(false);
 	// Live model auto-switch config
@@ -252,6 +253,7 @@ export function Live2DSettingsSection() {
 				setSubLang(data.config.subtitleLanguage || "zh");
 				setSttLang(data.config.sttLanguage || "auto");
 				setAsrMode(data.config.asrMode || "stream");
+				setMicNs(data.config.micNoiseSuppression !== false);
 				setPrompt(data.config.speechPrompt || "");
 				setLoading(false);
 			})
@@ -516,6 +518,22 @@ export function Live2DSettingsSection() {
 					{asrMode === "stream" && (
 						<div className="lv-set-help">流式模式下语言自动检测中/英近方言，此处锁定仅在「一次性」模式生效。</div>
 					)}
+				</div>
+				<div className="lv-set-field">
+					<label className="lv-set-label">麦克风降噪 (noiseSuppression)</label>
+					<select
+						className="lv-set-select"
+						value={micNs ? "on" : "off"}
+						onChange={(e) => {
+							const v = e.target.value === "on";
+							setMicNs(v);
+							handleSave({ micNoiseSuppression: v });
+						}}
+					>
+						<option value="on">开启（浏览器降噪，默认）</option>
+						<option value="off">关闭（原始麦克风信号）</option>
+					</select>
+					<div className="lv-set-help">关闭后采集原始音频（部分场景想用自己的处理/外接声卡时用）。</div>
 				</div>
 			</div>
 

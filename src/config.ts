@@ -87,6 +87,11 @@ export interface PluginConfig {
 	 */
 	micGain: number;
 	/**
+	 * Browser-level noise suppression (getUserMedia noiseSuppression).
+	 * On by default; some setups prefer the raw mic (own DSP / speaker).
+	 */
+	micNoiseSuppression: boolean;
+	/**
 	 * Volcengine ASR credentials file (JSON: appid/accessToken/apikey) for
 	 * the streaming speech-to-text relay.
 	 */
@@ -188,6 +193,7 @@ export const DEFAULT_CONFIG: PluginConfig = {
 	sttLanguage: "auto",
 	asrMode: "stream",
 	micGain: 1.5,
+	micNoiseSuppression: true,
 	asrCredentialsFile: join(homedir(), ".config/volc-asr/credentials.json"),
 	speechLanguage: "ja",
 	subtitleLanguage: "zh",

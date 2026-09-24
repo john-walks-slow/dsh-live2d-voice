@@ -131,6 +131,7 @@ export class MicCapture {
 	private node: AudioWorkletNode | null = null;
 	private events: MicEvents;
 	private gain: number;
+	private noiseSuppression: boolean;
 	private speakingSince = 0;
 	private lastSpeechAt = 0;
 	private inSpeech = false;
@@ -143,9 +144,10 @@ export class MicCapture {
 	private segment: Int16Array[] = [];
 	private segmentSamples = 0;
 
-	constructor(events: MicEvents, options?: { gain?: number }) {
+	constructor(events: MicEvents, options?: { gain?: number; noiseSuppression?: boolean }) {
 		this.events = events;
 		this.gain = options?.gain ?? 1.5;
+		this.noiseSuppression = options?.noiseSuppression ?? true;
 	}
 
 	get active(): boolean {
@@ -155,7 +157,11 @@ export class MicCapture {
 	async start(): Promise<void> {
 		if (this.running) return;
 		this.stream = await navigator.mediaDevices.getUserMedia({
-			audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+			audio: {
+				echoCancellation: true,
+				noiseSuppression: this.noiseSuppression,
+				autoGainControl: true,
+			},
 		});
 		// Anything failing past this point must not leak the mic — the tab
 		// would keep showing "recording" with no way to release it.

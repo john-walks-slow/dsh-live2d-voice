@@ -15,6 +15,8 @@ export interface PublicConfig {
 	asrMode: string;
 	/** Microphone soft-gain (>1 amplifies before VAD/ASR). */
 	micGain?: number;
+	/** Browser-level noise suppression on the mic capture. */
+	micNoiseSuppression?: boolean;
 	speechLanguage: string;
 	subtitleLanguage: string;
 	speechPrompt: string;

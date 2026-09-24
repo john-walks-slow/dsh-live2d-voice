@@ -105,6 +105,8 @@ export function Live2DView(props: ViewProps) {
 	const [asrMode, setAsrMode] = useState("stream");
 	const asrModeRef = useRef("stream");
 	asrModeRef.current = asrMode;
+	const micGainRef = useRef(1.5);
+	const micNsRef = useRef(true);
 	/** Live interim transcript shown in the mic bar while listening. */
 	const [interimText, setInterimText] = useState("");
 	const [eyeTracking, setEyeTracking] = useState(false);
@@ -174,6 +176,7 @@ export function Live2DView(props: ViewProps) {
 				setSttLanguage(config.sttLanguage);
 				setAsrMode(config.asrMode || "stream");
 				micGainRef.current = typeof config.micGain === "number" && config.micGain > 0 ? config.micGain : 1.5;
+				micNsRef.current = config.micNoiseSuppression !== false;
 				setEyeTracking(config.eyeTracking);
 				setGyroParallax(config.gyroParallax);
 			})
@@ -875,7 +878,7 @@ export function Live2DView(props: ViewProps) {
 				showToast(`麦克风错误：${message}`);
 				stopListening();
 			},
-		}, { gain: micGainRef.current });
+		}, { gain: micGainRef.current, noiseSuppression: micNsRef.current });
 		try {
 			await mic.start();
 		} catch (error) {
