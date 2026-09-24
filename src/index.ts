@@ -37,7 +37,7 @@ export function apply(ctx: Context): () => void {
 		resolveKeys: resolveApiKeys,
 		resolveSession: (sessionId) => resolveSessionConfig(ctx.agents, getConfig(), sessionId),
 	});
-	const disposePrompt = applySystemPrompt(ctx, {
+	const disposePrompt = applySpeechInjection(ctx, {
 		hub,
 		modes,
 		getConfig,

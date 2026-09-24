@@ -105,7 +105,7 @@ pnpm install && sv restart dsh   # 重启 dsh 生效
 
 **提示词注入是会话级、按需生效的**：只有当前会话打开了 Live2D 视图（SSE 在连）时，才会注入"语音输出格式 + 情绪标签"提示词（含 `speechPrompt` 自定义指令）；普通 Chat 会话完全不受影响。从 Live2D 切回普通对话后的首轮回复会自动附上一段"已退出语音模式"的提醒，模型随即恢复正常 Markdown/代码块输出，对话可以无缝续接。
 
-> **注意（与 dsh preset 的兼容）**：`systemPrompt` 的 `complete: true` 预设（如 `chat` 极简预设）会丢弃除 persona 外的所有提示词 section——Live2D 语音模式（情绪标签/语言指令/自定义要求）不会注入，角色表现为不遵守语音格式。使用此类预设时需将 persona 的 `complete` 改为 `false`（`~/.dsh/.agent-presets/<preset>/agent.cordis.yml`）。
+> **预设兼容**：语音模式指令以**用户消息注入**（`agent/pre-step` 向组装消息追加一条 role:user 的插件消息，参考 dsh-mnemon 的注入方式）而非 systemPrompt section——不受任何 preset 的 `complete: true` 语义影响，`chat` 等极简预设下同样生效。注入消息带 `source: {kind:"plugin", plugin:"dsh-live2d-voice"}` 标识，会话日志可见。
 
 内置音色预设（HUD ⚙ 里可直接切换）：
 
@@ -189,7 +189,7 @@ cd ~/.dsh/live2d-voice-models
                                              ParamMouthOpenY
 ```
 
-- 情绪协议（会话级按需注入）：仅当该会话的 Live2D 视图打开时，system prompt 才附加"语音输出格式"一节（order 9800，含 `speechLanguage` 指令与自定义 `speechPrompt`），要求模型句首输出 `[neutral|joy|sadness|anger|surprise|fear|disgust|shy]` 标签；句子层提取后映射为表情，标签本身不进字幕。切回 Chat 视图后下一轮自动撤下该节并附"已退出"提醒
+- 情绪协议（会话级按需注入）：仅当该会话的 Live2D 视图打开时，每轮以**用户消息注入**（`agent/pre-step` 追加 role:user 插件消息，`source.plugin="dsh-live2d-voice"`）注入"语音输出格式"指令（含 `speechLanguage` 指令与自定义 `speechPrompt`），要求模型句首输出 `[neutral|joy|sadness|anger|surprise|fear|disgust|shy]` 标签；句子层提取后映射为表情，标签本身不进字幕。切回 Chat 视图后下一轮自动注入"已退出"提醒
 - TTS 与 Turn 解耦：LLM 流结束即放行 Agent Turn 结算，剩余句子在后台继续合成；新一轮流开始或视图关闭时自动中止旧合成
 - 多 key 轮询：单 key 401/402/429 自动切下一个，全部失败才报错（SSE `error` 事件）
 - 语音识别（流式，默认）用火山 `bigmodel_async`（双向流式优化版 + `enable_nonstream` 二遍，v3 sauc 二进制帧协议，帧不带 seq）：边说边出实数 interim（SSE `asr-interim`），句末 `{"t":"finish"}` 控制帧触发定稿（SSE `asr-final`）；实测 4.7s 中文句说完 ≈0.6s 出最终文本；**语言参数仅 nostream 端点支持**，双向流式只覆盖中英+方言（日语实测空文本），故 `asrMode: nostream` 保留旧的 `bigmodel_nostream` 一次性整句识别（25 语种 `enable_auto_lang`，含 ja-JP）

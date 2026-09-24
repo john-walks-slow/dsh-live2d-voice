@@ -3,8 +3,8 @@
 ## 1.4.1 (2026-09-25)
 
 - **修复语音消息重复提交**：流式 ASR 事件此前按会话广播，同一会话若有多个 Live2D 视图实例（如 GUI tab 未卸载、或 GUI + 独立入口双开）会各自提交同一句语音 → 对话里出现重复消息。现在每次上行携带随机 `up` 上传标识（WS 查询参数 → SSE `asr-interim`/`asr-final` payload 回传），只有发起该次上传的视图才提交/显示 interim，其余视图静默——单视图、多视图、双设备场景都只提交一次
-- **语音模式提示词注入与 preset**：`systemPrompt` 的 `complete: true` 语义会丢弃除 persona 外的所有 section（dsh 设计如此）——`chat` 等极简预设下 Live2D 语音模式（情绪标签/日语指令/自定义附加要求）不会注入，表现为角色不遵守语音格式。已在 chat preset 配置中改为 `complete: false`；其他自建预设遇到同样问题时检查 persona 是否 `complete: true`
-- e2e：新增 `verify-nodup.mjs`（GUI tab + 独立入口双视图监听同一会话，语音只提交一次且 15s 内无延迟重复）
+- **语音模式提示词改为用户消息注入（兼容任意 preset）**：`systemPrompt` 的 `complete: true` 语义会丢弃除 persona 外的所有 section（dsh 设计如此），`chat` 等极简预设下语音模式指令（情绪标签/日语指令/自定义要求）完全丢失。修复：在 `agent/pre-step` 将语音模式指令作为 **role:user 的插件消息**追加进组装消息（参考 dsh-mnemon 的注入方式，`source.plugin="dsh-live2d-voice"`），绕开 systemPrompt 组装，任何 preset（含 `complete: true`）都生效；每轮注入一次、视图关闭自动切换为"已退出"提醒。chat preset 的临时 `complete: false` 改动已回滚
+- e2e：新增 `verify-nodup.mjs`（GUI tab + 独立入口双视图监听同一会话，语音只提交一次且 15s 内无延迟重复）、`verify-inject.mjs`（语音提交后断言会话日志出现插件 user/message 注入事件，含语音格式/日语指令/情绪标签）
 
 ## 1.4.0 (2026-09-24)
 
