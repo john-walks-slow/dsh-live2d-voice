@@ -10,12 +10,15 @@
  * The container has no audio hardware, so getUserMedia is patched to return
  * a marker stream and createMediaStreamSource is patched to hand the page a
  * GainNode tap inside the page's own AudioContext — PCM plays through a
- * BufferSource into that tap, and the page's real worklet/VAD/segment/POST
- * chain runs unchanged (single audio graph, no cross-context hop).
+ * BufferSource into that tap (with a 0.3s silence lead for VAD pre-roll
+ * margin), and the page's real worklet/VAD/segment/POST chain runs
+ * unchanged. A silent keep-alive oscillator holds the subgraph active —
+ * otherwise Chromium's silent-input optimization stops worklet process()
+ * once the test source ends and the VAD would never release.
  *
  * Usage: node e2e/verify-voice.mjs   (e2e instance on :4188, token e2etest,
- * expects /tmp/t-zh-16k.pcm + /tmp/t-ja-16k.pcm — regenerate via fish-tts,
- * see the header of e2e/verify-asr.mjs for the exact recipe)
+ * expects /tmp/t-zh-16k.pcm + /tmp/t-ja-16k.pcm; see verify-asr.mjs header
+ * for regenerating them)
  */
 import pw from '/root/projects/camoufox-mcp/node_modules/playwright-core/index.js';
 const { chromium } = pw;
@@ -75,6 +78,16 @@ const INIT = `
     const tap = this.createGain();
     tap.gain.value = 1;
     window.__lvTap = tap;
+    // Keep-alive: an always-running silent source keeps the subgraph active,
+    // otherwise Chromium may stop calling worklet process() once the test
+    // BufferSource ends (silent-input optimization) and VAD never releases.
+    try {
+      const osc = this.createOscillator();
+      const g = this.createGain();
+      g.gain.value = 0;
+      osc.connect(g); g.connect(tap); osc.start();
+      window.__lvKeepAlive = osc;
+    } catch (e) { log.push({ t: Date.now(), k: 'keepalive-fail', msg: String(e) }); }
     log.push({ t: Date.now(), k: 'tap-installed', ctx: this.state, sr: this.sampleRate });
     return tap;
   };
@@ -89,8 +102,9 @@ const INIT = `
     const c = window.__lvPageCtx;
     if (!c || !window.__lvTap) { log.push({ t: Date.now(), k: 'feed-fail', why: 'no-tap' }); return 'no-tap'; }
     const bin = atob(PCM[name]); const n = bin.length >> 1;
-    const buf = c.createBuffer(1, n, 16000); const ch = buf.getChannelData(0);
-    for (let i = 0; i < n; i++) ch[i] = ((((bin.charCodeAt(2 * i) | (bin.charCodeAt(2 * i + 1) << 8)) | 0) / 32768) * gain);
+    const LEAD = 16000 * 0.3; // silence head: margin for the VAD pre-roll
+    const buf = c.createBuffer(1, n + LEAD, 16000); const ch = buf.getChannelData(0);
+    for (let i = 0; i < n; i++) ch[i + LEAD] = ((((bin.charCodeAt(2 * i) | (bin.charCodeAt(2 * i + 1) << 8)) | 0) / 32768) * gain);
     const src = c.createBufferSource(); src.__lvT = true; src.buffer = buf;
     const g = c.createGain(); g.gain.value = gain;
     src.connect(g); g.connect(window.__lvTap);

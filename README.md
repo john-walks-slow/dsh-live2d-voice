@@ -7,7 +7,9 @@ DSH 插件：在会话视图里新增 **Live2D** tab——Live2D 角色随对话
 - 🎭 **Live2D 角色舞台**：Cubism 4 模型（pixi.js v7 渲染），说话时 `ParamMouthOpenY` 随音频 RMS 包络驱动口型，句级情绪标签切换表情
 - 🔊 **流式语音**：LLM 回复边生成边按句合成（Fish Audio，44100Hz PCM），SSE 推送、浏览器端队列播放；断句 / abort 与模型流同步
 - 🎙 **连续语音输入**（v0.2.0）：浏览器本地 VAD 分句 → 整句识别（火山 `bigmodel_nostream`，中/日/英自动检测）→ 识别完自动提交对话；支持说话打断（barge-in）与扬声器回声防护
-- 💬 **双语字幕**：用户与 AI 台词均显示（14s 淡出），可一键隐藏
+- 💬 **双语字幕**：用户与 AI 台词均显示（14s 淡出），可一键隐藏；角色台词自动翻译成目标语言（v0.3.0，走会话同款 LLM，一行原文一行译文）
+- 🎭 **多模型目录**（v0.3.0）：`modelPath` 指向多个角色子目录时 ⚙ 出现模型切换器，即选即换
+- 🗂 **per-workspace 覆盖**（v0.3.0）：按工作区路径覆盖音色/模型/语言等表现层配置，同一插件多工作区多角色
 - ⌨ **键盘输入**：在 Live2D 页直接对话（走 GUI 会话通道，冷会话自动创建/resume agent）
 - ⚙ **音色快切**：HUD 内置 5 个预设音色，即选即生效
 - 🔇 **静音开关**：只看口型不听声
@@ -58,18 +60,28 @@ pnpm install && sv restart dsh   # 重启 dsh 生效
   // 角色说话语言：ja（默认，角色始终用日语交流）| zh | en —— 注入 live 模式提示词
   "speechLanguage": "ja",
 
-  // 字幕翻译目标语言（Phase 3 生效）：zh | off
+  // 角色台词的翻译目标语言：zh / ja / en / ko…（languageLabel 支持即有效）；off 关闭
   "subtitleLanguage": "zh",
+
+  // 多模型目录下的当前选中角色（⚙ 里切换会写回）
+  "modelSelection": "",
 
   // 自定义提示词：仅在 Live2D 语音模式下随情绪标签协议一起注入
   // 例："无论用户说什么语言，总是用日语自然交流。用户会看到字幕翻译。"
-  "speechPrompt": ""
+  "speechPrompt": "",
+
+  // per-workspace 覆盖（可选）：按会话工作区的绝对路径覆盖表现层配置
+  // "workspaces": {
+  //   "/root/projects/xxx": { "voiceId": "abf4fa2e25634b41aadc4e0ef9ddaea5", "speechLanguage": "zh" }
+  // }
+  "workspaces": {}
 }
 ```
 
 | 字段 | 默认 | 说明 |
 | --- | --- | --- |
-| `modelPath` | `""` | 必填。指向含 `.model3.json` 的目录；为空时页面显示配置引导，也不会注入任何提示词 |
+| `modelPath` | `""` | 必填。两种形态：目录直接放一个或多个 `.model3.json`（多文件时同样出现 ⚙ 切换器）；或放多个角色子目录（每个一级子目录一个 `.model3.json`）。为空时页面显示配置引导，也不会注入任何提示词；可覆盖于 workspaces（资产路由多根解析） |
+| `modelSelection` | `""` | 多模型目录下当前选中的角色名（空 = 第一个） |
 | `voiceId` | rem | Fish Audio 参考音色 id |
 | `ttsModel` | `s2.1-pro-free` | Fish Audio TTS 模型 |
 | `apiKeys` | `[]` | 内联 key 列表（优先于 `apiKeyFile`） |
@@ -77,10 +89,10 @@ pnpm install && sv restart dsh   # 重启 dsh 生效
 | `asrCredentialsFile` | `~/.config/volc-asr/credentials.json` | 火山 ASR 凭证（JSON 含 `apikey` 或 `appid`+`accessToken`）；未配置时 🎙 点击给出引导提示 |
 | `sttLanguage` | `"auto"` | 语音识别语言；auto 用火山 `enable_auto_lang` 自动检测 |
 | `speechLanguage` | `"ja"` | 角色说话语言，注入"始终用 X 语言交流"指令 |
-| `subtitleLanguage` | `"zh"` | 字幕翻译目标（Phase 3 生效，当前预留） |
+| `subtitleLanguage` | `"zh"` | 角色台词的翻译目标语言（`off` 关闭；与会话生效的 `speechLanguage` 相同或 `speechLanguage=auto` 时可能整句透传，按需配置；可覆盖于 workspaces） |
 | `emotionMap` | 8 情绪默认表 | 标签 → 表情索引/名称 |
 | `speechPrompt` | `""` | 自定义提示词，仅语音模式生效（HUD ⚙ 里也能编辑） |
-| `workspaces` | `{}` | per-workspace 覆盖（Phase 3 预留） |
+| `workspaces` | `{}` | per-workspace 覆盖：`{ "<工作区绝对路径>": { voiceId, modelPath, modelSelection, speechLanguage, sttLanguage, subtitleLanguage, speechPrompt, emotionMap 任选 } }`；凭证类字段只在全局层 |
 
 **提示词注入是会话级、按需生效的**：只有当前会话打开了 Live2D 视图（SSE 在连）时，才会注入"语音输出格式 + 情绪标签"提示词（含 `speechPrompt`）；普通 Chat 会话完全不受影响。从 Live2D 切回普通对话后的首轮回复会自动附上一段"已退出语音模式"的提醒，模型随即恢复正常 Markdown/代码块输出，对话可以无缝续接。
 
@@ -113,6 +125,12 @@ cd ~/.dsh/live2d-voice-models
 2. 点 HUD 的 ⌨ 打开输入框直接对话；或点 🎙 开启连续语音输入——说话自然停顿后一句自动识别、自动发送（说完即可继续说下一句）
 3. AI 说话时直接开口即可**打断**（barge-in 立即静音角色并转向你的新输入）；正在生成回复时的新语音会以 steer 模式插队
 4. 表情/口型/字幕随回复自动驱动；🔇 静音、💬 字幕开关、⚙ 换音色
+
+角色与字幕（v0.3.0）：
+
+- `modelPath` 放多个角色子目录时，⚙ 面板出现「角色模型」切换器，点击即换（模型立即重新加载）
+- 角色台词若与 `subtitleLanguage` 不同语言，会自动翻译并以小字附在原句下方（用当前会话同款模型，逐句异步，不影响语音节奏）
+- `workspaces` 按工作区路径覆盖配置：不同工作区的会话可以各有各的音色/角色/语言
 
 语音输入细节：
 
@@ -161,6 +179,7 @@ cd ~/.dsh/live2d-voice-models
 - TTS 与 Turn 解耦：LLM 流结束即放行 Agent Turn 结算，剩余句子在后台继续合成；新一轮流开始或视图关闭时自动中止旧合成
 - 多 key 轮询：单 key 401/402/429 自动切下一个，全部失败才报错（SSE `error` 事件）
 - 语音识别用火山 `bigmodel_nostream`（v3 sauc 二进制帧协议）：双向流式端点不支持日语（实测空文本），nostream 覆盖 25 语种且 `enable_auto_lang` 自动检测可用；每句独立短连接、快灌整句、负包收尾后返回整段文本
+- 字幕翻译是 host 侧一次性 `ctx.llm.stream` 调用（复用会话的 provider/model，无 sessionId/purpose 故不会被本插件 tap 回环）；每会话串行队列、最多积压 2 句，超出丢最旧——字幕时效优先；译文经 SSE `subtitle-translation` 按 `lineId` 回贴
 
 ## 开发
 
@@ -168,8 +187,9 @@ cd ~/.dsh/live2d-voice-models
 npm install        # .npmrc 已设 legacy-peer-deps（client 包 0.1.1-rc.2 peer 与 host 0.1.5-rc.3 冲突）
 npm run typecheck
 npm run build      # lib/index.js (host ESM) + lib/client.js (浏览器 bundle)
-node e2e/verify-live.mjs    # Phase 1 端到端回归（需 e2e 实例跑在 4188，见 dsh-e2e skill）
-node e2e/verify-voice.mjs   # Phase 2 语音闭环 e2e（同上；需 /tmp/t-zh-16k.pcm 与 /tmp/t-ja-16k.pcm 测试音频）
+node e2e/verify-live.mjs     # Phase 1 端到端回归 21 项（需 e2e 实例跑在 4188，见 dsh-e2e skill）
+node e2e/verify-voice.mjs    # Phase 2 语音闭环 17 项（同上；需 /tmp/t-zh-16k.pcm 与 /tmp/t-ja-16k.pcm 测试音频）
+node e2e/verify-phase3.mjs   # Phase 3 翻译/多模型/workspace 17 项（需 /root/.dsh-e2e-test-models 多模型夹具）
 ```
 
 源码结构：`src/`（host：config/events/tts/sentence/speech/asr/system-prompt/routes）+ `src/client/`（view/engine/model/hud/subtitle/mic/api）。构建产物 `lib/client.js` 是浏览器 bundle（react/pixi/live2d 打包进去，`@deepseek-ai/*` external 由宿主提供）。

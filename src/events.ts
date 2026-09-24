@@ -17,6 +17,7 @@ export type SseEventName =
 	| "audio"
 	| "audio-end"
 	| "subtitle"
+	| "subtitle-translation"
 	| "error"
 	| "hello";
 

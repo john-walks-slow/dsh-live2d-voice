@@ -1,12 +1,14 @@
 /**
  * Plugin configuration: load/save + resolution helpers.
  *
- * Storage: <DSH_HOME>/live2d-voice.json. Two layers (global defaults and
- * per-workspace overrides) are stored; Phase 1 reads the global layer while
- * the `workspaces` section is reserved for the per-workspace override feature.
+ * Storage: <DSH_HOME>/live2d-voice.json. Two layers: global defaults plus
+ * optional per-workspace overrides keyed by the session's workspace path
+ * (see resolveSessionConfig). Override layers may set voiceId / modelPath /
+ * modelSelection / speechLanguage / sttLanguage / subtitleLanguage /
+ * speechPrompt / emotionMap; credential fields stay global.
  */
 
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 
@@ -20,8 +22,14 @@ export const VOICE_PRESETS = [
 ] as const;
 
 export interface PluginConfig {
-	/** Absolute path of a directory that contains a .model3.json (Cubism 4). */
+	/**
+	 * Absolute path of a directory that contains a .model3.json (Cubism 4),
+	 * or a directory of model subdirectories (one .model3.json each — the
+	 * ⚙ panel then offers a model picker).
+	 */
 	modelPath: string;
+	/** The model selected from the catalog (name = entry / subdir name). */
+	modelSelection: string;
 	/** Fish Audio reference voice id. */
 	voiceId: string;
 	/** Fish Audio model name. */
@@ -61,7 +69,7 @@ export interface PluginConfig {
 	speechPrompt: string;
 	/** Emotion tag → model expression name/index map. */
 	emotionMap: Record<string, number | string>;
-	/** Sub-workspace overrides keyed by workspace id (Phase 3). */
+	/** Per-workspace overrides keyed by the workspace root path (cwd). */
 	workspaces: Record<string, Partial<PluginConfig>>;
 }
 
@@ -72,6 +80,12 @@ export const LANGUAGE_OPTIONS = [
 	{ id: "zh", label: "中文" },
 	{ id: "en", label: "English" },
 ] as const;
+
+/** Human-readable language name (translation target phrasing). */
+export function languageLabel(language: string): string {
+	const map: Record<string, string> = { zh: "简体中文", ja: "日语", en: "English", ko: "한국어" };
+	return map[language] ?? language;
+}
 
 /** Resolve the instruction line for the character's speaking language. */
 export function speechLanguageInstruction(language: string): string {
@@ -97,6 +111,7 @@ const DEFAULT_EMOTION_MAP: Record<string, number> = {
 
 export const DEFAULT_CONFIG: PluginConfig = {
 	modelPath: "",
+	modelSelection: "",
 	voiceId: VOICE_PRESETS[0].voiceId,
 	ttsModel: "s2.1-pro-free",
 	apiKeys: [],
@@ -169,4 +184,85 @@ export function resolveApiKeys(config: PluginConfig): string[] {
 		}
 	}
 	return [];
+}
+
+// ---------- model catalog ----------
+
+export interface ModelEntry {
+	/** Display name: the .model3.json base name (flat) or the subdirectory. */
+	name: string;
+	/** File name of the .model3.json, relative to the model root. */
+	relative: string;
+}
+
+/**
+ * Scan modelPath into a catalog. A flat directory (one or more .model3.json
+ * files directly inside) keeps Phase 1 behavior; otherwise every
+ * first-level subdirectory containing a .model3.json becomes a model.
+ */
+export function resolveModelCatalog(config: PluginConfig): ModelEntry[] {
+	if (!config.modelPath) return [];
+	const models: ModelEntry[] = [];
+	let rootEntries: string[];
+	try {
+		rootEntries = readdirSync(config.modelPath);
+	} catch {
+		return [];
+	}
+	const direct = rootEntries.filter((file) => file.endsWith(".model3.json")).sort();
+	if (direct.length > 0) {
+		for (const entry of direct) {
+			models.push({ name: entry.replace(/\.model3\.json$/, ""), relative: entry });
+		}
+		return models;
+	}
+	for (const dir of rootEntries.slice().sort((a, b) => a.localeCompare(b))) {
+		// One broken symlink or unreadable directory must not wipe the
+		// whole catalog — probe entries individually and skip the bad ones.
+		try {
+			const dirPath = join(config.modelPath, dir);
+			if (!statSync(dirPath).isDirectory()) continue;
+			const entry = readdirSync(dirPath).find((file) => file.endsWith(".model3.json"));
+			if (entry) models.push({ name: dir, relative: `${dir}/${entry}` });
+		} catch {
+			continue;
+		}
+	}
+	return models;
+}
+
+/** The effective model entry: the selection when it matches, else the first. */
+export function resolveModelSelection(config: PluginConfig, catalog: ModelEntry[]): ModelEntry | undefined {
+	if (catalog.length === 0) return undefined;
+	return catalog.find((model) => model.name === config.modelSelection) ?? catalog[0];
+}
+
+// ---------- per-workspace resolution ----------
+
+/** Minimal host shape so config.ts stays independent of the agent types. */
+interface AgentsLike {
+	get(id: unknown): { session?: { header?: { cwd?: string } } } | undefined;
+}
+
+/**
+ * The config a session actually runs with: global defaults overlaid with
+ * the workspace override matching the session's workspace root (cwd).
+ * emotionMap merges key-by-key; everything else replaces when set.
+ */
+export function resolveSessionConfig(agents: AgentsLike, config: PluginConfig, sessionId: string): PluginConfig {
+	if (!sessionId) return config;
+	try {
+		const agent = agents.get(sessionId);
+		const cwd = agent?.session?.header?.cwd;
+		if (!cwd) return config;
+		const override = config.workspaces[cwd];
+		if (!override) return config;
+		return {
+			...config,
+			...override,
+			emotionMap: { ...config.emotionMap, ...(override.emotionMap ?? {}) },
+		};
+	} catch {
+		return config;
+	}
 }

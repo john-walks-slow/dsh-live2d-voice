@@ -90,13 +90,18 @@ export function Live2DView(props: ViewProps) {
 	/** Rolling transcript of the character's recent speech (echo guard). */
 	const assistantEchoRef = useRef("");
 
-	const pushSubtitle = (role: SubtitleLine["role"], text: string) => {
+	const pushSubtitle = (role: SubtitleLine["role"], text: string, lineId?: string) => {
 		if (role === "assistant") {
 			// Rolling transcript of what the character said — the echo guard
 			// compares incoming ASR text against it.
 			assistantEchoRef.current = `${assistantEchoRef.current}\n${text}`.split("\n").slice(-3).join("\n");
 		}
-		setSubtitles((prev) => [...prev.slice(-5), { id: nextLineId.current++, role, text, at: Date.now() }]);
+		setSubtitles((prev) => [...prev.slice(-5), { id: nextLineId.current++, role, text, lineId, at: Date.now() }]);
+	};
+
+	/** A translation landed for an earlier subtitle line — attach it. */
+	const attachTranslation = (lineId: string, text: string) => {
+		setSubtitles((prev) => prev.map((line) => (line.lineId === lineId ? { ...line, translation: text } : line)));
 	};
 
 	// Speech engine + persisted mute. destroy() on unmount closes the
@@ -111,9 +116,10 @@ export function Live2DView(props: ViewProps) {
 		};
 	}, []);
 
-	// Config + model descriptor.
+	// Config + model descriptor (workspace-overlaid for this session).
+	// sessionId is a dependency: switching sessions must reload the overlay.
 	useEffect(() => {
-		fetchConfig()
+		fetchConfig(sessionId)
 			.then(({ config, presets, languages: langs }) => {
 				setPresets(presets);
 				if (langs) setLanguages(langs);
@@ -124,7 +130,7 @@ export function Live2DView(props: ViewProps) {
 				setSttLanguage(config.sttLanguage);
 			})
 			.catch((error) => console.error("[dsh-live2d-voice] config load failed", error));
-		fetchModelInfo()
+		fetchModelInfo(sessionId)
 			.then((info) => {
 				setModelInfo(info);
 				if (!info.configured) setStatus("no-model");
@@ -135,7 +141,7 @@ export function Live2DView(props: ViewProps) {
 				setStatus("error");
 				setErrorText(String((error as Error)?.message ?? error));
 			});
-	}, []);
+	}, [sessionId]);
 
 	// Live2D model lifecycle.
 	useEffect(() => {
@@ -203,7 +209,8 @@ export function Live2DView(props: ViewProps) {
 				if (utteranceId !== activeUtterance.current) return;
 				engineRef.current?.enqueueBase64(b64);
 			},
-			onSubtitle: ({ role, text }) => pushSubtitle(role, text),
+			onSubtitle: ({ role, text, lineId }) => pushSubtitle(role, text, lineId),
+			onSubtitleTranslation: ({ lineId, text }) => attachTranslation(lineId, text),
 			onError: ({ message }) => pushSubtitle("error", message),
 		});
 		return close;
@@ -264,11 +271,14 @@ export function Live2DView(props: ViewProps) {
 
 	const pickVoice = async (preset: VoicePreset) => {
 		try {
-			const { config } = await saveConfig({ voiceId: preset.voiceId });
+			await saveConfig({ voiceId: preset.voiceId });
+			// Display what THIS session will actually use (workspace overlay
+			// may shadow the global pick).
+			const { config } = await fetchConfig(sessionId);
 			setVoiceId(config.voiceId);
 			setApiKeyCount(config.apiKeyCount);
 			setPopoverOpen(false);
-			setToast(`音色已切换：${preset.label}`);
+			setToast(config.voiceId === preset.voiceId ? `音色已切换：${preset.label}` : `已保存全局音色 ${preset.label}（本工作区配置了覆盖）`);
 		} catch (error) {
 			setToast(`音色切换失败：${String((error as Error)?.message ?? error)}`);
 		}
@@ -281,6 +291,18 @@ export function Live2DView(props: ViewProps) {
 			setToast(`识别语言：${languages.find((l) => l.id === id)?.label ?? id}`);
 		} catch (error) {
 			setToast(`切换失败：${String((error as Error)?.message ?? error)}`);
+		}
+	};
+
+	const pickModel = async (name: string) => {
+		try {
+			await saveConfig({ modelSelection: name });
+			// Refetch the descriptor — the effect remounts the model.
+			const info = await fetchModelInfo(sessionId);
+			setModelInfo(info);
+			setToast(info.current === name ? `角色已切换：${info.name ?? name}` : `已保存全局角色 ${name}（本工作区配置了覆盖）`);
+		} catch (error) {
+			setToast(`角色切换失败：${String((error as Error)?.message ?? error)}`);
 		}
 	};
 
@@ -551,6 +573,9 @@ export function Live2DView(props: ViewProps) {
 				languages={languages}
 				currentVoiceId={voiceId}
 				currentSttLanguage={sttLanguage}
+				models={modelInfo?.models ?? []}
+				currentModel={modelInfo?.current}
+				onPickModel={(name) => void pickModel(name)}
 				apiKeyCount={apiKeyCount}
 				speechPrompt={speechPrompt}
 				onToggleMute={toggleMute}

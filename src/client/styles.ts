@@ -140,6 +140,12 @@ const CSS = `
 .lv-sub.lv-old { font-size: 12.5px; opacity: 0.45; }
 .lv-sub.lv-cur { font-size: 17px; opacity: 1; }
 .lv-sub.lv-user { color: #9fc1ff; }
+.lv-sub-tr {
+	display: block;
+	margin-top: 1px;
+	font-size: 0.82em;
+	opacity: 0.78;
+}
 .lv-sub.lv-err { color: #e8968a; font-size: 12.5px; }
 
 /* ---------- voice input ---------- */

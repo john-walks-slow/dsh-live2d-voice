@@ -1,7 +1,10 @@
 /**
  * The llm/stream tap: sentence the assistant stream, drive expressions and
  * subtitles, and synthesize speech sentence-by-sentence while the model is
- * still writing.
+ * still writing. Assistant subtitles are additionally translated into the
+ * configured subtitle language through one-shot llm calls that reuse the
+ * session's own provider/model (never tapped back: they carry no sessionId
+ * and no purpose).
  *
  * Only sessions with a live SSE listener (an open Live2D view) are tapped;
  * every other stream passes through untouched — except recently-exited
@@ -16,18 +19,20 @@
 
 import { randomUUID } from "node:crypto";
 import type { Context } from "@deepseek-ai/cordis";
-import type { StreamChunk } from "@deepseek-ai/dsh-llm";
+import { createUserMessage, type StreamChunk } from "@deepseek-ai/dsh-llm";
 import { SentenceBuffer, extractEmotionTags } from "./sentence.js";
 import { PCM_SAMPLE_RATE, synthesize } from "./tts.js";
+import { languageLabel, type PluginConfig } from "./config.js";
 import type { SseHub } from "./events.js";
 import type { SpeechModes } from "./system-prompt.js";
-import type { PluginConfig } from "./config.js";
 
 interface SpeechDeps {
 	hub: SseHub;
 	modes: SpeechModes;
 	getConfig: () => PluginConfig;
 	resolveKeys: (config: PluginConfig) => string[];
+	/** Per-session effective config (global ⊕ workspace override). */
+	resolveSession: (sessionId: string) => PluginConfig;
 }
 
 interface ActiveSpeech {
@@ -35,8 +40,80 @@ interface ActiveSpeech {
 	abort: AbortController;
 }
 
+/** The provider/model a session last conversed with (translation reuses it). */
+interface SessionModel {
+	provider: string;
+	model: string;
+}
+
+/**
+ * Serial translation queue with a small backlog cap: subtitles are timely —
+ * when more than two sentences are still waiting, the oldest queued
+ * translation is dropped (its line is stale by the time it would render).
+ */
+class TranslationQueue {
+	private tasks: Array<() => Promise<void>> = [];
+	private running = false;
+
+	push(task: () => Promise<void>): void {
+		this.tasks.push(task);
+		if (this.tasks.length > 2) this.tasks.shift();
+		void this.drain();
+	}
+
+	private async drain(): Promise<void> {
+		if (this.running) return;
+		this.running = true;
+		try {
+			while (this.tasks.length > 0) {
+				const task = this.tasks.shift();
+				if (!task) continue;
+				try {
+					await task();
+				} catch {
+					/* one bad task must never stall the queue (or the host) */
+				}
+			}
+		} finally {
+			this.running = false;
+		}
+	}
+}
+
 export function applySpeechTap(ctx: Context, deps: SpeechDeps): void {
 	const active = new Map<string, ActiveSpeech>();
+	const translations = new Map<string, TranslationQueue>();
+
+	const translate = async (
+		sessionId: string,
+		model: SessionModel,
+		lineId: string,
+		text: string,
+		targetLanguage: string,
+		signal: AbortSignal,
+	): Promise<void> => {
+		if (signal.aborted || !deps.hub.has(sessionId)) return;
+		let translated = "";
+		try {
+			const stream = ctx.llm.stream({
+				provider: model.provider,
+				model: model.model,
+				messages: [createUserMessage({ content: [{ type: "text", text }], source: { kind: "user" } })],
+				system: `You translate speech subtitles. Translate the user's text into ${languageLabel(targetLanguage)}. Reply with ONLY the translation — no notes, no quotes, no original text. If the text is already in the target language, reply with it unchanged. Keep it natural and concise.`,
+				signal,
+			});
+			for await (const chunk of stream) {
+				if (signal.aborted) return;
+				if (chunk.type === "text-delta" && chunk.text) translated += chunk.text;
+			}
+		} catch {
+			return; // translation is best-effort; the original line stands
+		}
+		translated = translated.trim();
+		if (translated && translated !== text) {
+			deps.hub.emit(sessionId, "subtitle-translation", { lineId, text: translated });
+		}
+	};
 
 	ctx.on("llm/stream", (options, next) => {
 		const sessionId = options.sessionId === undefined ? "" : String(options.sessionId);
@@ -56,15 +133,26 @@ export function applySpeechTap(ctx: Context, deps: SpeechDeps): void {
 				}
 			})();
 		}
-		return speak(deps, active, sessionId, next());
+		// The conversation's own model — translation calls reuse it.
+		return speak(deps, active, translations, translate, sessionId, { provider: options.provider, model: options.model }, next());
 	});
 
 	// REC-05: the last SSE listener for a session left — stop synthesizing
-	// audio nobody will hear (saves Fish Audio quota).
+	// audio nobody will hear (saves Fish Audio quota) and drop its queue.
 	deps.hub.onLastClose((sessionId) => {
 		active.get(sessionId)?.abort.abort();
+		translations.delete(sessionId);
 	});
 }
+
+type TranslateFn = (
+	sessionId: string,
+	model: SessionModel,
+	lineId: string,
+	text: string,
+	targetLanguage: string,
+	signal: AbortSignal,
+) => Promise<void>;
 
 /**
  * Wrap one model stream. Emits speech-start/audio-start up front, feeds each
@@ -76,11 +164,14 @@ export function applySpeechTap(ctx: Context, deps: SpeechDeps): void {
 async function* speak(
 	deps: SpeechDeps,
 	active: Map<string, ActiveSpeech>,
+	translations: Map<string, TranslationQueue>,
+	translate: TranslateFn,
 	sessionId: string,
+	model: SessionModel,
 	chunks: AsyncIterable<StreamChunk>,
 ): AsyncIterable<StreamChunk> {
-	const config = deps.getConfig();
-	const apiKeys = deps.resolveKeys(config);
+	const config = deps.resolveSession(sessionId);
+	const apiKeys = deps.resolveKeys(deps.getConfig());
 	// A new utterance supersedes the previous one for this session.
 	active.get(sessionId)?.abort.abort();
 	const controller = new AbortController();
@@ -89,11 +180,13 @@ async function* speak(
 
 	const buffer = new SentenceBuffer();
 	let seq = 0;
+	let lineSeq = 0;
 	// Serial sentence pipeline: each entry waits for the previous TTS call.
 	let queue: Promise<void> = Promise.resolve();
 	const enqueue = (sentence: string): void => {
+		const lineId = `${utteranceId}-${++lineSeq}`;
 		queue = queue.then(() =>
-			speakSentence(deps, sessionId, utteranceId, sentence, config, apiKeys, controller.signal, () => seq++)
+			speakSentence(deps, translations, translate, sessionId, model, utteranceId, lineId, sentence, config, apiKeys, controller.signal, () => seq++)
 		);
 	};
 
@@ -141,12 +234,18 @@ async function* speak(
  * Speak one sentence: expression → TTS (streaming PCM). The subtitle is
  * emitted with the first PCM chunk so it tracks actual playback rather than
  * racing ahead of synthesis; when no TTS runs (no keys / failure) it falls
- * back to an immediate emit. Never rejects.
+ * back to an immediate emit. Translation into the subtitle language is
+ * enqueued after the subtitle (best-effort, serial per session). Never
+ * rejects.
  */
 async function speakSentence(
 	deps: SpeechDeps,
+	translations: Map<string, TranslationQueue>,
+	translate: TranslateFn,
 	sessionId: string,
+	model: SessionModel,
 	utteranceId: string,
+	lineId: string,
 	raw: string,
 	config: PluginConfig,
 	apiKeys: string[],
@@ -165,7 +264,7 @@ async function speakSentence(
 	const emitSubtitle = (): void => {
 		if (subtitled) return;
 		subtitled = true;
-		deps.hub.emit(sessionId, "subtitle", { role: "assistant", text, utteranceId });
+		deps.hub.emit(sessionId, "subtitle", { role: "assistant", text, utteranceId, lineId });
 	};
 	if (apiKeys.length === 0) {
 		emitSubtitle();
@@ -182,5 +281,15 @@ async function speakSentence(
 	} finally {
 		// No audio will come (TTS failed or produced nothing) — still subtitle.
 		emitSubtitle();
+	}
+	// Subtitle translation: only when a distinct target language is set.
+	const target = config.subtitleLanguage;
+	if (target && target !== "off" && target !== config.speechLanguage && deps.hub.has(sessionId)) {
+		let queue = translations.get(sessionId);
+		if (queue === undefined) {
+			queue = new TranslationQueue();
+			translations.set(sessionId, queue);
+		}
+		queue.push(() => translate(sessionId, model, lineId, text, target, signal));
 	}
 }

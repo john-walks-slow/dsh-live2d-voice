@@ -5,10 +5,13 @@
  *   GET  /live2d-voice/stream?session=<id>   SSE event stream (the Live view)
  *   POST /live2d-voice/asr/recognize?lang=.. one buffered utterance of 16k
  *                                           PCM in (octet-stream), text out
- *   GET  /live2d-voice/config                sanitized config + voice presets
- *   POST /live2d-voice/config                update config fields
+ *   GET  /live2d-voice/config[?session=..]   sanitized config + voice presets
+ *                                           (with session: the workspace-
+ *                                            overlaid effective config)
+ *   POST /live2d-voice/config                update config fields (global)
  *   POST /live2d-voice/message               submit a user message to a session
- *   GET  /live2d-voice/model                 which .model3.json to render
+ *   GET  /live2d-voice/model[?session=..]   which .model3.json to render +
+ *                                           the full model catalog
  *   GET  /live2d-voice/models/*              model assets (traversal-guarded)
  *   GET  /live2d-voice/core/live2dcubismcore.min.js  Cubism Core runtime
  *
@@ -16,7 +19,7 @@
  * index.html render (the model loader requires window.Live2DCubismCore).
  */
 
-import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
+import { readFileSync, statSync } from "node:fs";
 import { join, resolve, sep, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { IncomingMessage, ServerResponse } from "node:http";
@@ -25,7 +28,7 @@ import type {} from "@deepseek-ai/dsh-agent";
 import type {} from "@deepseek-ai/dsh-host-webserver";
 import { createUserMessage, type ContentBlock } from "@deepseek-ai/dsh-llm";
 import type { SessionId } from "@deepseek-ai/dsh-session";
-import { LANGUAGE_OPTIONS, VOICE_PRESETS, type PluginConfig } from "./config.js";
+import { LANGUAGE_OPTIONS, VOICE_PRESETS, resolveModelCatalog, resolveModelSelection, resolveSessionConfig, type ModelEntry, type PluginConfig } from "./config.js";
 import type { SseHub } from "./events.js";
 import { loadVolcCredentials, recognizeUtterance } from "./asr.js";
 
@@ -109,18 +112,9 @@ function serveFile(res: ServerResponse, path: string, maxAgeSeconds: number): bo
 	return true;
 }
 
-/** Locate the .model3.json inside the configured model directory. */
-function findModelEntry(config: PluginConfig): { url: string; name: string } | undefined {
-	if (!config.modelPath) return undefined;
-	let files: string[];
-	try {
-		files = readdirSync(config.modelPath).filter((file) => file.endsWith(".model3.json")).sort();
-	} catch {
-		return undefined;
-	}
-	const entry = files[0];
-	if (entry === undefined) return undefined;
-	return { url: `${MODELS_PREFIX}/${encodeURIComponent(entry)}`, name: entry.replace(/\.model3\.json$/, "") };
+/** The asset URL of a catalog entry (each path segment encoded). */
+function modelUrl(entry: ModelEntry): string {
+	return `${MODELS_PREFIX}/${entry.relative.split("/").map(encodeURIComponent).join("/")}`;
 }
 
 export function installRoutes(ctx: Context, deps: RouteDeps): (() => void) | undefined {
@@ -187,9 +181,13 @@ export function installRoutes(ctx: Context, deps: RouteDeps): (() => void) | und
 	disposers.push(
 		webServer.register({ kind: "exact", path: "/live2d-voice/config", handler: (req, res) => {
 			if (req.method === "GET") {
-				const config = deps.getConfig();
+				const sessionId = new URL(req.url ?? "/", "http://localhost").searchParams.get("session")?.trim() ?? "";
+				const global = deps.getConfig();
+				const config = sessionId
+					? resolveSessionConfig(ctx.agents, global, sessionId)
+					: global;
 				writeJson(res, 200, {
-					config: publicConfig(config, deps.resolveKeys(config).length),
+					config: publicConfig(config, deps.resolveKeys(global).length),
 					presets: VOICE_PRESETS,
 					languages: LANGUAGE_OPTIONS,
 				});
@@ -202,7 +200,7 @@ export function installRoutes(ctx: Context, deps: RouteDeps): (() => void) | und
 			void readJsonBody(req)
 				.then((body) => {
 					const patch: Partial<PluginConfig> = {};
-					for (const key of ["modelPath", "voiceId", "ttsModel", "apiKeyFile", "sttLanguage", "asrCredentialsFile", "speechLanguage", "subtitleLanguage", "speechPrompt"] as const) {
+					for (const key of ["modelPath", "modelSelection", "voiceId", "ttsModel", "apiKeyFile", "sttLanguage", "asrCredentialsFile", "speechLanguage", "subtitleLanguage", "speechPrompt"] as const) {
 						if (typeof body[key] === "string") patch[key] = body[key] as string;
 					}
 					if (Array.isArray(body.apiKeys)) {
@@ -255,24 +253,47 @@ export function installRoutes(ctx: Context, deps: RouteDeps): (() => void) | und
 		} })
 	);
 
-	// Model descriptor for the view.
+	// Model descriptor for the view: the effective selection plus the whole
+	// catalog (the ⚙ panel offers a picker when there is more than one).
 	disposers.push(
-		webServer.register({ kind: "exact", path: "/live2d-voice/model", handler: (_req, res) => {
-			const config = deps.getConfig();
-			const entry = findModelEntry(config);
+		webServer.register({ kind: "exact", path: "/live2d-voice/model", handler: (req, res) => {
+			if (req.method !== "GET") {
+				writeJson(res, 405, { code: "method_not_allowed" });
+				return;
+			}
+			const sessionId = new URL(req.url ?? "/", "http://localhost").searchParams.get("session")?.trim() ?? "";
+			const config = sessionId
+				? resolveSessionConfig(ctx.agents, deps.getConfig(), sessionId)
+				: deps.getConfig();
+			const catalog = resolveModelCatalog(config);
+			const entry = resolveModelSelection(config, catalog);
 			if (entry === undefined) {
 				writeJson(res, 200, { configured: Boolean(config.modelPath), url: undefined });
 				return;
 			}
-			writeJson(res, 200, { configured: true, url: entry.url, name: entry.name });
+			writeJson(res, 200, {
+				configured: true,
+				url: modelUrl(entry),
+				name: entry.name,
+				current: entry.name,
+				models: catalog.map((model) => ({ name: model.name, url: modelUrl(model) })),
+			});
 		} })
 	);
 
-	// Model assets (traversal-guarded static file serving).
+	// Model assets (traversal-guarded static file serving). Roots include
+	// every workspace-overridden modelPath so catalog URLs generated against
+	// an override root actually resolve (override roots win, global last).
 	disposers.push(
 		webServer.register({ kind: "prefix", path: MODELS_PREFIX, handler: (req, res) => {
 			const config = deps.getConfig();
-			if (!config.modelPath) {
+			const roots: string[] = [];
+			for (const override of Object.values(config.workspaces ?? {})) {
+				const path = typeof override.modelPath === "string" ? override.modelPath.trim() : "";
+				if (path && !roots.includes(resolve(path))) roots.push(resolve(path));
+			}
+			if (config.modelPath && !roots.includes(resolve(config.modelPath))) roots.push(resolve(config.modelPath));
+			if (roots.length === 0) {
 				writeJson(res, 404, { code: "model_not_configured" });
 				return;
 			}
@@ -284,21 +305,18 @@ export function installRoutes(ctx: Context, deps: RouteDeps): (() => void) | und
 				writeJson(res, 400, { code: "bad_path" });
 				return;
 			}
-			const root = resolve(config.modelPath);
-			const target = resolve(join(root, relative));
-			if (target !== root && !target.startsWith(root + sep)) {
-				writeJson(res, 403, { code: "path_forbidden" });
-				return;
+			for (const root of roots) {
+				const target = resolve(join(root, relative));
+				if (target !== root && !target.startsWith(root + sep)) continue; // wrong root — try next
+				let isFile: boolean;
+				try {
+					isFile = statSync(target).isFile();
+				} catch {
+					isFile = false;
+				}
+				if (isFile && serveFile(res, target, 3600)) return;
 			}
-			let isFile: boolean;
-			try {
-				isFile = statSync(target).isFile();
-			} catch {
-				isFile = false;
-			}
-			if (!isFile || !serveFile(res, target, 3600)) {
-				writeJson(res, 404, { code: "not_found" });
-			}
+			writeJson(res, 404, { code: "not_found" });
 		} })
 	);
 

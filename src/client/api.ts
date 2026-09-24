@@ -14,6 +14,7 @@ import type {
 	SpeechEndPayload,
 	StreamHandlers,
 	SubtitlePayload,
+	SubtitleTranslationPayload,
 	VoicePreset,
 } from "./types.js";
 
@@ -23,12 +24,19 @@ async function getJson<T>(url: string): Promise<T> {
 	return (await response.json()) as T;
 }
 
-export function fetchConfig(): Promise<{ config: PublicConfig; presets: VoicePreset[]; languages: LanguageOption[] }> {
-	return getJson("/live2d-voice/config");
+/**
+ * Load the voice presets + the effective config. With a session id the
+ * config carries the workspace overlay; without it the global layer.
+ */
+export function fetchConfig(sessionId?: string): Promise<{ config: PublicConfig; presets: VoicePreset[]; languages: LanguageOption[] }> {
+	const query = sessionId ? `?session=${encodeURIComponent(sessionId)}` : "";
+	return getJson(`/live2d-voice/config${query}`);
 }
 
-export function fetchModelInfo(): Promise<ModelInfo> {
-	return getJson("/live2d-voice/model");
+/** The model descriptor + catalog for the session (workspace-aware). */
+export function fetchModelInfo(sessionId?: string): Promise<ModelInfo> {
+	const query = sessionId ? `?session=${encodeURIComponent(sessionId)}` : "";
+	return getJson(`/live2d-voice/model${query}`);
 }
 
 export async function saveConfig(patch: Partial<PublicConfig> & { apiKeys?: string[] }): Promise<{ config: PublicConfig }> {
@@ -93,6 +101,7 @@ export function openStream(sessionId: string, handlers: StreamHandlers): () => v
 	wire<AudioPayload>("audio", handlers.onAudio);
 	wire<{ utteranceId: string }>("audio-end", handlers.onAudioEnd);
 	wire<SubtitlePayload>("subtitle", handlers.onSubtitle);
+	wire<SubtitleTranslationPayload>("subtitle-translation", handlers.onSubtitleTranslation);
 	wire<ErrorPayload>("error", handlers.onError);
 	return () => source.close();
 }

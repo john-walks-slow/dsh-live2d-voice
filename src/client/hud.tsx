@@ -23,6 +23,9 @@ export interface HudProps {
 	languages: LanguageOption[];
 	currentVoiceId: string;
 	currentSttLanguage: string;
+	/** Live2D model catalog (a picker shows when there is more than one). */
+	models: { name: string; url: string }[];
+	currentModel?: string;
 	apiKeyCount: number;
 	speechPrompt: string;
 	onToggleMute: () => void;
@@ -32,6 +35,7 @@ export interface HudProps {
 	onToggleMic: () => void;
 	onPickVoice: (preset: VoicePreset) => void;
 	onPickSttLanguage: (id: string) => void;
+	onPickModel: (name: string) => void;
 	onSavePrompt: (text: string) => void;
 }
 
@@ -106,7 +110,24 @@ export function Hud(props: HudProps) {
 							{preset.voiceId === props.currentVoiceId && <span>✓</span>}
 						</button>
 					))}
-					<h4>识别语言</h4>
+					{props.models.length > 1 && (
+					<>
+						<h4>角色模型</h4>
+						<div className="lv-langs">
+							{props.models.map((model) => (
+								<button
+									key={model.name}
+									type="button"
+									className={`lv-lang${model.name === props.currentModel ? " lv-current" : ""}`}
+									onClick={() => props.onPickModel(model.name)}
+								>
+									{model.name}
+								</button>
+							))}
+						</div>
+					</>
+				)}
+				<h4>识别语言</h4>
 					<div className="lv-langs">
 						{props.languages.map((language) => (
 							<button

@@ -104,6 +104,8 @@ export interface SystemPromptDeps {
 	hub: SseHub;
 	modes: SpeechModes;
 	getConfig: () => PluginConfig;
+	/** Per-session effective config (global ⊕ workspace override). */
+	resolveSession: (sessionId: string) => PluginConfig;
 }
 
 export function applySystemPrompt(ctx: Context, deps: SystemPromptDeps): (() => void) | undefined {
@@ -121,7 +123,7 @@ export function applySystemPrompt(ctx: Context, deps: SystemPromptDeps): (() => 
 			const agent = (context as { agent?: AssembleAgentLike }).agent;
 			const sessionId = sessionKeyOf(agent);
 			if (!sessionId) return "";
-			const config = deps.getConfig();
+			const config = deps.resolveSession(sessionId);
 			// Without a model there is no Live2D mode at all — never pollute.
 			if (!config.modelPath) return "";
 			const mode = deps.modes.transition(sessionId, deps.hub.has(sessionId));

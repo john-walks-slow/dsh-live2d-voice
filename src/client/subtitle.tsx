@@ -8,6 +8,10 @@ export interface SubtitleLine {
 	id: number;
 	role: "assistant" | "user" | "error";
 	text: string;
+	/** Server-side sentence id — translations attach to it. */
+	lineId?: string;
+	/** Translation into the subtitle language (subtitleLanguage). */
+	translation?: string;
 	at: number;
 }
 
@@ -18,18 +22,19 @@ export function SubtitleOverlay(props: { lines: SubtitleLine[]; visible: boolean
 	const live = props.lines.filter((line) => Date.now() - line.at < SUBTITLE_TTL_MS);
 	const current = live[live.length - 1];
 	const older = live.slice(0, -1).slice(-3);
+	const render = (line: SubtitleLine, className: string) => (
+		<p key={line.id} className={className}>
+			{line.text}
+			{line.translation && <span className="lv-sub-tr">{line.translation}</span>}
+		</p>
+	);
 	return (
 		<div className="lv-subs">
-			{older.map((line) => (
-				<p key={line.id} className={`lv-sub lv-old${line.role === "user" ? " lv-user" : ""}${line.role === "error" ? " lv-err" : ""}`}>
-					{line.text}
-				</p>
-			))}
-			{current && (
-				<p key={current.id} className={`lv-sub lv-cur${current.role === "user" ? " lv-user" : ""}${current.role === "error" ? " lv-err" : ""}`}>
-					{current.text}
-				</p>
+			{older.map((line) =>
+				render(line, `lv-sub lv-old${line.role === "user" ? " lv-user" : ""}${line.role === "error" ? " lv-err" : ""}`),
 			)}
+			{current &&
+				render(current, `lv-sub lv-cur${current.role === "user" ? " lv-user" : ""}${current.role === "error" ? " lv-err" : ""}`)}
 		</div>
 	);
 }

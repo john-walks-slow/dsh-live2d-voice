@@ -5,6 +5,7 @@
 
 export interface PublicConfig {
 	modelPath: string;
+	modelSelection: string;
 	voiceId: string;
 	ttsModel: string;
 	apiKeyFile: string;
@@ -33,6 +34,10 @@ export interface ModelInfo {
 	configured: boolean;
 	url?: string;
 	name?: string;
+	/** The effective selection (equals name). */
+	current?: string;
+	/** The full catalog when modelPath is a directory of models. */
+	models?: { name: string; url: string }[];
 }
 
 export interface ExpressionPayload {
@@ -56,6 +61,14 @@ export interface SubtitlePayload {
 	role: "assistant" | "user";
 	text: string;
 	utteranceId?: string;
+	/** Stable per-sentence id — translations attach to it. */
+	lineId?: string;
+}
+
+/** A translated assistant subtitle line (arrives after its original). */
+export interface SubtitleTranslationPayload {
+	lineId: string;
+	text: string;
 }
 
 export interface SpeechEndPayload {
@@ -75,5 +88,6 @@ export interface StreamHandlers {
 	onAudio?: (payload: AudioPayload) => void;
 	onAudioEnd?: (payload: { utteranceId: string }) => void;
 	onSubtitle?: (payload: SubtitlePayload) => void;
+	onSubtitleTranslation?: (payload: SubtitleTranslationPayload) => void;
 	onError?: (payload: ErrorPayload) => void;
 }
