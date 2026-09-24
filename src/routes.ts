@@ -3,6 +3,9 @@
  * webserver degrades to a no-op with one log line):
  *
  *   GET  /live2d-voice/stream?session=<id>   SSE event stream (the Live view)
+ *   GET  /live2d-voice/asr/ws?session=..     WebSocket upstream: one VAD
+ *                                           utterance of live PCM frames in,
+ *                                           interim/final text over SSE
  *   POST /live2d-voice/asr/recognize?lang=.. one buffered utterance of 16k
  *                                           PCM in (octet-stream), text out
  *   GET  /live2d-voice/config[?session=..]   sanitized config + voice presets
@@ -26,15 +29,17 @@ import { join, resolve, sep, dirname } from "node:path";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 import type { IncomingMessage, ServerResponse } from "node:http";
+import type { Duplex } from "node:stream";
 import type { Context } from "@deepseek-ai/cordis";
 import type {} from "@deepseek-ai/dsh-agent";
 import type {} from "@deepseek-ai/dsh-host-webserver";
 import type {} from "@deepseek-ai/dsh-api-session-controller";
+import { WebSocketServer } from "ws";
 import { createUserMessage, type ContentBlock } from "@deepseek-ai/dsh-llm";
 import type { SessionId } from "@deepseek-ai/dsh-session";
 import { LANGUAGE_OPTIONS, VOICE_PRESETS, resolveModelCatalog, resolveModelSelection, resolveSessionConfig, type ModelEntry, type PluginConfig } from "./config.js";
 import type { SseHub } from "./events.js";
-import { loadVolcCredentials, recognizeUtterance } from "./asr.js";
+import { loadVolcCredentials, recognizeUtterance, StreamingAsrSession } from "./asr.js";
 
 const BODY_MAX_BYTES = 64 * 1024;
 /** 16kHz s16le mono ≈ 32KB/s — 2MB ≈ one minute of speech, far above the client's 20s cap. */
@@ -49,6 +54,7 @@ const CORE_SCRIPT_PATH = "/live2d-voice/core/live2dcubismcore.min.js";
 
 interface WebServerLike {
 	register(route: { kind: "exact" | "prefix"; path: string; handler: (req: IncomingMessage, res: ServerResponse) => void | Promise<void> }): () => void;
+	registerUpgrade(route: { path: string; handler: (req: IncomingMessage, socket: Duplex, head: Buffer) => void | Promise<void> }): () => void;
 }
 
 export interface RouteDeps {
@@ -188,6 +194,86 @@ export function installRoutes(ctx: Context, deps: RouteDeps): (() => void) | und
 		} })
 	);
 
+	// Streaming speech-to-text: a WebSocket upgrade per VAD utterance. The
+	// browser (streaming ASR mode) relays live 16k s16le mono PCM binary
+	// frames; the host feeds them into a Volcengine streaming session
+	// (bigmodel_async + nostream second pass) and pushes real-time interim
+	// text over the session SSE as `asr-interim`, the final transcript as
+	// `asr-final`. Control messages: {"t":"finish"} finalizes the utterance,
+	// a raw disconnect (or {"t":"abort"}) discards it silently.
+	//
+	// Why WebSocket and not a POST body? Chromium refuses ReadableStream
+	// upload bodies over HTTP/1.1 (ERR_ALPN_NEGOTIATION_FAILED — streaming
+	// requests need HTTP/2), and the harness webserver speaks HTTP/1.1.
+	const asrWss = new WebSocketServer({ noServer: true });
+	disposers.push(
+		webServer.registerUpgrade({ path: "/live2d-voice/asr/ws", handler: (req, socket, head) => {
+			const url = new URL(req.url ?? "/", "http://localhost");
+			const sessionId = url.searchParams.get("session")?.trim() ?? "";
+			if (!sessionId) {
+				socket.destroy();
+				return;
+			}
+			const config = deps.getConfig();
+			const credentials = config.asrCredentialsFile ? loadVolcCredentials(config.asrCredentialsFile) : undefined;
+			if (credentials === undefined) {
+				socket.destroy();
+				return;
+			}
+			asrWss.handleUpgrade(req, socket, head, (ws) => {
+				const session = new StreamingAsrSession(credentials, (text) => {
+					deps.hub.emit(sessionId, "asr-interim", { text });
+				});
+				let finalized = false;
+				let size = 0;
+				ws.on("message", (data, isBinary) => {
+					if (finalized) return;
+					if (isBinary) {
+						const chunk = data as Buffer;
+						size += chunk.length;
+						if (size > PCM_MAX_BYTES) {
+							// Unbounded monologue — discard the session.
+							session.abort();
+							ws.close();
+							return;
+						}
+						session.feed(chunk);
+						return;
+					}
+					try {
+						const control = JSON.parse(String(data)) as { t?: string };
+						if (control.t === "finish") {
+							finalized = true;
+							void session
+								.end()
+								.then((text) => deps.hub.emit(sessionId, "asr-final", { text }))
+								.catch((error: unknown) => {
+									deps.hub.emit(sessionId, "error", { message: error instanceof Error ? error.message : String(error) });
+								})
+								.finally(() => ws.close());
+						} else if (control.t === "abort") {
+							finalized = true;
+							session.abort();
+							ws.close();
+						}
+					} catch {
+						/* malformed control frame — ignore */
+					}
+				});
+				ws.on("close", () => {
+					if (!finalized) session.abort();
+				});
+				ws.on("error", () => {
+					if (!finalized) session.abort();
+				});
+			});
+		} })
+	);
+	disposers.push(() => {
+		for (const client of asrWss.clients) client.terminate();
+		asrWss.close();
+	});
+
 	// Config read (sanitized) + write.
 	disposers.push(
 		webServer.register({ kind: "exact", path: "/live2d-voice/config", handler: (req, res) => {
@@ -211,7 +297,7 @@ export function installRoutes(ctx: Context, deps: RouteDeps): (() => void) | und
 			void readJsonBody(req)
 				.then((body) => {
 					const patch: Partial<PluginConfig> = {};
-					for (const key of ["modelPath", "modelSelection", "voiceId", "ttsModel", "apiKeyFile", "sttLanguage", "asrCredentialsFile", "speechLanguage", "subtitleLanguage", "speechPrompt"] as const) {
+					for (const key of ["modelPath", "modelSelection", "voiceId", "ttsModel", "apiKeyFile", "sttLanguage", "asrMode", "asrCredentialsFile", "speechLanguage", "subtitleLanguage", "speechPrompt"] as const) {
 						if (typeof body[key] === "string") patch[key] = body[key] as string;
 					}
 					if (typeof body.eyeTracking === "boolean") patch.eyeTracking = body.eyeTracking;
@@ -349,8 +435,13 @@ export function installRoutes(ctx: Context, deps: RouteDeps): (() => void) | und
 				configured: true,
 				url: modelUrl(entry),
 				name: entry.name,
+				label: entry.label,
 				current: entry.name,
-				models: catalog.map((model) => ({ name: model.name, url: modelUrl(model) })),
+				models: catalog.map((model) => ({
+					name: model.name,
+					label: model.label,
+					url: modelUrl(model),
+				})),
 			});
 		} })
 	);
@@ -548,6 +639,66 @@ export function installRoutes(ctx: Context, deps: RouteDeps): (() => void) | und
 		ctx.on("webserver/index-inject", (table) => {
 			table.push({ kind: "script-src", placement: "head", src: CORE_SCRIPT_PATH });
 		})
+	);
+
+	// Enter-live activation: inject a minimal "enter live mode" system-style
+	// user message (which leaves the session's blank state) and immediately
+	// cancel the turn so the model never generates content. The Live2D
+	// speech-format system prompt is injected separately by system-prompt.ts
+	// once the view's SSE stream is up — no reply audio is produced here.
+	disposers.push(
+		webServer.register({ kind: "exact", path: "/live2d-voice/enter-live", handler: (req, res) => {
+			if (req.method !== "POST") {
+				writeJson(res, 405, { code: "method_not_allowed" });
+				return;
+			}
+			void readJsonBody(req)
+				.then(async (body) => {
+					const sessionId = typeof body.sessionId === "string" ? body.sessionId.trim() : "";
+					if (!sessionId) {
+						writeJson(res, 400, { code: "session_required", message: "sessionId is required" });
+						return;
+					}
+					let agent = ctx.agents.get(sessionId as SessionId);
+					if (agent === undefined) {
+						const sc = (ctx as unknown as {
+							sessionController: { resolveAgent(id: SessionId): Promise<{ agent?: unknown; error?: { message?: string } }> };
+						}).sessionController;
+						const found = await sc.resolveAgent(sessionId as SessionId);
+						if (found !== undefined && "agent" in found && found.agent !== undefined) {
+							agent = found.agent as NonNullable<typeof agent>;
+						} else {
+							const detail = found !== undefined && "error" in found ? String(found.error?.message ?? "session not found") : "session not found";
+							writeJson(res, 404, { code: "session_not_found", message: detail });
+							return;
+						}
+					}
+					// 1) A system-style activation message — makes the session
+					// non-blank so DSH renders views for it.
+					const message = createUserMessage({
+						content: [{ type: "text", text: "Enter live mode." }],
+						source: { kind: "user" },
+					});
+					agent.followup(message);
+					// 2) Immediately cancel so no assistant content is generated.
+					const sc = (ctx as unknown as {
+						sessionController: { cancel(request: { sessionId: SessionId }): unknown };
+					}).sessionController;
+					const requestCancel = () => {
+						try {
+							sc.cancel({ sessionId: sessionId as SessionId });
+						} catch {
+							// best effort
+						}
+					};
+					requestCancel();
+					globalThis.setTimeout(requestCancel, 120);
+					writeJson(res, 200, { ok: true });
+				})
+				.catch((error: unknown) => {
+					writeJson(res, 400, { code: "bad_request", message: error instanceof Error ? error.message : String(error) });
+				});
+		} })
 	);
 
 	// Model catalog: the full provider-grouped list of available models plus

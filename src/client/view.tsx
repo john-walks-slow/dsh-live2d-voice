@@ -8,20 +8,12 @@
 
 import { useEffect, useRef, useState, useCallback, type FC } from "react";
 import type { ConvViewProps } from "@deepseek-ai/dsh-client-ui-conversation/client";
-import { fetchConfig, fetchModelInfo, fetchModelCatalog, fetchModelSelection, openStream, postMessage, recognizeUtterance, saveConfig, selectModel, postCameraResult } from "./api.js";
+import { fetchConfig, fetchModelInfo, fetchModelCatalog, fetchModelSelection, openStream, postMessage, recognizeUtterance, saveConfig, selectModel, postCameraResult, startAsrUpload, type AsrUpload } from "./api.js";
 import { SpeechEngine } from "./engine.js";
 import { Hud } from "./hud.js";
-import { isCubismCoreLoaded, mountModel, type Live2DHandle } from "./model.js";
+import { isCubismCoreLoaded, mountModel, DEFAULT_LOOK_PARAMS, type Live2DHandle, type LookParams } from "./model.js";
 import { MicCapture, type MicState } from "./mic.js";
-import {
-	GazeTracker,
-	capturePhoto,
-	loadSavedCalibration,
-	saveCalibration,
-	clearCalibration,
-	type AffineGazeMatrix,
-} from "./gaze.js";
-import { CalibrationOverlay } from "./calibration.js";
+import { GazeTracker, capturePhoto } from "./gaze.js";
 import { TiltParallax } from "./tilt.js";
 import { SubtitleOverlay, SUBTITLE_TTL_MS, type SubtitleLine } from "./subtitle.js";
 import type { LanguageOption, ModelCatalog, ModelInfo, ModelSelection, VoicePreset } from "./types.js";
@@ -96,17 +88,18 @@ export function Live2DView(props: ViewProps) {
 	const [asrPending, setAsrPending] = useState(false);
 	const [asrConfigured, setAsrConfigured] = useState(false);
 	const [sttLanguage, setSttLanguage] = useState("auto");
+	const [asrMode, setAsrMode] = useState("stream");
+	const asrModeRef = useRef("stream");
+	asrModeRef.current = asrMode;
+	/** Live interim transcript shown in the mic bar while listening. */
+	const [interimText, setInterimText] = useState("");
 	const [eyeTracking, setEyeTracking] = useState(false);
 	const gazeRef = useRef<GazeTracker | null>(null);
-	const [isCalibrating, setIsCalibrating] = useState(false);
-	const [hasCalibration, setHasCalibration] = useState(() => loadSavedCalibration() !== null);
-	const isCalibratingRef = useRef(false);
-	isCalibratingRef.current = isCalibrating;
-	const hasCalibrationRef = useRef(hasCalibration);
-	hasCalibrationRef.current = hasCalibration;
-	const rawLandmarkListenerRef = useRef<((rawX: number, rawY: number) => void) | null>(null);
 	const [gyroParallax, setGyroParallax] = useState(false);
 	const tiltRef = useRef<TiltParallax | null>(null);
+	const camLookRef = useRef<{ dx: number; dy: number } | null>(null);
+	const gyroLookRef = useRef<{ dx: number; dy: number } | null>(null);
+	const lookParamsRef = useRef<LookParams>({ ...DEFAULT_LOOK_PARAMS });
 
 	// LLM model catalog and current selection for the model selector.
 	const [modelCatalog, setModelCatalog] = useState<ModelCatalog | null>(null);
@@ -126,6 +119,8 @@ export function Live2DView(props: ViewProps) {
 	const asrPendingCount = useRef(0);
 	const segmentWhileSpeakingRef = useRef(false);
 	const assistantEchoRef = useRef("");
+	/** The live upload feeding the current speech segment (streaming ASR). */
+	const asrUploadRef = useRef<AsrUpload | null>(null);
 
 	const pushSubtitle = (role: SubtitleLine["role"], text: string, lineId?: string) => {
 		if (role === "assistant") {
@@ -158,6 +153,7 @@ export function Live2DView(props: ViewProps) {
 				setSpeechPrompt(config.speechPrompt);
 				setAsrConfigured(config.asrConfigured);
 				setSttLanguage(config.sttLanguage);
+				setAsrMode(config.asrMode || "stream");
 				setEyeTracking(config.eyeTracking);
 				setGyroParallax(config.gyroParallax);
 			})
@@ -284,7 +280,7 @@ export function Live2DView(props: ViewProps) {
 				modelRef.current = mounted;
 				setStatus("ready");
 				logger.info(`Live2D model ready: ${modelInfo?.name}`);
-				if (gazeRef.current?.active) mounted.setGazeMode(true);
+				if (gazeRef.current?.active || tiltRef.current?.active) { modelRef.current?.setLook(camLookRef.current, gyroLookRef.current); modelRef.current?.setLookParams(lookParamsRef.current); }
 			})
 			.catch((error) => {
 				if (cancelled) return;
@@ -342,90 +338,23 @@ export function Live2DView(props: ViewProps) {
 					await postCameraResult(requestId, shot);
 				})();
 			},
-			onError: ({ message }) => pushSubtitle("error", message),
+			onAsrInterim: ({ text }) => {
+				if (asrModeRef.current !== "stream") return;
+				setInterimText(text);
+			},
+			onAsrFinal: ({ text }) => {
+				if (asrModeRef.current !== "stream") return;
+				handleAsrFinalText(text);
+			},
+			onError: ({ message }) => {
+				pushSubtitle("error", message);
+				// A stream failure settles the pending segment (no asr-final
+				// will arrive) so the pending counter cannot latch.
+				finishAsrSegment();
+			},
 		});
 		return close;
 	}, [sessionId]);
-
-	// Gaze tracking lifecycle
-	useEffect(() => {
-		if (!eyeTracking) {
-			gazeRef.current?.stop();
-			gazeRef.current = null;
-			modelRef.current?.setGazeMode(false);
-			return undefined;
-		}
-		const savedCalib = loadSavedCalibration();
-		const tracker = new GazeTracker(
-			{
-				onGaze: (x, y) => {
-					if (isCalibratingRef.current) return;
-					const stage = stageRef.current;
-					if (!stage) return;
-					const width = stage.clientWidth;
-					const height = stage.clientHeight;
-					if (x === null) {
-						modelRef.current?.focus(width / 2, height * 0.42);
-						return;
-					}
-					// If custom calibration matrix is active, x & y are calibrated
-				// screen coordinates. Apply a mild gain so head movements map
-				// to visible character movement, and clamp to stage bounds.
-					if (hasCalibrationRef.current && savedCalib?.matrix) {
-						const gain = 1.15;
-						modelRef.current?.focus(
-							width * Math.min(1, Math.max(0, 0.5 + (x - 0.5) * gain)),
-							height * Math.min(1, Math.max(0, 0.42 + (y - 0.5) * gain)),
-						);
-					} else {
-						const gain = 1.4;
-						modelRef.current?.focus(
-							width * Math.min(1, Math.max(0, 0.5 + (x - 0.5) * gain)),
-							height * Math.min(1, Math.max(0, 0.45 + (y - 0.5) * gain)),
-						);
-					}
-				},
-				onState: (state) => {
-					if (state === "starting") showToast("视线追踪启动中（首次需下载模型）…");
-					else if (state === "tracking") modelRef.current?.setGazeMode(true);
-					else if (typeof state === "object") showToast(`视线追踪不可用：${state.error}`);
-				},
-				onRawLandmark: (rx, ry) => {
-					rawLandmarkListenerRef.current?.(rx, ry);
-				},
-			},
-			savedCalib ?? undefined
-		);
-		gazeRef.current = tracker;
-		void tracker.start();
-		return () => {
-			tracker.stop();
-			modelRef.current?.setGazeMode(false);
-		};
-	}, [eyeTracking]);
-
-	// Gyroscope parallax lifecycle
-	useEffect(() => {
-		if (!gyroParallax) {
-			tiltRef.current?.stop();
-			tiltRef.current = null;
-			modelRef.current?.setTilt(null);
-			return undefined;
-		}
-		const parallax = new TiltParallax({
-			onTilt: (state) => modelRef.current?.setTilt(state),
-			onState: (state) => {
-				if (state === "active") showToast("陀螺仪视差已开启（以当前姿势为正中）");
-				else if (typeof state === "object") showToast(`陀螺仪视差不可用：${state.error}`);
-			},
-		});
-		tiltRef.current = parallax;
-		void parallax.start();
-		return () => {
-			parallax.stop();
-			modelRef.current?.setTilt(null);
-		};
-	}, [gyroParallax]);
 
 	// First-run hint
 	useEffect(() => {
@@ -618,27 +547,11 @@ export function Live2DView(props: ViewProps) {
 		}
 	};
 
-	const startCalibration = async () => {
-		if (!eyeTracking) {
-			await toggleEyeTracking();
-		}
-		setIsCalibrating(true);
-	};
 
-	const completeCalibration = (matrix: AffineGazeMatrix) => {
-		saveCalibration({ matrix });
-		gazeRef.current?.setCalibration({ matrix });
-		setHasCalibration(true);
-		setIsCalibrating(false);
-		showToast("🎯 视线校准完成！已针对当前设备精准适配");
-	};
 
-	const resetCalibration = () => {
-		clearCalibration();
-		gazeRef.current?.setCalibration({ matrix: undefined, pitchOffset: -0.08, yawGain: 1.3, pitchGain: 1.2 });
-		setHasCalibration(false);
-		showToast("视线校准已恢复默认参数");
-	};
+
+
+
 
 	const toggleGyroParallax = async () => {
 		const next = !gyroParallax;
@@ -656,7 +569,7 @@ export function Live2DView(props: ViewProps) {
 			await saveConfig({ modelSelection: name });
 			const info = await fetchModelInfo(sessionId);
 			setModelInfo(info);
-			showToast(info.current === name ? `角色已切换：${info.name ?? name}` : `已保存全局角色 ${name}（本工作区配置了覆盖）`);
+			showToast(info.current === name ? `角色已切换：${info.label ?? info.name ?? name}` : `已保存全局角色 ${info.label ?? name}（本工作区配置了覆盖）`);
 		} catch (error) {
 			showToast(`角色切换失败：${String((error as Error)?.message ?? error)}`);
 		}
@@ -676,7 +589,7 @@ export function Live2DView(props: ViewProps) {
 		try {
 			const { config } = await saveConfig({ speechPrompt: text });
 			setSpeechPrompt(config.speechPrompt);
-			showToast(config.speechPrompt.trim() ? "自定义提示词已保存" : "自定义提示词已清空");
+			showToast(config.speechPrompt.trim() ? "自定义指令已保存" : "自定义指令已清空");
 		} catch (error) {
 			showToast(`保存失败：${String((error as Error)?.message ?? error)}`);
 		}
@@ -715,9 +628,12 @@ export function Live2DView(props: ViewProps) {
 	const stopListening = () => {
 		micRef.current?.stop();
 		micRef.current = null;
+		asrUploadRef.current?.abort();
+		asrUploadRef.current = null;
 		engineRef.current?.unmuzzle();
 		setMicState("idle");
 		setMicLevel(0);
+		setInterimText("");
 	};
 
 	useEffect(() => stopListening, [sessionId]);
@@ -732,6 +648,31 @@ export function Live2DView(props: ViewProps) {
 		let hits = 0;
 		for (const ch of target) if (source.includes(ch)) hits++;
 		return hits / target.length > 0.6;
+	};
+
+	/** Account for one settled ASR segment (submitted, dropped, or failed). */
+	const finishAsrSegment = () => {
+		asrPendingCount.current -= 1;
+		if (asrPendingCount.current <= 0) {
+			asrPendingCount.current = 0;
+			setAsrPending(false);
+		}
+		engineRef.current?.unmuzzle();
+		setInterimText("");
+	};
+
+	/** The streaming path's final transcript — submit it like a text message. */
+	const handleAsrFinalText = (text: string) => {
+		if (asrModeRef.current !== "stream") return;
+		try {
+			if (!text.trim()) return;
+			if (segmentWhileSpeakingRef.current && looksLikeEcho(text)) return;
+			const running = sessionRunningRef.current;
+			const bargeInterrupt = engineRef.current?.speaking() === true;
+			void submitText(text, running || bargeInterrupt ? "steer" : "queue");
+		} finally {
+			finishAsrSegment();
+		}
 	};
 
 	const toggleMic = async () => {
@@ -752,6 +693,43 @@ export function Live2DView(props: ViewProps) {
 					activeUtterance.current = "";
 				}
 			},
+			// Streaming path (default): relay every in-speech frame into the
+			// live upload; the VAD boundaries open (with the pre-roll) and
+			// close the utterance; the final transcript arrives over SSE.
+			onPcm: (pcm) => {
+				if (asrModeRef.current !== "stream") return;
+				asrUploadRef.current?.push(pcm);
+			},
+			onSpeechStart: (preRoll) => {
+				if (asrModeRef.current !== "stream") return;
+				if (asrUploadRef.current !== null) return;
+				segmentWhileSpeakingRef.current = engineRef.current?.speaking() === true;
+				asrPendingCount.current += 1;
+				setAsrPending(true);
+				const upload = startAsrUpload(sessionId, sttLanguageRef.current);
+				asrUploadRef.current = upload;
+				for (const frame of preRoll) upload.push(frame);
+				upload.done.catch((error) => {
+					if (asrModeRef.current !== "stream") return;
+					showToast(`语音识别错误：${String((error as Error)?.message ?? error)}`);
+				});
+			},
+			onSpeechEnd: (kind) => {
+				if (asrModeRef.current !== "stream") return;
+				const upload = asrUploadRef.current;
+				if (upload === null) return;
+				asrUploadRef.current = null;
+				if (kind === "blip") {
+					// Too short to be an utterance — discard without a result.
+					upload.abort();
+					finishAsrSegment();
+				} else {
+					// release / forced — finalize; asr-final owns the submit.
+					upload.finish();
+				}
+			},
+			// Buffered path (nostream): the whole VAD-closed segment is
+			// recognized in one request.
 			onSegment: (pcm) => {
 				segmentWhileSpeakingRef.current = engineRef.current?.speaking() === true;
 				asrPendingCount.current += 1;
@@ -768,12 +746,7 @@ export function Live2DView(props: ViewProps) {
 						showToast(`语音识别错误：${String((error as Error)?.message ?? error)}`);
 					})
 					.finally(() => {
-						asrPendingCount.current -= 1;
-						if (asrPendingCount.current <= 0) {
-							asrPendingCount.current = 0;
-							setAsrPending(false);
-						}
-						engineRef.current?.unmuzzle();
+						finishAsrSegment();
 					});
 			},
 			onError: (message) => {
@@ -806,7 +779,7 @@ export function Live2DView(props: ViewProps) {
 							<>
 								<b>正在加载角色模型…</b>
 								<br />
-								{modelInfo?.name}
+								{modelInfo?.label ?? modelInfo?.name}
 							</>
 						)}
 						{status === "no-model" && (
@@ -846,7 +819,9 @@ export function Live2DView(props: ViewProps) {
 					<LevelMeter level={micLevel} mode={engineRef.current?.speaking() ? "muted" : asrPending ? "pulsing" : "normal"} />
 					<span className="lv-mic-label">
 						{asrPending
-							? "识别中…"
+							? interimText
+								? interimText
+								: "识别中…"
 							: engineRef.current?.speaking()
 								? "角色说话中（开口可打断）"
 								: micLevel > 0.04
@@ -899,9 +874,6 @@ export function Live2DView(props: ViewProps) {
 				onToggleEyeTracking={() => void toggleEyeTracking()}
 				gyroParallax={gyroParallax}
 				onToggleGyroParallax={() => void toggleGyroParallax()}
-				hasCalibration={hasCalibration}
-				onStartCalibration={startCalibration}
-				onResetCalibration={resetCalibration}
 				presets={presets}
 				languages={languages}
 				currentVoiceId={voiceId}
@@ -932,23 +904,6 @@ export function Live2DView(props: ViewProps) {
 					// 导航至系统设置
 					const btn = document.querySelector('button[title*="Settings"], button[title*="设置"]') as HTMLElement | null;
 					btn?.click();
-				}}
-			/>
-
-			<CalibrationOverlay
-				active={isCalibrating}
-				modelHandle={modelRef.current}
-				stageElement={stageRef.current}
-				onRawLandmarkSubscribe={(fn) => {
-					rawLandmarkListenerRef.current = fn;
-					if (typeof window !== "undefined") {
-						(window as unknown as { __dispatchGazeLandmark?: (x: number, y: number) => void }).__dispatchGazeLandmark = (rx, ry) => fn?.(rx, ry);
-					}
-				}}
-				onComplete={completeCalibration}
-				onCancel={() => {
-					setIsCalibrating(false);
-					showToast("已退出视线校准");
 				}}
 			/>
 		</div>

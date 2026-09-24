@@ -13,20 +13,31 @@ import { Application } from "pixi.js";
 import { Live2DModel } from "pixi-live2d-display-lipsyncpatch/cubism4";
 import { logger } from "./logger.js";
 
+export interface LookParams {
+	camPanGain: number;
+	camAngleGain: number;
+	gyroPanGain: number;
+	gyroAngleGain: number;
+	panRange: number;
+	angleRange: number;
+	rollRange: number;
+}
+
+export const DEFAULT_LOOK_PARAMS: LookParams = {
+	camPanGain: 0.20,
+	camAngleGain: 1.0,
+	gyroPanGain: 0.45,
+	gyroAngleGain: 0.55,
+	panRange: 0.10,
+	angleRange: 22,
+	rollRange: 6,
+};
+
 export interface Live2DHandle {
-	/** Apply an expression by name or index; unknown ids are ignored. */
 	setExpression(expression: number | string): void;
-	/** Make the character look at a stage-local point (pixels). */
-	focus(x: number, y: number): void;
-	/** Approximate screen pixel position of character eyes. */
 	getEyePosition(): { x: number; y: number };
-	/** When true, camera gaze owns the focus and the mouse is ignored. */
-	setGazeMode(enabled: boolean): void;
-	/**
-	 * Gyroscope parallax: normalized tilt drives head/body/eye angles plus a
-	 * position offset (the "behind the glass" illusion). Null disables.
-	 */
-	setTilt(tilt: { dx: number; dy: number; px: number; py: number } | null): void;
+	setLook(camera: { dx: number; dy: number } | null, gyro: { dx: number; dy: number } | null): void;
+	setLookParams(params: Partial<LookParams>): void;
 	destroy(): void;
 }
 
@@ -81,7 +92,9 @@ export async function mountModel(
 	}
 	app.stage.addChild(model as never);
 
-	let tilt: { dx: number; dy: number; px: number; py: number } | null = null;
+	let camInput: { dx: number; dy: number } | null = null;
+	let gyroInput: { dx: number; dy: number } | null = null;
+	let lookParams: LookParams = { ...DEFAULT_LOOK_PARAMS };
 	let baseX = 0;
 	let baseY = 0;
 	let baseScale = 1;
@@ -91,9 +104,11 @@ export async function mountModel(
 
 	const applyTransform = () => {
 		model.scale.set(baseScale * userScale);
-		const tiltX = tilt ? tilt.px * (container.clientWidth || 1) * 0.12 : 0;
-		const tiltY = tilt ? tilt.py * (container.clientHeight || 1) * 0.10 : 0;
-		model.position.set(baseX + userPanX + tiltX, baseY + userPanY + tiltY);
+		const lookX = (camInput ? camInput.dx * lookParams.camPanGain : 0) + (gyroInput ? gyroInput.dx * lookParams.gyroPanGain : 0);
+		const lookY = (camInput ? camInput.dy * lookParams.camPanGain : 0) + (gyroInput ? gyroInput.dy * lookParams.gyroPanGain : 0);
+		const w = container.clientWidth || 1;
+		const h = container.clientHeight || 1;
+		model.position.set(baseX + userPanX - lookX * lookParams.panRange * w, baseY + userPanY - lookY * lookParams.panRange * h);
 	};
 
 	const fit = () => {
@@ -125,21 +140,27 @@ export async function mountModel(
 			: ["ParamMouthOpenY"];
 	internal.on("beforeModelUpdate", () => {
 		const value = getMouth();
-		// Explicitly drive the mouth back to closed when silent — otherwise
-		// the last non-zero sample can stick when no motion is updating it.
 		const applied = value > 0.002 ? value : 0;
 		for (const id of lipSyncIds) internal.coreModel.setParameterValueById(id, applied);
-		// Gyroscope parallax — written last so it composes over (and wins
-		// over) focus/motion angle values, exactly like the mouth drive.
-		if (tilt !== null) {
+		// Unified look: camera + gyro both contribute to head/body/eye angles
+		const camOn = camInput !== null;
+		const gyroOn = gyroInput !== null;
+		if (camOn || gyroOn) {
+			const camA = camInput ? lookParams.camAngleGain : 0;
+			const gyroA = gyroInput ? lookParams.gyroAngleGain : 0;
+			const total = camA + gyroA || 1;
+			const lx = ((camInput ? camInput.dx * camA : 0) + (gyroInput ? gyroInput.dx * gyroA : 0)) / total;
+			const ly = ((camInput ? camInput.dy * camA : 0) + (gyroInput ? gyroInput.dy * gyroA : 0)) / total;
+			const ar = lookParams.angleRange;
+			const rr = lookParams.rollRange;
 			const angles: Array<[string, number]> = [
-				["ParamAngleX", -tilt.dx * 18],
-				["ParamAngleY", -tilt.dy * 14],
-				["ParamAngleZ", tilt.dx * 16],
-				["ParamBodyAngleX", -tilt.dx * 12],
-				["ParamBodyAngleY", -tilt.dy * 8],
-				["ParamEyeBallX", -tilt.dx * 0.6],
-				["ParamEyeBallY", -tilt.dy * 0.4],
+				["ParamAngleX", lx * ar],
+				["ParamAngleY", ly * ar],
+				["ParamAngleZ", lx * rr],
+				["ParamBodyAngleX", lx * ar * 0.5],
+				["ParamBodyAngleY", ly * ar * 0.5],
+				["ParamEyeBallX", lx],
+				["ParamEyeBallY", ly],
 			];
 			for (const [id, v] of angles) internal.coreModel.setParameterValueById(id, v);
 			applyTransform();
@@ -152,7 +173,6 @@ export async function mountModel(
 	// - Wheel: zoom around cursor
 	// - Double click/tap: reset zoom & pan
 	const stage = container;
-	let gazeMode = false;
 	const activeTouches = new Map<number, { x: number; y: number }>();
 	let lastPinchDist = 0;
 	let lastPinchMidX = 0;
@@ -242,9 +262,7 @@ export async function mountModel(
 			return;
 		}
 
-		if (gazeMode) return; // camera gaze owns the focus
-		const rect = stage.getBoundingClientRect();
-		model.focus(event.clientX - rect.left, event.clientY - rect.top);
+		// Mouse hover: no gaze tracking without camera — just idle
 	};
 
 	const onPointerUp = (event: PointerEvent) => {
@@ -301,9 +319,6 @@ export async function mountModel(
 				logger.warn(`expression ${String(expression)} failed`, error);
 			});
 		},
-		focus(x, y) {
-			model.focus(x, y);
-		},
 		getEyePosition() {
 			const width = container.clientWidth || 1;
 			const height = container.clientHeight || 1;
@@ -319,16 +334,14 @@ export async function mountModel(
 				y: Math.round(Math.max(20, Math.min(height - 20, eyeY))),
 			};
 		},
-		setGazeMode(enabled) {
-			gazeMode = enabled;
-			if (!enabled) return;
-			// Reset to center when the camera takes over.
-			const rect = stage.getBoundingClientRect();
-			model.focus(rect.width / 2, rect.height * 0.42);
+		setLook(cam, gyro) {
+			camInput = cam;
+			gyroInput = gyro;
+			if (cam === null && gyro === null) applyTransform();
 		},
-		setTilt(next) {
-			tilt = next;
-			if (next === null) model.position.set(baseX, baseY);
+		setLookParams(params) {
+			lookParams = { ...lookParams, ...params };
+			applyTransform();
 		},
 		destroy() {
 			canvas.removeEventListener("webglcontextlost", onWebglLost);

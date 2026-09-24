@@ -6,7 +6,7 @@ DSH 插件：在会话视图里新增 **Live2D** tab——Live2D 角色随对话
 
 - 🎭 **Live2D 角色舞台**：Cubism 4 模型（pixi.js v7 渲染），说话时 `ParamMouthOpenY` 随音频 RMS 包络驱动口型，句级情绪标签切换表情
 - 🔊 **流式语音**：LLM 回复边生成边按句合成（Fish Audio，44100Hz PCM），SSE 推送、浏览器端队列播放；断句 / abort 与模型流同步
-- 🎙 **连续语音输入**（v0.2.0）：浏览器本地 VAD 分句 → 整句识别（火山 `bigmodel_nostream`，中/日/英自动检测）→ 识别完自动提交对话；支持说话打断（barge-in）与扬声器回声防护
+- 🎙 **连续语音输入**（v0.2.0 → 流式化）：浏览器本地 VAD 分句 → **实时推流**（火山 `bigmodel_async` 双向流式 + nostream 二遍，边说边出字幕，说完 ≈0.6s 定稿）→ 自动提交对话；支持说话打断（barge-in）与扬声器回声防护；`asrMode: nostream` 可切回一次性整句识别（25 语种含日语）
 - 💬 **双语字幕**：用户与 AI 台词均显示（14s 淡出），可一键隐藏；角色台词自动翻译成目标语言（v0.3.0，走会话同款 LLM，一行原文一行译文）
 - 🎭 **多模型目录**（v0.3.0）：`modelPath` 指向多个角色子目录时 ⚙ 出现模型切换器，即选即换
 - 🗂 **per-workspace 覆盖**（v0.3.0）：按工作区路径覆盖音色/模型/语言等表现层配置，同一插件多工作区多角色
@@ -93,16 +93,17 @@ pnpm install && sv restart dsh   # 重启 dsh 生效
 | `apiKeys` | `[]` | 内联 key 列表（优先于 `apiKeyFile`） |
 | `apiKeyFile` | `""` | key 文件路径（每行一个 key 或 JSON 数组） |
 | `asrCredentialsFile` | `~/.config/volc-asr/credentials.json` | 火山 ASR 凭证（JSON 含 `apikey` 或 `appid`+`accessToken`）；未配置时 🎙 点击给出引导提示 |
-| `sttLanguage` | `"auto"` | 语音识别语言；auto 用火山 `enable_auto_lang` 自动检测 |
-| `speechLanguage` | `"ja"` | 角色说话语言，注入"始终用 X 语言交流"指令 |
+| `sttLanguage` | `"auto"` | 语音识别语言；auto 用火山 `enable_auto_lang` 自动检测（仅 `nostream` 模式生效；流式模式自动识别中/英+方言） |
+| `asrMode` | `"stream"` | 语音识别传输：`stream`（默认）实时推流（边说边出字幕、说完 ≈0.6s 定稿；不支持日语/韩语输入）；`nostream` 一次性整句识别（延迟 ≈1.3s；25 语种含日语） |
+| `speechLanguage` | `"ja"` | 角色说话语言，注入"始终用 X 语言交流"指令；`auto` 跟随用户语言（不注入语言指令）。日语指令中的"（用户会看到字幕翻译）"承诺仅在 `subtitleLanguage` 实际生效（非 `off` 且不同于角色语言）时出现 |
 | `subtitleLanguage` | `"zh"` | 角色台词的翻译目标语言（`off` 关闭；与会话生效的 `speechLanguage` 相同或 `speechLanguage=auto` 时可能整句透传，按需配置；可覆盖于 workspaces） |
 | `eyeTracking` | `false` | 实验性：前置摄像头视线追踪（⚙ 面板可切换；首次开启经插件路由下载视线模型） |
 | `gyroParallax` | `false` | 实验性：陀螺仪视差（DeviceOrientation → 头部/身体/眼球角度 + 位置偏移；开启时校准正中姿势） |
 | `emotionMap` | 9 情绪默认表 | 标签 → 表情索引/名称（neutral/joy/sappiness/sadness/anger/surprise/fear/disgust/shy） |
-| `speechPrompt` | `""` | 自定义提示词，仅语音模式生效（HUD ⚙ 里也能编辑） |
+| `speechPrompt` | `""` | 自定义指令，仅语音模式生效（HUD ⚙ 里也能编辑） |
 | `workspaces` | `{}` | per-workspace 覆盖：`{ "<工作区绝对路径>": { voiceId, modelPath, modelSelection, speechLanguage, sttLanguage, subtitleLanguage, speechPrompt, emotionMap 任选 } }`；凭证类字段只在全局层 |
 
-**提示词注入是会话级、按需生效的**：只有当前会话打开了 Live2D 视图（SSE 在连）时，才会注入"语音输出格式 + 情绪标签"提示词（含 `speechPrompt`）；普通 Chat 会话完全不受影响。从 Live2D 切回普通对话后的首轮回复会自动附上一段"已退出语音模式"的提醒，模型随即恢复正常 Markdown/代码块输出，对话可以无缝续接。
+**提示词注入是会话级、按需生效的**：只有当前会话打开了 Live2D 视图（SSE 在连）时，才会注入"语音输出格式 + 情绪标签"提示词（含 `speechPrompt` 自定义指令）；普通 Chat 会话完全不受影响。从 Live2D 切回普通对话后的首轮回复会自动附上一段"已退出语音模式"的提醒，模型随即恢复正常 Markdown/代码块输出，对话可以无缝续接。
 
 内置音色预设（HUD ⚙ 里可直接切换）：
 
@@ -143,10 +144,11 @@ cd ~/.dsh/live2d-voice-models
 
 语音输入细节：
 
-- 识别延迟 ≈ 说完话 0.5s（VAD 判停）+ 识别约 1s，随后自动提交
+- 识别延迟（流式模式，默认）：**边说边出字**（开口 ≈1s 出首字、实时跟进），说完 ≈0.6s 出定稿并自动提交；`asrMode: nostream` 时为 说完话 0.5s（VAD 判停）+ 识别约 1.3s
+- 流式模式走火山双向流式优化版（`bigmodel_async` + `enable_nonstream` 二遍识别）：实时字幕与 nostream 级准确率兼得；**不支持日语/韩语等小语种输入**（官方语言参数仅 nostream 端点支持，日语实测空文本）——需要日语输入时把 `asrMode` 切回 `nostream`
 - 角色的语音可能被麦克风拾到（外放场景）：识别结果与角色最近台词高度重合时会被当作回声丢弃
 - 浏览器要求 HTTPS 或 localhost（getUserMedia 限制）；手机浏览器同样可用
-- `sttLanguage: auto` 实测覆盖中文/日语/英语自动检测；指定 `ja`/`zh`/`en` 可锁定语种提高稳定性
+- `sttLanguage: auto` 实测覆盖中文/日语/英语自动检测（nostream）；流式模式下中/英+方言自动识别，无需指定语言；`ja`/`zh`/`en` 锁定仅在 nostream 模式生效
 
 注意：
 
@@ -157,16 +159,17 @@ cd ~/.dsh/live2d-voice-models
 ## 工作原理（简）
 
 ```
-                        ┌── 🎙 语音输入 ────────────────────────────────┐
-                        │ 浏览器 AudioWorklet：48k→16k 降采样 + 能量 VAD │
-                        │ 分句（250ms 预滚 / 20s 上限）                  │
-                        │   │ 整句 PCM                                  │
-                        │   ▼                                           │
-                        │ POST /live2d-voice/asr/recognize              │
-                        │   │ 火山 bigmodel_nostream（快灌 + 负包收尾）  │
-                        │   ▼                                           │
-                        │ 识别文本 ── 自动提交（barge/运行中 → steer）───┼──► 用户输入
-                        └───────────────────────────────────────────────┘
+                        ┌── 🎙 语音输入 ──────────────────────────────────────┐
+                        │ 浏览器 AudioWorklet：48k→16k 降采样 + 能量 VAD     │
+                        │ 分句（250ms 预滚 / 20s 上限）                      │
+                        │   │ 实时 PCM 帧（流式，默认）                      │
+                        │   ▼                                               │
+                        │ WS /live2d-voice/asr/ws  × 每句一个连接            │
+                        │   │ 火山 bigmodel_async + 二遍识别（200ms 攒帧）   │
+                        │   ▼ interim 实时字幕（SSE asr-interim）            │
+                        │ 定稿文本（SSE asr-final）── 自动提交 ──► 用户输入   │
+                        │ （asrMode: nostream 时走 POST /asr/recognize 整句）│
+                        └───────────────────────────────────────────────────┘
 用户输入 ──► GUI 会话通道 (session/prompt) ──► agent 回复流
                                                   │ llm/stream tap（仅 Live 监听的会话）
                                                   ▼
@@ -187,7 +190,8 @@ cd ~/.dsh/live2d-voice-models
 - 情绪协议（会话级按需注入）：仅当该会话的 Live2D 视图打开时，system prompt 才附加"语音输出格式"一节（order 9800，含 `speechLanguage` 指令与自定义 `speechPrompt`），要求模型句首输出 `[neutral|joy|sadness|anger|surprise|fear|disgust|shy]` 标签；句子层提取后映射为表情，标签本身不进字幕。切回 Chat 视图后下一轮自动撤下该节并附"已退出"提醒
 - TTS 与 Turn 解耦：LLM 流结束即放行 Agent Turn 结算，剩余句子在后台继续合成；新一轮流开始或视图关闭时自动中止旧合成
 - 多 key 轮询：单 key 401/402/429 自动切下一个，全部失败才报错（SSE `error` 事件）
-- 语音识别用火山 `bigmodel_nostream`（v3 sauc 二进制帧协议）：双向流式端点不支持日语（实测空文本），nostream 覆盖 25 语种且 `enable_auto_lang` 自动检测可用；每句独立短连接、快灌整句、负包收尾后返回整段文本
+- 语音识别（流式，默认）用火山 `bigmodel_async`（双向流式优化版 + `enable_nonstream` 二遍，v3 sauc 二进制帧协议，帧不带 seq）：边说边出实数 interim（SSE `asr-interim`），句末 `{"t":"finish"}` 控制帧触发定稿（SSE `asr-final`）；实测 4.7s 中文句说完 ≈0.6s 出最终文本；**语言参数仅 nostream 端点支持**，双向流式只覆盖中英+方言（日语实测空文本），故 `asrMode: nostream` 保留旧的 `bigmodel_nostream` 一次性整句识别（25 语种 `enable_auto_lang`，含 ja-JP）
+- 浏览器→host 上行走 WebSocket（每句一连接）：Chromium 的 `ReadableStream` fetch body 只支持 HTTP/2（HTTP/1.1 下 `ERR_ALPN_NEGOTIATION_FAILED`），而 harness webserver 是 HTTP/1.1
 - 字幕翻译是 host 侧一次性 `ctx.llm.stream` 调用（复用会话的 provider/model，无 sessionId/purpose 故不会被本插件 tap 回环）；每会话串行队列、最多积压 2 句，超出丢最旧——字幕时效优先；译文经 SSE `subtitle-translation` 按 `lineId` 回贴
 
 ## 开发
@@ -197,7 +201,8 @@ npm install        # .npmrc 已设 legacy-peer-deps（client 包 0.1.1-rc.2 peer
 npm run typecheck
 npm run build      # lib/index.js (host ESM) + lib/client.js (浏览器 bundle)
 node e2e/verify-live.mjs     # Phase 1 端到端回归 21 项（需 e2e 实例跑在 4188，见 dsh-e2e skill）
-node e2e/verify-voice.mjs    # Phase 2 语音闭环 17 项（同上；需 /tmp/t-zh-16k.pcm 与 /tmp/t-ja-16k.pcm 测试音频）
+node e2e/verify-voice.mjs    # Phase 2 语音闭环 17 项（同上；需 /tmp/t-zh-16k.pcm 与 /tmp/t-ja-16k.pcm 测试音频；断言 nostream 传输路径）
+node e2e/verify-stream.mjs   # 流式 ASR 全链路：实时推流 → asr-interim/asr-final → 自动提交（同上环境）
 node e2e/verify-phase3.mjs   # Phase 3 翻译/多模型/workspace 19 项（需 /root/.dsh-e2e-test-models 多模型夹具）
 node e2e/verify-v11.mjs      # v1.1.0 全屏/视线追踪资产/MediaPipe 加载/摄像头工具 10 项（需 --use-fake-device-for-media-stream）
 node e2e/verify-soak.mjs     # 长时闲置 soak（默认 6 分钟，SOAK_MINUTES 可调）

@@ -81,6 +81,76 @@ export async function recognizeUtterance(pcm: ArrayBuffer, language: string): Pr
 	return body.text ?? "";
 }
 
+export interface AsrUpload {
+	/** Feed one 16kHz s16le mono PCM frame into the upload stream. */
+	push(pcm: Int16Array): void;
+	/** End the utterance (finalize) — the transcript arrives via asr-final. */
+	finish(): void;
+	/** Abort the upload (blip / mic stopped mid-word) — no result expected. */
+	abort(): void;
+	/** Settles when the upstream opens (failures surface via onError). */
+	done: Promise<void>;
+}
+
+/**
+ * Stream one VAD utterance to the host ASR relay over a same-origin
+ * WebSocket: binary frames are live PCM, a {"t":"finish"} control message
+ * finalizes it, an abrupt close discards it. The transcript never comes
+ * back on this socket; it travels over the session SSE as `asr-interim` /
+ * `asr-final`.
+ *
+ * (A fetch ReadableStream body would be the natural choice, but Chromium
+ * only streams request bodies over HTTP/2, and the harness webserver
+ * speaks HTTP/1.1 — ERR_ALPN_NEGOTIATION_FAILED.)
+ */
+export function startAsrUpload(sessionId: string, language: string): AsrUpload {
+	const pending: Int16Array[] = [];
+	const ws = new WebSocket(`/live2d-voice/asr/ws?session=${encodeURIComponent(sessionId)}&lang=${encodeURIComponent(language)}`);
+	let settling = false;
+	let resolveDone: (() => void) | null = null;
+	let rejectDone: ((error: Error) => void) | null = null;
+	const done = new Promise<void>((resolve, reject) => {
+		resolveDone = resolve;
+		rejectDone = reject;
+	});
+	ws.binaryType = "arraybuffer";
+	ws.onopen = () => {
+		for (const frame of pending.splice(0)) push(frame);
+		resolveDone?.();
+	};
+	ws.onerror = () => {
+		if (!settling) rejectDone?.(new Error("语音上行连接失败"));
+	};
+	ws.onclose = () => {
+		// finish() ends with the server closing this socket — that is the
+		// normal path; anything else means the utterance was discarded.
+		if (!settling) rejectDone?.(new Error("语音上行连接已断开"));
+	};
+	const push = (frame: Int16Array): void => {
+		if (ws.readyState === WebSocket.OPEN) {
+			ws.send(frame.buffer.slice(frame.byteOffset, frame.byteOffset + frame.byteLength));
+		} else if (ws.readyState === WebSocket.CONNECTING) {
+			pending.push(frame);
+		}
+	};
+	return {
+		push,
+		finish: () => {
+			settling = true;
+			if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ t: "finish" }));
+		},
+		abort: () => {
+			settling = true;
+			try {
+				ws.close();
+			} catch {
+				/* already gone */
+			}
+		},
+		done,
+	};
+}
+
 /** Deliver a camera frame (or a failure) for a pending camera-capture request. */
 export async function postCameraResult(requestId: string, shot: { dataUrl: string; width: number; height: number } | null): Promise<void> {
 	await fetch("/live2d-voice/camera-result", {
@@ -150,6 +220,8 @@ export function openStream(sessionId: string, handlers: StreamHandlers): () => v
 	wire<SubtitlePayload>("subtitle", handlers.onSubtitle);
 	wire<SubtitleTranslationPayload>("subtitle-translation", handlers.onSubtitleTranslation);
 	wire<CameraCapturePayload>("camera-capture", handlers.onCameraCapture);
+	wire<{ text: string }>("asr-interim", handlers.onAsrInterim);
+	wire<{ text: string }>("asr-final", handlers.onAsrFinal);
 	wire<ErrorPayload>("error", handlers.onError);
 	return () => source.close();
 }

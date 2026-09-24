@@ -39,7 +39,7 @@ export interface HudProps {
 	currentVoiceId: string;
 	currentSttLanguage: string;
 	/** Live2D model catalog */
-	models: { name: string; url: string }[];
+	models: { name: string; label?: string; url: string }[];
 	currentModel?: string;
 	apiKeyCount: number;
 	speechPrompt: string;
@@ -193,9 +193,10 @@ export function Hud(props: HudProps) {
 											key={model.name}
 											type="button"
 											className={`lv-lang${model.name === props.currentModel ? " lv-current" : ""}`}
+											title={model.name}
 											onClick={() => props.onPickModel(model.name)}
 										>
-											{model.name}
+											{model.label ?? model.name}
 										</button>
 									))}
 								</div>
@@ -327,7 +328,7 @@ export function Hud(props: HudProps) {
 }
 
 // ──────────────────────────────────────────────────────────────────────
-// ModelSelector: LLM provider/model/reasoning-effort picker for the Live view.
+// ModelSelector: compact two-dropdown LLM model + effort picker.
 // ──────────────────────────────────────────────────────────────────────
 
 interface ModelSelectorProps {
@@ -338,17 +339,26 @@ interface ModelSelectorProps {
 
 function ModelSelector(props: ModelSelectorProps) {
 	const { catalog, current } = props;
-	const [expandedProvider, setExpandedProvider] = useState<string | null>(null);
 	const [pending, setPending] = useState(false);
 
 	const currentProvider = current?.provider ?? catalog.default.provider;
 	const currentModel = current?.model ?? catalog.default.model;
 	const currentEffort = current?.reasoningEffort;
 
-	const handlePick = async (group: ModelProviderGroup, modelId: string, effort?: string) => {
+	// Find the selected model to check if it supports reasoning efforts.
+	const selectedGroup = catalog.groups.find((g) => g.id === currentProvider);
+	const selectedModel = selectedGroup?.models.find((m) => m.id === currentModel);
+	const efforts = selectedModel?.reasoning?.efforts ?? [];
+	const effectiveEffort = currentEffort ?? selectedModel?.reasoning?.defaultEffort;
+
+	const handleChange = async (value: string, effort?: string) => {
+		const sep = value.indexOf(":");
+		if (sep < 0) return;
+		const provider = value.slice(0, sep);
+		const model = value.slice(sep + 1);
 		setPending(true);
 		try {
-			await props.onSelect(group.id, modelId, effort);
+			await props.onSelect(provider, model, effort);
 		} finally {
 			setPending(false);
 		}
@@ -357,64 +367,37 @@ function ModelSelector(props: ModelSelectorProps) {
 	return (
 		<>
 			<h4>模型 · 思考程度</h4>
-			<div className="lv-model-list">
-				{catalog.groups.map((group) => {
-					const isCurrentProvider = group.id === currentProvider;
-					const isExpanded = expandedProvider === group.id || (expandedProvider === null && isCurrentProvider);
-					return (
-						<div key={group.id} className="lv-model-group">
-							<button
-								type="button"
-								className={`lv-model-provider${isCurrentProvider ? " lv-current" : ""}`}
-								onClick={() => setExpandedProvider(isExpanded ? null : group.id)}
-							>
-								<span className="lv-model-provider-name">{group.name}</span>
-								<span className="lv-model-provider-count">{group.models.length}</span>
-							</button>
-							{isExpanded && (
-								<div className="lv-model-models">
-									{group.models.map((m) => {
-										const isCurrent = isCurrentProvider && m.id === currentModel;
-										return (
-											<div key={m.id} className="lv-model-entry">
-												<button
-													type="button"
-													disabled={pending}
-													className={`lv-model-btn${isCurrent ? " lv-current" : ""}`}
-													onClick={() => handlePick(group, m.id, m.reasoning?.defaultEffort)}
-												>
-													<span>{m.name}</span>
-													{isCurrent && <span className="lv-model-dot" />}
-												</button>
-												{/* Reasoning effort picker — only when this model supports it */}
-												{m.reasoning && m.reasoning.efforts.length > 0 && isCurrent && (
-													<div className="lv-effort-row">
-														{m.reasoning.efforts.map((eff) => {
-															const isActive = (currentEffort ?? m.reasoning?.defaultEffort) === eff.id;
-															return (
-																<button
-																	key={eff.id}
-																	type="button"
-																	disabled={pending}
-																	className={`lv-effort-btn${isActive ? " lv-current" : ""}`}
-																	title={eff.description ?? eff.name}
-																	onClick={() => handlePick(group, m.id, eff.id)}
-																>
-																	{eff.name}
-																</button>
-															);
-														})}
-													</div>
-												)}
-											</div>
-										);
-									})}
-								</div>
-							)}
-						</div>
-					);
-				})}
-			</div>
+			<select
+				className="lv-model-select"
+				disabled={pending}
+				value={`${currentProvider}:${currentModel}`}
+				onChange={(e) => void handleChange(e.target.value)}
+			>
+				{catalog.groups.map((g) => (
+					<optgroup key={g.id} label={g.name}>
+						{g.models.map((m) => (
+							<option key={m.id} value={`${g.id}:${m.id}`}>
+								{m.name}
+							</option>
+						))}
+					</optgroup>
+				))}
+			</select>
+			{efforts.length > 0 && (
+				<select
+					className="lv-model-select"
+					disabled={pending}
+					value={effectiveEffort ?? ""}
+					onChange={(e) => void handleChange(`${currentProvider}:${currentModel}`, e.target.value || undefined)}
+				>
+					<option value="">默认</option>
+					{efforts.map((eff) => (
+						<option key={eff.id} value={eff.id}>
+							{eff.name}
+						</option>
+					))}
+				</select>
+			)}
 		</>
 	);
 }

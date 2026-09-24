@@ -10,11 +10,14 @@
  * close threshold is lower than the open one so trailing quiet syllables do
  * not split one utterance.
  *
- * Each closed speech segment is emitted whole (with a 250ms pre-roll so the
- * attack window does not clip the first syllable) as `onSegment` — the ASR
- * backend recognizes buffered utterances, so segments are the natural unit.
- * Segments shorter than 300ms are dropped as blips; segments longer than
- * 20s are force-closed so one monologue cannot grow unbounded.
+ * Two consumers share one capture:
+ *   - streaming (default): every in-speech frame is relayed live via
+ *     `onPcm`, and the attack window's 250ms pre-roll rides along on
+ *     `onSpeechStart` so the first syllable is not clipped; segment
+ *     boundaries arrive as `onSpeechEnd` (release / 20s force-cut / blip).
+ *   - buffered (legacy nostream ASR): the closed segment is emitted whole
+ *     on `onSegment`; segments shorter than 300ms are dropped as blips,
+ *     segments longer than 20s are force-closed.
  *
  * The same level feed drives the barge-in policy: when the engine is
  * playing AI speech, a sustained level above `bargeThreshold` means the user
@@ -23,15 +26,26 @@
 
 export type MicState = "idle" | "requesting" | "listening" | "denied" | "error";
 
+/** Why a speech segment ended. "blip" = too short to submit. */
+export type SpeechEndKind = "release" | "forced" | "blip";
+
 export interface MicEvents {
 	/** Smoothed 0..1 input level, ~30 fps. */
 	onLevel?: (level: number) => void;
-	/** One complete utterance: 16 kHz s16 mono PCM (ArrayBuffer). */
+	/**
+	 * Every 16kHz s16 mono worklet frame, live. The streaming ASR path
+	 * relays these as they arrive; the buffered path ignores them.
+	 */
+	onPcm?: (pcm: Int16Array) => void;
+	/** One complete utterance: 16 kHz s16 mono PCM (ArrayBuffer). Buffered path only. */
 	onSegment?: (pcm: ArrayBuffer) => void;
-	/** Voice started (attack threshold crossed). */
-	onSpeechStart?: () => void;
-	/** Voice ended (release timeout or the 20s force-close). */
-	onSpeechEnd?: () => void;
+	/** Voice started (attack threshold crossed); carries the pre-roll frames. */
+	onSpeechStart?: (preRoll: Int16Array[]) => void;
+	/**
+	 * Voice ended: "release" = silence timeout ended the utterance,
+	 * "forced" = the 20s monologue cap cut it, "blip" = too short to submit.
+	 */
+	onSpeechEnd?: (kind: SpeechEndKind) => void;
 	/** Hard failure / permission denial. */
 	onError?: (message: string) => void;
 }
@@ -173,8 +187,9 @@ export class MicCapture {
 		if (this.inSpeech) {
 			this.inSpeech = false;
 			this.speakingSince = 0;
+			const kind = this.segmentSamples < MIN_SEGMENT_SAMPLES ? "blip" : "release";
 			this.emitSegment();
-			this.events.onSpeechEnd?.();
+			this.events.onSpeechEnd?.(kind);
 		}
 		this.node?.port.close();
 		this.node?.disconnect();
@@ -197,12 +212,13 @@ export class MicCapture {
 		if (this.inSpeech) {
 			this.segment.push(pcm);
 			this.segmentSamples += pcm.length;
+			this.events.onPcm?.(pcm);
 			if (this.segmentSamples >= MAX_SEGMENT_SAMPLES) {
 				// 20s monologue cap — submit what we have and reset.
 				this.inSpeech = false;
 				this.speakingSince = 0;
 				this.emitSegment();
-				this.events.onSpeechEnd?.();
+				this.events.onSpeechEnd?.("forced");
 			}
 			return;
 		}
@@ -241,11 +257,17 @@ export class MicCapture {
 				if (this.speakingSince === 0) this.speakingSince = now;
 				if (now - this.speakingSince >= ATTACK_MS) {
 					this.inSpeech = true;
-					// The attack window itself is speech — keep it.
-					this.segment = this.preRoll.splice(0);
-					this.segmentSamples = this.preRollSamples;
+					// The attack window itself is speech — keep it. The
+					// pre-roll frames go to both consumers: the buffered
+					// path prepends them to the utterance, the streaming
+					// path relays them into the upload as its opening audio.
+					const pre = this.preRoll;
+					const preSamples = this.preRollSamples;
+					this.preRoll = [];
 					this.preRollSamples = 0;
-					this.events.onSpeechStart?.();
+					this.segment = pre.slice(0);
+					this.segmentSamples = preSamples;
+					this.events.onSpeechStart?.(pre);
 				}
 			} else {
 				this.speakingSince = 0;
@@ -257,8 +279,9 @@ export class MicCapture {
 					if (this.inSpeech && performance.now() - this.lastSpeechAt >= RELEASE_MS) {
 						this.inSpeech = false;
 						this.speakingSince = 0;
+						const kind = this.segmentSamples < MIN_SEGMENT_SAMPLES ? "blip" : "release";
 						this.emitSegment();
-						this.events.onSpeechEnd?.();
+						this.events.onSpeechEnd?.(kind);
 					}
 				}, RELEASE_MS + 30);
 			}

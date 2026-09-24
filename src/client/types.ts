@@ -11,6 +11,8 @@ export interface PublicConfig {
 	apiKeyFile: string;
 	sttLanguage: string;
 	asrCredentialsFile: string;
+	/** "stream" (live bidirectional, default) | "nostream" (buffered one-shot). */
+	asrMode: string;
 	speechLanguage: string;
 	subtitleLanguage: string;
 	speechPrompt: string;
@@ -38,10 +40,12 @@ export interface ModelInfo {
 	configured: boolean;
 	url?: string;
 	name?: string;
+	/** 中文展示名。 */
+	label?: string;
 	/** The effective selection (equals name). */
 	current?: string;
 	/** The full catalog when modelPath is a directory of models. */
-	models?: { name: string; url: string }[];
+	models?: { name: string; label?: string; url: string }[];
 }
 
 export interface ExpressionPayload {
@@ -141,5 +145,9 @@ export interface StreamHandlers {
 	onSubtitle?: (payload: SubtitlePayload) => void;
 	onSubtitleTranslation?: (payload: SubtitleTranslationPayload) => void;
 	onCameraCapture?: (payload: CameraCapturePayload) => void;
+	/** Live ASR interim transcript (updates while the user is speaking). */
+	onAsrInterim?: (payload: { text: string }) => void;
+	/** Live ASR final transcript — submit this utterance. */
+	onAsrFinal?: (payload: { text: string }) => void;
 	onError?: (payload: ErrorPayload) => void;
 }

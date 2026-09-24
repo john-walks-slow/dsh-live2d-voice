@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.4.0 (2026-09-24)
+
+- **语音识别流式化**：ASR 从「整句缓冲 → 一次性识别」改为「VAD 分句 + 实时推流」——浏览器边录边传（每句一条 WebSocket 上行），host 转发火山 `bigmodel_async` 双向流式优化版 + `enable_nonstream` 二遍识别；识别文本经 SSE `asr-interim` 实时上屏（听懂即显示），句末 `{"t":"finish"}` 定稿后经 `asr-final` 自动提交。实测尾延迟从 ≈1.9s（0.55s 判停 + 1.3s 识别）降到 ≈1.2s（判停 + 0.6s 定稿），且字幕全程实时跟进
+- 协议细节（实测跑通）：双向流式端点帧**不带 seq**（客户端 seq 触发 45000000），full request flags=0b0000、音频帧 0b0000、末帧 0b0010，握手加 `X-Api-Sequence: -1`；末帧 payload 必须是合法空 gzip 流（空 body 报 ungzip EOF）；音频按 200ms 攒批
+- 上行走 WebSocket 而非 fetch 流式 body：Chromium 的 `ReadableStream` 上传仅支持 HTTP/2（HTTP/1.1 下 `ERR_ALPN_NEGOTIATION_FAILED`），harness webserver 是 HTTP/1.1
+- 新增 `asrMode` 配置（`stream` 默认 / `nostream` 保留）：流式不支持日语输入（官方 language 参数仅 nostream 端点支持），需日语识别时切回 `nostream`（原 `bigmodel_nostream` 25 语种链路原样保留）
+- HUD 监听条实时显示识别文本（interim）；`sttLanguage` 帮助文案标注仅在 nostream 模式生效
+- e2e：新增 `verify-stream.mjs`（流式全链路：WS 上行 → interim/final → 自动提交）；`verify-voice.mjs` 钉死 `asrMode: nostream` 继续断言一次性路径
+
 ## 1.3.0 (2026-09-24)
 
 - 独立入口 /live2d-voice/app?session=<id>：无 GUI chrome 的单会话角色页（独立 bundle 全内联 813KB，复用全部视图组件）；冷会话经 ctx.sessionController.resolveAgent 恢复（带完整 preset setup——裸 registry.resume 会缺 preset 致 turn 无法组装）；message 路由支持 mode=steer（agent.steer）；e2e 12/12（含冷恢复与语音回路）

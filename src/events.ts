@@ -19,6 +19,8 @@ export type SseEventName =
 	| "subtitle"
 	| "subtitle-translation"
 	| "camera-capture"
+	| "asr-interim"
+	| "asr-final"
 	| "error"
 	| "hello";
 

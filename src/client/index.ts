@@ -72,20 +72,23 @@ export function apply(ctx: ClientContext): void {
 		console.error("[dsh-live2d-voice] settings.section registration failed", error);
 	}
 
-	// 3. Register "Live" entry button in the session header utilities
+	// 3. Register the "Live" entry button inside the input bar
+	//    (conversation.input.right). It is visible on the hero/new-session
+	//    page (where the header and its tabs are hidden) and self-hides on
+	//    active sessions once the header tablist exists — see LiveButton.
 	try {
-		ctx.slots.inject("conversation.session.header.utilities", () =>
+		ctx.slots.inject("conversation.input.right", () =>
 			ctx.slots.register(
 				{
-					name: "conversation.session.header.utilities",
+					name: "conversation.input.right",
 					id: "live2d-enter",
-					order: 100,
+					order: 200,
 				},
 				LiveButton
 			)
 		);
-		console.info("[dsh-live2d-voice] header.utilities Live button mounted");
+		console.info("[dsh-live2d-voice] input.right Live button mounted");
 	} catch (error) {
-		console.error("[dsh-live2d-voice] header.utilities registration failed", error);
+		console.error("[dsh-live2d-voice] input.right Live button registration failed", error);
 	}
 }

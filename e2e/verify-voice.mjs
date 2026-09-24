@@ -172,9 +172,12 @@ const sse = () => ev(() => JSON.stringify(window.__lvEvents ?? []));
 const shot = (n) => page.screenshot({ path: SHOT(n), timeout: 60000 }).catch(() => {});
 
 try {
-  // config: sttLanguage=auto (product default)
+  // config: sttLanguage=auto (product default). This suite asserts the
+  // buffered /asr/recognize request path, so pin asrMode to nostream — the
+  // product default is the streaming relay (POST /asr/stream + SSE events).
   const cfg = JSON.parse(readFileSync(CFG, 'utf8'));
   cfg.sttLanguage = 'auto';
+  cfg.asrMode = 'nostream';
   writeFileSync(CFG, JSON.stringify(cfg, null, 2) + '\n');
 
   console.log('=== boot + session ===');

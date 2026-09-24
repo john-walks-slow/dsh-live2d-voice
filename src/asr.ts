@@ -37,9 +37,13 @@ import { homedir } from "node:os";
 import WebSocket from "ws";
 
 const ASR_URL = "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_nostream";
+/** Optimized bidirectional streaming endpoint (real-time interim + nostream second pass). */
+const ASR_STREAM_URL = "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_async";
 const RESOURCE_ID = "volc.seedasr.sauc.duration";
 /** 200ms of 16kHz s16le mono — the recommended chunk size. */
 const CHUNK_BYTES = 6400;
+/** How long a streaming session may run before we give up (20s cap + tail). */
+const STREAM_TIMEOUT_MS = 35_000;
 
 /** Volcengine error codes worth translating for the user. */
 const VOLC_ERROR_HINTS: Record<number, string> = {
@@ -109,8 +113,11 @@ function withSize(payload: Buffer): Buffer {
 	return Buffer.concat([size, payload]);
 }
 
-function buildFullRequest(payload: unknown): Buffer {
-	return Buffer.concat([frameHeader(0x01, 0b0001), i32(1), withSize(gzipSync(Buffer.from(JSON.stringify(payload), "utf8")))]);
+function buildFullRequest(payload: unknown, withSeq = true): Buffer {
+	if (withSeq) return Buffer.concat([frameHeader(0x01, 0b0001), i32(1), withSize(gzipSync(Buffer.from(JSON.stringify(payload), "utf8")))]);
+	// Streaming endpoints auto-assign the sequence — the full request
+	// carries no sequence field (flags=0b0000).
+	return Buffer.concat([frameHeader(0x01, 0b0000), withSize(gzipSync(Buffer.from(JSON.stringify(payload), "utf8")))]);
 }
 
 function buildAudio(seq: number, pcm: Buffer, isLast: boolean): Buffer {
@@ -292,4 +299,204 @@ export function recognizeUtterance(
 			}
 		});
 	});
+}
+
+// ---------- streaming session (optimized bidirectional endpoint) ----------
+
+/**
+ * One live ASR session against `bigmodel_async` with the nostream second
+ * pass (`enable_nonstream`): the client feeds 16kHz s16le mono PCM as it
+ * arrives, the server returns real-time interim text plus a `definite`
+ * second-pass result per server-side VAD segment, and the final transcript
+ * lands on the last packet after `end()`.
+ *
+ * Protocol shape (bits and bytes verified against the live endpoint):
+ *   frames carry NO client sequence — the server auto-assigns it
+ *   (a client seq trips 45000000), so full/audio frames use the no-seq
+ *   layouts: full request flags=0b0000, audio flags=0b0000, last audio
+ *   flags=0b0010; the handshake adds `X-Api-Sequence: -1`.
+ *   Interim text accumulates in `result.text` (result_type "full"), the
+ *   final result is the `is_last` packet.
+ *
+ * Notable limits (upstream-documented): `audio.language` / auto-lang are
+ * only honored by bigmodel_nostream, so this endpoint covers Chinese and
+ * English (plus dialects) automatically and does NOT recognize Japanese.
+ */
+export class StreamingAsrSession {
+	private readonly ws: WebSocket;
+	private readonly onInterim?: (text: string) => void;
+	private settled = false;
+	private failure: Error | null = null;
+	/** Frames that arrived before the WS opened (forwarded on open). */
+	private pending: Buffer[] = [];
+	/** Frames buffered toward one 200ms upstream packet. */
+	private buffer: Buffer[] = [];
+	private buffered = 0;
+	private finalText = "";
+	private finalPromise: Promise<string> | null = null;
+	private finalResolve: ((text: string) => void) | null = null;
+	private finalReject: ((error: Error) => void) | null = null;
+	private timer: NodeJS.Timeout;
+
+	constructor(credentials: VolcCredentials, onInterim?: (text: string) => void) {
+		this.onInterim = onInterim;
+		const headers: Record<string, string> = {
+			"X-Api-Resource-Id": RESOURCE_ID,
+			"X-Api-Request-Id": randomUUID(),
+			"X-Api-Sequence": "-1",
+		};
+		if (credentials.apikey) headers["X-Api-Key"] = credentials.apikey;
+		else {
+			headers["X-Api-App-Key"] = credentials.appid;
+			headers["X-Api-Access-Key"] = credentials.accessToken;
+		}
+		this.timer = setTimeout(() => this.fail(new Error(`volc asr stream: no result within ${STREAM_TIMEOUT_MS}ms`)), STREAM_TIMEOUT_MS);
+		this.ws = new WebSocket(ASR_STREAM_URL, { headers, handshakeTimeout: 15_000 });
+		this.ws.on("unexpected-response", (_request, response) => {
+			let body = "";
+			response.on("data", (chunk: Buffer) => (body += chunk));
+			response.on("end", () => this.fail(new Error(`volc asr stream: handshake HTTP ${response.statusCode} ${body.slice(0, 200)}`)));
+		});
+		this.ws.on("error", (error: Error) => this.fail(new Error(`volc asr stream: ${error.message}`)));
+		this.ws.on("close", () => {
+			if (!this.settled) this.fail(new Error("volc asr stream: connection closed before a result"));
+		});
+		this.ws.on("open", () => {
+			try {
+				this.ws.send(buildFullRequest(
+					{
+						user: { uid: "dsh-live2d-voice" },
+						audio: { format: "pcm", codec: "raw", rate: 16000, bits: 16, channel: 1 },
+						request: { model_name: "bigmodel", enable_itn: true, enable_punc: true, enable_ddc: false, result_type: "full", show_utterances: true, enable_nonstream: true },
+					},
+					false,
+				));
+			} catch (error) {
+				this.fail(new Error(`volc asr stream: send failed (${error instanceof Error ? error.message : String(error)})`));
+				return;
+			}
+			for (const frame of this.pending) this.sendRaw(frame);
+			this.pending = [];
+		});
+		this.ws.on("message", (data: Buffer | Buffer[]) => this.onMessage(data));
+	}
+
+	/** Feed one chunk of 16kHz s16le mono PCM (any size; batched to 200ms packets). */
+	feed(pcm: Buffer): void {
+		if (this.settled || this.failure) return;
+		this.buffer.push(pcm);
+		this.buffered += pcm.length;
+		if (this.buffered >= CHUNK_BYTES) this.flush(false);
+	}
+
+	/**
+	 * End the utterance and resolve with the final transcript. Repeat calls
+	 * return the same promise; safe before `feed` ever ran.
+	 */
+	end(): Promise<string> {
+		if (this.finalPromise === null) {
+			this.finalPromise = new Promise<string>((resolve, reject) => {
+				this.finalResolve = resolve;
+				this.finalReject = reject;
+			});
+			if (this.failure) this.settleFailure();
+			else this.flush(true);
+		}
+		return this.finalPromise;
+	}
+
+	/** Discard the session (blip, mic closed mid-word) — no result. */
+	abort(): void {
+		if (this.settled) return;
+		this.settled = true;
+		clearTimeout(this.timer);
+		this.dispose();
+		this.finalReject?.(new Error("volc asr stream: aborted"));
+	}
+
+	private onMessage(data: Buffer | Buffer[]): void {
+		const frame = Array.isArray(data) ? Buffer.concat(data) : data;
+		let parsed: ParsedFrame;
+		try {
+			parsed = parseFrame(frame);
+		} catch {
+			return;
+		}
+		if (parsed.error) {
+			this.fail(new Error(describeError(parsed)));
+			return;
+		}
+		const result = (parsed.payload?.result ?? undefined) as { text?: string; utterances?: VolcUtterance[] } | undefined;
+		if (result?.text) {
+			this.finalText = result.text;
+			this.onInterim?.(this.finalText);
+		} else if (result?.utterances) {
+			const joined = result.utterances.map((u) => u.text).join("");
+			if (joined) {
+				this.finalText = joined;
+				this.onInterim?.(this.finalText);
+			}
+		}
+		if (parsed.isLast) {
+			if (!this.settled) {
+				this.settled = true;
+				clearTimeout(this.timer);
+				this.dispose();
+				this.finalResolve?.(this.finalText);
+			}
+		}
+	}
+
+	private flush(withLast: boolean): void {
+		if (this.buffered === 0) {
+			if (withLast) this.sendLast();
+			return;
+		}
+		const body = Buffer.concat(this.buffer);
+		this.buffer = [];
+		this.buffered = 0;
+		this.sendRaw(Buffer.concat([frameHeader(0x02, 0b0000), withSize(gzipSync(body))]));
+		if (withLast) this.sendLast();
+	}
+
+	private sendLast(): void {
+		// The final frame still carries a legal (empty) gzip payload — a
+		// zero-size body trips the decoder with an ungzip EOF.
+		this.sendRaw(Buffer.concat([frameHeader(0x02, 0b0010), withSize(gzipSync(Buffer.alloc(0)))]));
+	}
+
+	private sendRaw(frame: Buffer): void {
+		try {
+			if (this.ws.readyState === WebSocket.OPEN) this.ws.send(frame);
+			else this.pending.push(frame);
+		} catch (error) {
+			this.fail(new Error(`volc asr stream: send failed (${error instanceof Error ? error.message : String(error)})`));
+		}
+	}
+
+	private fail(error: Error): void {
+		if (this.settled) return;
+		this.failure = error;
+		this.settleFailure();
+	}
+
+	private settleFailure(): void {
+		if (this.finalReject === null) return; // nobody asked yet — end() will pick it up
+		this.settled = true;
+		clearTimeout(this.timer);
+		this.dispose();
+		const reject = this.finalReject;
+		const error = this.failure ?? new Error("volc asr stream: failed");
+		this.finalReject = null;
+		reject(error);
+	}
+
+	private dispose(): void {
+		try {
+			if (this.ws.readyState === WebSocket.OPEN) this.ws.close();
+			else this.ws.terminate();
+		} catch {
+			/* already gone */
+		}
+	}
 }
