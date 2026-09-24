@@ -186,6 +186,52 @@ try {
   await sleep(500);
   const fs2 = await ev(() => document.fullscreenElement?.className ?? null);
   check('D3', fs1 === 'lv-root' && fs2 === null, `fullscreen toggle (${fs1} → ${fs2 ?? 'null'})`);
+  // ---- T: gyroscope parallax (experimental) ----
+  console.log('=== T gyro parallax ===');
+  await ev(() => document.querySelector('.lv-hud [title="语音设置"]')?.click());
+  await sleep(400);
+  const tiltRow = await ev(() => {
+    const rows = [...document.querySelectorAll('.lv-switch-row')];
+    const row = rows.find((r) => r.textContent?.includes('陀螺仪视差'));
+    if (!row) return { found: false };
+    const btn = row.querySelector('button[role="switch"]');
+    return { found: true, on: btn?.getAttribute('aria-checked') };
+  });
+  check('T1', tiltRow.found, `gyro switch row present (aria=${tiltRow.on})`);
+  await ev(() => {
+    const rows = [...document.querySelectorAll('.lv-switch-row')];
+    const row = rows.find((r) => r.textContent?.includes('陀螺仪视差'));
+    (row?.querySelector('button[role="switch"]'))?.click();
+  });
+  await sleep(800);
+  const tiltOn = await ev(async () => {
+    const r = await fetch('/live2d-voice/config', { headers: { accept: 'application/json' } });
+    const d = await r.json();
+    return { config: d.config.gyroParallax, aria: document.querySelector('.lv-switch-row button[aria-checked="true"]')?.getAttribute('aria-checked') };
+  });
+  check('T2', tiltOn.config === true, `gyroParallax persisted (${JSON.stringify(tiltOn)})`);
+  // synthetic orientation: 8 calibration samples (neutral) then a tilt
+  await ev(() => {
+    const fire = (beta, gamma) => window.dispatchEvent(new DeviceOrientationEvent('deviceorientation', { beta, gamma, alpha: 0 }));
+    for (let i = 0; i < 8; i++) fire(50, 0);
+    for (let i = 0; i < 6; i++) fire(50, 22);
+  });
+  await sleep(600);
+  const stillAlive = await ev(() => !!document.querySelector('.lv-root'));
+  check('T3', stillAlive, 'synthetic orientation events consumed without crash');
+  await page.screenshot({ path: '/tmp/lvv11-tilt.png' }).catch(() => {});
+  // toggle off
+  await ev(() => {
+    const rows = [...document.querySelectorAll('.lv-switch-row')];
+    const row = rows.find((r) => r.textContent?.includes('陀螺仪视差'));
+    (row?.querySelector('button[role="switch"]'))?.click();
+  });
+  await sleep(600);
+  const tiltOff = await ev(async () => {
+    const r = await fetch('/live2d-voice/config', { headers: { accept: 'application/json' } });
+    return (await r.json()).config.gyroParallax;
+  });
+  check('T4', tiltOff === false, 'gyroParallax toggled off');
   check('D4', pageErrors.length === 0, `zero pageerror (${pageErrors.length})`);
   await page.screenshot({ path: '/tmp/lvv11-final.png' }).catch(() => {});
 } catch (e) {

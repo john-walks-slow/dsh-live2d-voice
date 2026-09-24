@@ -31,6 +31,7 @@ export interface HudProps {
 	apiKeyCount: number;
 	speechPrompt: string;
 	eyeTracking: boolean;
+	gyroParallax: boolean;
 	onToggleMute: () => void;
 	onToggleSubtitles: () => void;
 	onToggleInput: () => void;
@@ -41,6 +42,7 @@ export interface HudProps {
 	onPickSttLanguage: (id: string) => void;
 	onPickModel: (name: string) => void;
 	onToggleEyeTracking: () => void;
+	onToggleGyroParallax: () => void;
 	onSavePrompt: (text: string) => void;
 }
 
@@ -180,6 +182,19 @@ export function Hud(props: HudProps) {
 								className={`lv-switch${props.eyeTracking ? " lv-on" : ""}`}
 								title="首次开启需下载视线模型并授权摄像头；仅在本设备运行"
 								onClick={props.onToggleEyeTracking}
+							>
+								<span className="lv-switch-knob" />
+							</button>
+						</div>
+						<div className="lv-switch-row">
+							<span>陀螺仪视差（倾斜手机，角色立体起来）</span>
+							<button
+								type="button"
+								role="switch"
+								aria-checked={props.gyroParallax}
+								className={`lv-switch${props.gyroParallax ? " lv-on" : ""}`}
+								title="开启时以当前握持姿势为正中；需授予方向传感器权限（iOS）"
+								onClick={props.onToggleGyroParallax}
 							>
 								<span className="lv-switch-knob" />
 							</button>

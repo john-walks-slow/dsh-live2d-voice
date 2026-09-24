@@ -13,6 +13,7 @@ DSH 插件：在会话视图里新增 **Live2D** tab——Live2D 角色随对话
 - ⛶ **沉浸全屏**（v1.1.0）：一键全屏成为角色终端；全屏+语音监听时自动保持屏幕常亮（Wake Lock）——把旧手机放在桌上当角色挂机
 - 👁 **视线追踪**（v1.1.0 实验性）：前置摄像头注视追踪，角色会看着你的脸（MediaPipe FaceLandmarker，经插件路由懒加载，手机无需科学上网；⚙ 可开关）
 - 📸 **看向你**（v1.1.0 实验性）：模型可调用 `look_at_user` 工具从前置摄像头拍一张照片并真正"看到"你（仅在该会话的 Live2D 视图打开时存在此工具）
+- 📱 **陀螺仪视差**（v1.2.0 实验性）：倾斜手机，角色的头部/身体/视线与位置随之偏移——"角色在屏幕玻璃后面"的立体错觉（开启时以当前握持姿势为正中；⚙ 可开关）
 - ⌨ **键盘输入**：在 Live2D 页直接对话（走 GUI 会话通道，冷会话自动创建/resume agent）
 - ⚙ **音色快切**：HUD 内置 5 个预设音色，即选即生效
 - 🔇 **静音开关**：只看口型不听声
@@ -94,6 +95,7 @@ pnpm install && sv restart dsh   # 重启 dsh 生效
 | `speechLanguage` | `"ja"` | 角色说话语言，注入"始终用 X 语言交流"指令 |
 | `subtitleLanguage` | `"zh"` | 角色台词的翻译目标语言（`off` 关闭；与会话生效的 `speechLanguage` 相同或 `speechLanguage=auto` 时可能整句透传，按需配置；可覆盖于 workspaces） |
 | `eyeTracking` | `false` | 实验性：前置摄像头视线追踪（⚙ 面板可切换；首次开启经插件路由下载视线模型） |
+| `gyroParallax` | `false` | 实验性：陀螺仪视差（DeviceOrientation → 头部/身体/眼球角度 + 位置偏移；开启时校准正中姿势） |
 | `emotionMap` | 9 情绪默认表 | 标签 → 表情索引/名称（neutral/joy/sappiness/sadness/anger/surprise/fear/disgust/shy） |
 | `speechPrompt` | `""` | 自定义提示词，仅语音模式生效（HUD ⚙ 里也能编辑） |
 | `workspaces` | `{}` | per-workspace 覆盖：`{ "<工作区绝对路径>": { voiceId, modelPath, modelSelection, speechLanguage, sttLanguage, subtitleLanguage, speechPrompt, emotionMap 任选 } }`；凭证类字段只在全局层 |

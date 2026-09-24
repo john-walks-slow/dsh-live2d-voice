@@ -19,6 +19,11 @@ export interface Live2DHandle {
 	focus(x: number, y: number): void;
 	/** When true, camera gaze owns the focus and the mouse is ignored. */
 	setGazeMode(enabled: boolean): void;
+	/**
+	 * Gyroscope parallax: normalized tilt drives head/body/eye angles plus a
+	 * position offset (the "behind the glass" illusion). Null disables.
+	 */
+	setTilt(tilt: { dx: number; dy: number; px: number; py: number } | null): void;
 	destroy(): void;
 }
 
@@ -42,6 +47,9 @@ export async function mountModel(container: HTMLElement, modelUrl: string, getMo
 	}
 	app.stage.addChild(model as never);
 
+	let tilt: { dx: number; dy: number; px: number; py: number } | null = null;
+	let baseX = 0;
+	let baseY = 0;
 	const fit = () => {
 		const width = container.clientWidth;
 		const height = container.clientHeight;
@@ -50,7 +58,9 @@ export async function mountModel(container: HTMLElement, modelUrl: string, getMo
 		const scale = Math.min(width / internal.originalWidth, height / internal.originalHeight) * 0.98;
 		model.scale.set(scale);
 		model.anchor.set(0.5, 0.5);
-		model.position.set(width / 2, height / 2 + height * 0.02);
+		baseX = width / 2;
+		baseY = height / 2 + height * 0.02;
+		model.position.set(baseX, baseY);
 	};
 	fit();
 	const observer = new ResizeObserver(fit);
@@ -74,6 +84,23 @@ export async function mountModel(container: HTMLElement, modelUrl: string, getMo
 		// the last non-zero sample can stick when no motion is updating it.
 		const applied = value > 0.002 ? value : 0;
 		for (const id of lipSyncIds) internal.coreModel.setParameterValueById(id, applied);
+		// Gyroscope parallax — written last so it composes over (and wins
+		// over) focus/motion angle values, exactly like the mouth drive.
+		if (tilt !== null) {
+			const angles: Array<[string, number]> = [
+				["ParamAngleX", -tilt.dx * 24],
+				["ParamAngleY", -tilt.dy * 18],
+				["ParamAngleZ", tilt.dx * 12],
+				["ParamBodyAngleX", -tilt.dx * 10],
+				["ParamBodyAngleY", -tilt.dy * 7],
+				["ParamEyeBallX", -tilt.dx * 0.8],
+				["ParamEyeBallY", -tilt.dy * 0.5],
+			];
+			for (const [id, v] of angles) internal.coreModel.setParameterValueById(id, v);
+			const width = container.clientWidth || 1;
+			const height = container.clientHeight || 1;
+			model.position.set(baseX + tilt.px * width * 0.06, baseY + tilt.py * height * 0.05);
+		}
 	});
 
 	// Mouse gaze: the character follows the pointer (desktop). Camera gaze
@@ -102,6 +129,10 @@ export async function mountModel(container: HTMLElement, modelUrl: string, getMo
 			// Reset to center when the camera takes over.
 			const rect = stage.getBoundingClientRect();
 			model.focus(rect.width / 2, rect.height * 0.42);
+		},
+		setTilt(next) {
+			tilt = next;
+			if (next === null) model.position.set(baseX, baseY);
 		},
 		destroy() {
 			stage.removeEventListener("pointermove", onPointerMove);

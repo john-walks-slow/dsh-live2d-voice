@@ -15,6 +15,7 @@ export interface PublicConfig {
 	subtitleLanguage: string;
 	speechPrompt: string;
 	eyeTracking: boolean;
+	gyroParallax: boolean;
 	emotionMap: Record<string, number | string>;
 	apiKeyCount: number;
 	asrConfigured: boolean;

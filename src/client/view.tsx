@@ -16,6 +16,7 @@ import { Hud } from "./hud.js";
 import { isCubismCoreLoaded, mountModel, type Live2DHandle } from "./model.js";
 import { MicCapture, type MicState } from "./mic.js";
 import { GazeTracker, capturePhoto } from "./gaze.js";
+import { TiltParallax } from "./tilt.js";
 import { SubtitleOverlay, SUBTITLE_TTL_MS, type SubtitleLine } from "./subtitle.js";
 import type { LanguageOption, ModelInfo, VoicePreset } from "./types.js";
 
@@ -89,6 +90,8 @@ export function Live2DView(props: ViewProps) {
 	const [sttLanguage, setSttLanguage] = useState("auto");
 	const [eyeTracking, setEyeTracking] = useState(false);
 	const gazeRef = useRef<GazeTracker | null>(null);
+	const [gyroParallax, setGyroParallax] = useState(false);
+	const tiltRef = useRef<TiltParallax | null>(null);
 	// Mirror the turn-running flag for non-render callbacks (auto-submit mode).
 	const sessionRunning = props.useSession?.((snapshot) => snapshot.running) ?? false;
 	const sessionRunningRef = useRef(sessionRunning);
@@ -148,6 +151,7 @@ export function Live2DView(props: ViewProps) {
 				setAsrConfigured(config.asrConfigured);
 				setSttLanguage(config.sttLanguage);
 				setEyeTracking(config.eyeTracking);
+				setGyroParallax(config.gyroParallax);
 			})
 			.catch((error) => console.error("[dsh-live2d-voice] config load failed", error));
 		fetchModelInfo(sessionId)
@@ -293,6 +297,29 @@ export function Live2DView(props: ViewProps) {
 		};
 	}, [eyeTracking]);
 
+	// Experimental gyroscope parallax lifecycle.
+	useEffect(() => {
+		if (!gyroParallax) {
+			tiltRef.current?.stop();
+			tiltRef.current = null;
+			modelRef.current?.setTilt(null);
+			return undefined;
+		}
+		const parallax = new TiltParallax({
+			onTilt: (state) => modelRef.current?.setTilt(state),
+			onState: (state) => {
+				if (state === "active") showToast("陀螺仪视差已开启（以当前姿势为正中）");
+				else if (typeof state === "object") showToast(`陀螺仪视差不可用：${state.error}`);
+			},
+		});
+		tiltRef.current = parallax;
+		void parallax.start();
+		return () => {
+			parallax.stop();
+			modelRef.current?.setTilt(null);
+		};
+	}, [gyroParallax]);
+
 	// First-run hint (once): the icon-only HUD needs one pointer.
 	useEffect(() => {
 		if (window.localStorage.getItem("lv2d.hinted") === "1") return;
@@ -432,6 +459,17 @@ export function Live2DView(props: ViewProps) {
 			const { config } = await saveConfig({ sttLanguage: id });
 			setSttLanguage(config.sttLanguage);
 			showToast(`识别语言：${languages.find((l) => l.id === id)?.label ?? id}`);
+		} catch (error) {
+			showToast(`切换失败：${String((error as Error)?.message ?? error)}`);
+		}
+	};
+
+	const toggleGyroParallax = async () => {
+		const next = !gyroParallax;
+		try {
+			const { config } = await saveConfig({ gyroParallax: next });
+			setGyroParallax(config.gyroParallax);
+			if (!config.gyroParallax) showToast("陀螺仪视差已关闭");
 		} catch (error) {
 			showToast(`切换失败：${String((error as Error)?.message ?? error)}`);
 		}
@@ -726,6 +764,8 @@ export function Live2DView(props: ViewProps) {
 				onToggleFullscreen={toggleFullscreen}
 				eyeTracking={eyeTracking}
 				onToggleEyeTracking={() => void toggleEyeTracking()}
+				gyroParallax={gyroParallax}
+				onToggleGyroParallax={() => void toggleGyroParallax()}
 				presets={presets}
 				languages={languages}
 				currentVoiceId={voiceId}

@@ -213,6 +213,7 @@ export function installRoutes(ctx: Context, deps: RouteDeps): (() => void) | und
 						if (typeof body[key] === "string") patch[key] = body[key] as string;
 					}
 					if (typeof body.eyeTracking === "boolean") patch.eyeTracking = body.eyeTracking;
+					if (typeof body.gyroParallax === "boolean") patch.gyroParallax = body.gyroParallax;
 					if (Array.isArray(body.apiKeys)) {
 						patch.apiKeys = body.apiKeys.filter((key): key is string => typeof key === "string" && key.length > 0);
 					}

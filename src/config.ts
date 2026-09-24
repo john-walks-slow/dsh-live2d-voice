@@ -73,6 +73,12 @@ export interface PluginConfig {
 	 * downloads lazily on first enable through the plugin's own routes.
 	 */
 	eyeTracking: boolean;
+	/**
+	 * Experimental: gyroscope parallax — phone tilt drives head/body angles
+	 * and a position offset (the "character behind the screen glass"
+	 * illusion). Calibrates the neutral pose on enable.
+	 */
+	gyroParallax: boolean;
 	/** Emotion tag → model expression name/index map. */
 	emotionMap: Record<string, number | string>;
 	/** Per-workspace overrides keyed by the workspace root path (cwd). */
@@ -128,6 +134,7 @@ export const DEFAULT_CONFIG: PluginConfig = {
 	subtitleLanguage: "zh",
 	speechPrompt: "",
 	eyeTracking: false,
+	gyroParallax: false,
 	emotionMap: { ...DEFAULT_EMOTION_MAP },
 	workspaces: {},
 };
