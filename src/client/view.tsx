@@ -303,6 +303,72 @@ export function Live2DView(props: ViewProps) {
 		};
 	}, [modelInfo?.url, reloadModel]);
 
+	// Gaze tracking lifecycle: the tracker owns the front camera while the
+	// config says so; normalized gaze (dx/dy in -1..1) lands in camLookRef.
+	useEffect(() => {
+		if (!eyeTracking) {
+			gazeRef.current?.stop();
+			gazeRef.current = null;
+			camLookRef.current = null;
+			return undefined;
+		}
+		const tracker = new GazeTracker({
+			onGaze: (x, y) => {
+				camLookRef.current = x === null ? null : { dx: (x - 0.5) * 2, dy: (y - 0.5) * 2 };
+			},
+			onState: (state) => {
+				if (state === "starting") showToast("视线追踪启动中（首次需下载模型）…");
+				else if (typeof state === "object") showToast(`视线追踪不可用：${state.error}`);
+			},
+		});
+		gazeRef.current = tracker;
+		void tracker.start();
+		return () => {
+			tracker.stop();
+			camLookRef.current = null;
+		};
+	}, [eyeTracking]);
+
+	// Gyroscope parallax lifecycle: normalized tilt (dx/dy in -1..1) lands
+	// in gyroLookRef; the current pose at start becomes the center.
+	useEffect(() => {
+		if (!gyroParallax) {
+			tiltRef.current?.stop();
+			tiltRef.current = null;
+			gyroLookRef.current = null;
+			return undefined;
+		}
+		const parallax = new TiltParallax({
+			onTilt: (state) => {
+				gyroLookRef.current = { dx: state.dx, dy: state.dy };
+			},
+			onState: (state) => {
+				if (state === "active") showToast("陀螺仪视差已开启（以当前姿势为正中）");
+				else if (typeof state === "object") showToast(`陀螺仪视差不可用：${state.error}`);
+			},
+		});
+		tiltRef.current = parallax;
+		void parallax.start();
+		return () => {
+			parallax.stop();
+			gyroLookRef.current = null;
+		};
+	}, [gyroParallax]);
+
+	// Unified look loop: while any motion source is active, drive the model
+	// every frame from the latest cam/gyro vectors and current look params.
+	useEffect(() => {
+		let raf = 0;
+		const tick = () => {
+			if (gazeRef.current?.active || tiltRef.current?.active) {
+				modelRef.current?.setLook(camLookRef.current, gyroLookRef.current);
+			}
+			raf = window.requestAnimationFrame(tick);
+		};
+		raf = window.requestAnimationFrame(tick);
+		return () => window.cancelAnimationFrame(raf);
+	}, []);
+
 	// SSE stream
 	useEffect(() => {
 		if (!sessionId) return undefined;
