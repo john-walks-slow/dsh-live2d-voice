@@ -520,6 +520,108 @@ body[data-live2d-active="true"] [class*="taskBoard"] {
 	color: var(--lv-fg);
 }
 
+/* ── 视向参数滑块 ─────────────────────────────────────────── */
+
+.lv-look-params {
+	margin: 4px 2px 2px;
+	padding: 8px 8px 6px;
+	border-radius: 10px;
+	background: color-mix(in srgb, var(--lv-surface-2) 60%, transparent);
+	border: 1px solid var(--lv-border-soft);
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
+}
+
+.lv-look-header {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	margin-bottom: 4px;
+}
+
+.lv-look-title {
+	font-size: 11px;
+	font-weight: 600;
+	color: var(--lv-fg-3);
+	text-transform: uppercase;
+	letter-spacing: 0.04em;
+}
+
+.lv-look-hint {
+	font-size: 11px;
+	color: var(--lv-fg-3);
+	padding: 2px 0 4px;
+}
+
+.lv-slider-row {
+	display: grid;
+	grid-template-columns: 88px 1fr 40px;
+	align-items: center;
+	gap: 8px;
+	padding: 3px 0;
+	font-size: 12px;
+	color: var(--lv-fg);
+}
+
+.lv-slider-label {
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	color: var(--lv-fg-2);
+}
+
+.lv-slider-row input[type="range"] {
+	width: 100%;
+	height: 18px;
+	margin: 0;
+	-webkit-appearance: none;
+	appearance: none;
+	background: transparent;
+	cursor: pointer;
+}
+
+.lv-slider-row input[type="range"]::-webkit-slider-runnable-track {
+	height: 4px;
+	border-radius: 999px;
+	background: var(--lv-border);
+}
+
+.lv-slider-row input[type="range"]::-webkit-slider-thumb {
+	-webkit-appearance: none;
+	appearance: none;
+	width: 14px;
+	height: 14px;
+	margin-top: -5px;
+	border-radius: 50%;
+	background: var(--lv-accent);
+	border: 2px solid #fff;
+	box-shadow: 0 1px 4px rgba(0, 0, 0, 0.25);
+}
+
+.lv-slider-row input[type="range"]::-moz-range-track {
+	height: 4px;
+	border-radius: 999px;
+	background: var(--lv-border);
+}
+
+.lv-slider-row input[type="range"]::-moz-range-thumb {
+	width: 12px;
+	height: 12px;
+	border-radius: 50%;
+	background: var(--lv-accent);
+	border: 2px solid #fff;
+	box-shadow: 0 1px 4px rgba(0, 0, 0, 0.25);
+}
+
+.lv-slider-value {
+	text-align: right;
+	font-variant-numeric: tabular-nums;
+	font-size: 11px;
+	color: var(--lv-fg-3);
+	min-width: 40px;
+}
+
 .lv-pop-footer {
 	margin-top: 14px;
 	padding-top: 10px;

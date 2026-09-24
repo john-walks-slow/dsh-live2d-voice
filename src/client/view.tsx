@@ -100,6 +100,8 @@ export function Live2DView(props: ViewProps) {
 	const camLookRef = useRef<{ dx: number; dy: number } | null>(null);
 	const gyroLookRef = useRef<{ dx: number; dy: number } | null>(null);
 	const lookParamsRef = useRef<LookParams>({ ...DEFAULT_LOOK_PARAMS });
+	/** State mirror so the HUD sliders re-render on change. */
+	const [lookParams, setLookParams] = useState<LookParams>(lookParamsRef.current);
 
 	// LLM model catalog and current selection for the model selector.
 	const [modelCatalog, setModelCatalog] = useState<ModelCatalog | null>(null);
@@ -564,6 +566,14 @@ export function Live2DView(props: ViewProps) {
 		}
 	};
 
+	/** Live-update look params: ref + state + model, no round-trip to the server. */
+	const changeLookParams = (patch: Partial<LookParams>) => {
+		lookParamsRef.current = { ...lookParamsRef.current, ...patch };
+		setLookParams(lookParamsRef.current);
+		modelRef.current?.setLookParams(lookParamsRef.current);
+	};
+
+
 	const pickModel = async (name: string) => {
 		try {
 			await saveConfig({ modelSelection: name });
@@ -874,6 +884,8 @@ export function Live2DView(props: ViewProps) {
 				onToggleEyeTracking={() => void toggleEyeTracking()}
 				gyroParallax={gyroParallax}
 				onToggleGyroParallax={() => void toggleGyroParallax()}
+				lookParams={lookParams}
+				onLookParamsChange={changeLookParams}
 				presets={presets}
 				languages={languages}
 				currentVoiceId={voiceId}
