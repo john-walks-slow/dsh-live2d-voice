@@ -37,7 +37,7 @@ export type SubmitPrompt = (
 	mode?: "queue" | "steer",
 ) => Promise<{ ok: boolean; error?: string }> | undefined;
 
-type ViewProps = ConvViewProps & { submitPrompt?: SubmitPrompt };
+type ViewProps = ConvViewProps & { submitPrompt?: SubmitPrompt; standalone?: boolean };
 
 /** localStorage key for persisted look params (sliders / presets). */
 const LOOK_PARAMS_STORE = "lv-look-params-v1";
@@ -990,6 +990,11 @@ export function Live2DView(props: ViewProps) {
 				asrConfigured={asrConfigured}
 				fullscreen={fullscreen}
 				onToggleFullscreen={toggleFullscreen}
+				onOpenStandalone={
+					props.standalone
+						? undefined
+						: () => window.open(`/live2d-voice/app?session=${encodeURIComponent(sessionId)}`, "_blank", "noopener")
+				}
 				eyeTracking={eyeTracking}
 				onToggleEyeTracking={() => void toggleEyeTracking()}
 				gyroParallax={gyroParallax}

@@ -51,8 +51,8 @@ function StandaloneApp() {
 	// The GUI provides useSession/useProjection/useInput/inputActions; the
 	// standalone page has no host runtime, and the Live view only consumes
 	// sessionId + submitPrompt — narrow the component type accordingly.
-	const View = makeLive2DView(submitPrompt) as FC<{ sessionId: string }>;
-	return <View sessionId={sessionId} />;
+	const View = makeLive2DView(submitPrompt) as FC<{ sessionId: string; standalone?: boolean }>;
+	return <View sessionId={sessionId} standalone />;
 }
 
 const container = document.getElementById("root");

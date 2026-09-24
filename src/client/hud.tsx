@@ -62,6 +62,8 @@ export interface HudProps {
 	onToggleInput: () => void;
 	onTogglePopover: () => void;
 	onToggleFullscreen: () => void;
+	/** Open the standalone /app page for this session (GUI only). */
+	onOpenStandalone?: () => void;
 	onToggleMic: () => void;
 	onToggleEyeTracking: () => void;
 	onToggleGyroParallax: () => void;
@@ -201,6 +203,18 @@ export function Hud(props: HudProps) {
 			>
 				{props.fullscreen ? <IconMinimize size={19} /> : <IconMaximize size={19} />}
 			</button>
+
+			{/* 5b. 独立入口（仅 GUI：新开 /live2d-voice/app 单会话页） */}
+			{props.onOpenStandalone && (
+				<button
+					type="button"
+					className="lv-btn"
+					title="独立入口（新窗口打开单会话角色页）"
+					onClick={props.onOpenStandalone}
+				>
+					<IconExternalLink size={18} />
+				</button>
+			)}
 
 			<div className="lv-hud-sep" />
 
