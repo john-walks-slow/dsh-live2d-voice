@@ -9,7 +9,7 @@ import type { MicState } from "./mic.js";
 import type { LanguageOption, VoicePreset } from "./types.js";
 import type { ModelCatalog, ModelProviderGroup, ModelSelection } from "./types.js";
 import type { LookParams } from "./model.js";
-import { DEFAULT_LOOK_PARAMS } from "./model.js";
+import { LOOK_PRESETS } from "./model.js";
 import {
 	IconMic,
 	IconMicOff,
@@ -74,22 +74,43 @@ export interface HudProps {
 	onOpenGlobalSettings?: () => void;
 }
 
-/** Look-parameter slider definitions (label, range, step) for the settings popover. */
-const LOOK_SLIDERS: ReadonlyArray<{
-	key: keyof LookParams;
-	label: string;
-	min: number;
-	max: number;
-	step: number;
+/** Look-parameter sliders grouped by source (camera / gyro / range). */
+const LOOK_SLIDER_GROUPS: ReadonlyArray<{
+	group: string;
+	sliders: ReadonlyArray<{ key: keyof LookParams; label: string; min: number; max: number; step: number }>;
 }> = [
-	{ key: "camAngleGain", label: "摄像头 · 转头", min: 0, max: 2, step: 0.05 },
-	{ key: "camPanGain", label: "摄像头 · 位移", min: 0, max: 1, step: 0.05 },
-	{ key: "gyroAngleGain", label: "陀螺仪 · 转头", min: 0, max: 2, step: 0.05 },
-	{ key: "gyroPanGain", label: "陀螺仪 · 位移", min: 0, max: 1, step: 0.05 },
-	{ key: "angleRange", label: "最大转头角度", min: 5, max: 40, step: 1 },
-	{ key: "panRange", label: "最大位移", min: 0.02, max: 0.3, step: 0.01 },
-	{ key: "rollRange", label: "最大侧倾", min: 0, max: 20, step: 1 },
+	{
+		group: "摄像头",
+		sliders: [
+			{ key: "camAngleGain", label: "转头增益", min: 0, max: 2, step: 0.05 },
+			{ key: "camPanGain", label: "位移增益", min: 0, max: 1, step: 0.05 },
+		],
+	},
+	{
+		group: "陀螺仪",
+		sliders: [
+			{ key: "gyroAngleGain", label: "转头增益", min: 0, max: 2, step: 0.05 },
+			{ key: "gyroPanGain", label: "位移增益", min: 0, max: 1, step: 0.05 },
+		],
+	},
+	{
+		group: "整体幅度",
+		sliders: [
+			{ key: "angleRange", label: "最大转头角度", min: 5, max: 40, step: 1 },
+			{ key: "panRange", label: "最大位移", min: 0.02, max: 0.3, step: 0.01 },
+			{ key: "rollRange", label: "最大侧倾", min: 0, max: 20, step: 1 },
+		],
+	},
 ];
+
+/** Which preset (if any) the given params match exactly. */
+function matchLookPreset(params: LookParams): string | null {
+	for (const preset of LOOK_PRESETS) {
+		const keys = Object.keys(preset.params) as Array<keyof LookParams>;
+		if (keys.every((key) => preset.params[key] === params[key])) return preset.id;
+	}
+	return null;
+}
 
 /** Compact display for slider values (0.20 → 0.2, 22 → 22°). */
 function formatLookValue(key: keyof LookParams, value: number): string {
@@ -100,6 +121,8 @@ function formatLookValue(key: keyof LookParams, value: number): string {
 export function Hud(props: HudProps) {
 	const micOn = props.micState === "listening" || props.micState === "requesting";
 	const [logCopied, setLogCopied] = useState(false);
+	/** Detailed look sliders fold (collapsed by default; presets cover 99%). */
+	const [lookAdvanced, setLookAdvanced] = useState(false);
 
 	const handleCopyLogs = async () => {
 		try {
@@ -297,41 +320,60 @@ export function Hud(props: HudProps) {
 							</button>
 						</div>
 
-						{/* 视向参数滑块（始终显示，关闭体感时提示） */}
+						{/* 视向灵敏度：预设 + 折叠详细参数 */}
 						<div className="lv-look-params">
 							<div className="lv-look-header">
 								<span className="lv-look-title">视向灵敏度</span>
-								<button
-									type="button"
-									className="lv-btn-calib-reset"
-									title="恢复默认视向参数"
-									onClick={() => props.onLookParamsChange({ ...DEFAULT_LOOK_PARAMS })}
-								>
-									默认
-								</button>
 							</div>
 							{!props.eyeTracking && !props.gyroParallax && (
 								<div className="lv-look-hint">开启视线追踪或陀螺仪视差后生效</div>
 							)}
-							{LOOK_SLIDERS.map((slider) => (
-									<label key={slider.key} className="lv-slider-row">
-										<span className="lv-slider-label">{slider.label}</span>
-										<input
-											type="range"
-											min={slider.min}
-											max={slider.max}
-											step={slider.step}
-											value={props.lookParams[slider.key]}
-											onChange={(event) =>
-												props.onLookParamsChange({ [slider.key]: Number(event.target.value) })
-											}
-										/>
-										<span className="lv-slider-value">
-											{formatLookValue(slider.key, props.lookParams[slider.key])}
-										</span>
-									</label>
+							<div className="lv-look-presets">
+								{LOOK_PRESETS.map((preset) => (
+									<button
+										key={preset.id}
+										type="button"
+										className={`lv-look-preset${matchLookPreset(props.lookParams) === preset.id ? " lv-current" : ""}`}
+										onClick={() => props.onLookParamsChange({ ...preset.params })}
+									>
+										{preset.label}
+									</button>
 								))}
 							</div>
+							<button
+								type="button"
+								className="lv-look-fold"
+								aria-expanded={!lookAdvanced}
+								onClick={() => setLookAdvanced((open) => !open)}
+							>
+								<span className={`lv-look-caret${lookAdvanced ? " lv-open" : ""}`}>▸</span>
+								详细参数
+							</button>
+							{lookAdvanced &&
+								LOOK_SLIDER_GROUPS.map((group) => (
+									<div key={group.group} className="lv-slider-group">
+										<div className="lv-slider-group-title">{group.group}</div>
+										{group.sliders.map((slider) => (
+											<label key={slider.key} className="lv-slider-row">
+												<span className="lv-slider-label">{slider.label}</span>
+												<input
+													type="range"
+													min={slider.min}
+													max={slider.max}
+													step={slider.step}
+													value={props.lookParams[slider.key]}
+													onChange={(event) =>
+														props.onLookParamsChange({ [slider.key]: Number(event.target.value) })
+													}
+												/>
+												<span className="lv-slider-value">
+													{formatLookValue(slider.key, props.lookParams[slider.key])}
+												</span>
+											</label>
+										))}
+									</div>
+								))}
+						</div>
 
 						{/* 底部跳转完整系统设置 与 复制排查日志 */}
 						<div className="lv-pop-footer">

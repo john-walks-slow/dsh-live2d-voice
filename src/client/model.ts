@@ -1,16 +1,24 @@
 /**
- * Live2D model mounting (Cubism 4 via pixi-live2d-display-lipsyncpatch).
+ * Live2D model mounting — dual format:
+ *   moc3 (Cubism 3/4/5) via pixi-live2d-display-lipsyncpatch/cubism4
+ *   moc2 (Cubism 2.1 legacy .moc) via the same fork's /cubism2 entry
+ * Renderer choice is inferred from the settings URL (*.model3.json = moc3).
  *
  * Mouth drive bypasses the library's speak()/lipsync path (it requires a
  * truthy currentAudio): instead we hook the internal `beforeModelUpdate`
  * event, which fires each frame after motions/expressions applied their
- * parameters and right before the core model update — so writing
- * ParamMouthOpenY there wins. Lip-sync parameter ids come from the model's
- * LipSync group, falling back to the standard Cubism default id.
+ * parameters and right before the core model update — so writing the mouth
+ * param there wins. Lip-sync parameter ids come from the model's LipSync
+ * group, falling back to the standard id for the format
+ * ("ParamMouthOpenY" moc3 / "PARAM_MOUTH_OPEN_Y" moc2).
+ *
+ * The old Cubism 2.1 core exposes setParamFloat(name, value) instead of
+ * CubismModel.setParameterValueById — both are routed through setParam().
  */
 
 import { Application } from "pixi.js";
-import { Live2DModel } from "pixi-live2d-display-lipsyncpatch/cubism4";
+import { Live2DModel as Live2DModelCubism4 } from "pixi-live2d-display-lipsyncpatch/cubism4";
+import { Live2DModel as Live2DModelCubism2 } from "pixi-live2d-display-lipsyncpatch/cubism2";
 import { logger } from "./logger.js";
 
 export interface LookParams {
@@ -32,6 +40,21 @@ export const DEFAULT_LOOK_PARAMS: LookParams = {
 	angleRange: 22,
 	rollRange: 6,
 };
+
+/** One-tap look presets for the settings popover. */
+export const LOOK_PRESETS: ReadonlyArray<{ id: string; label: string; params: LookParams }> = [
+	{
+		id: "subtle",
+		label: "柔和",
+		params: { camPanGain: 0.12, camAngleGain: 0.6, gyroPanGain: 0.25, gyroAngleGain: 0.35, panRange: 0.06, angleRange: 14, rollRange: 4 },
+	},
+	{ id: "standard", label: "标准", params: { ...DEFAULT_LOOK_PARAMS } },
+	{
+		id: "vivid",
+		label: "灵敏",
+		params: { camPanGain: 0.3, camAngleGain: 1.4, gyroPanGain: 0.6, gyroAngleGain: 0.8, panRange: 0.16, angleRange: 30, rollRange: 10 },
+	},
+];
 
 export interface Live2DHandle {
 	setExpression(expression: number | string): void;
@@ -78,22 +101,65 @@ export async function mountModel(
 	canvas.addEventListener("webglcontextrestored", onWebglRestored, false);
 
 	// A failed load must not leave an orphan canvas + WebGL context behind.
-	let model: Awaited<ReturnType<typeof Live2DModel.from>>;
+	// (strip the cache-busting query before inferring the format from the
+	// settings-file suffix — `?_v=…` would otherwise hide the .model3.json)
+	const kind: "moc2" | "moc3" = /\.model3\.json$/i.test(modelUrl.split("?")[0]) ? "moc3" : "moc2";
+	const ModelClass = kind === "moc2" ? Live2DModelCubism2 : Live2DModelCubism4;
+	interface AnyLive2D {
+		scale: { set(x?: number, y?: number): void };
+		position: { set(x: number, y: number): void };
+		anchor: { set(x: number, y: number): void };
+		internalModel: {
+			originalWidth: number;
+			originalHeight: number;
+			coreModel: unknown;
+			motionManager: { lipSyncIds?: string[] };
+			on(event: "beforeModelUpdate", listener: () => void): unknown;
+		};
+		expression(name: number | string): Promise<unknown>;
+		destroy(): void;
+	}
+	let model: AnyLive2D;
 	try {
-		logger.info(`Loading Live2D model from: ${modelUrl}`);
+		logger.info(`Loading ${kind} Live2D model from: ${modelUrl}`);
 		// Drive model updates from the app's own ticker (v7 Application does
 		// not use Ticker.shared by default; one rAF loop for render + update).
-		model = await Live2DModel.from(modelUrl, { autoInteract: false, ticker: app.ticker });
+		model = (await ModelClass.from(modelUrl, { autoInteract: false, ticker: app.ticker })) as unknown as AnyLive2D;
 		logger.info(`Live2D model loaded successfully (${model.internalModel.originalWidth}x${model.internalModel.originalHeight})`);
 	} catch (error) {
 		logger.error(`Failed to load Live2D model from ${modelUrl}`, error);
-		app.destroy(true, { children: true });
+		try {
+			app.destroy(true, { children: true });
+		} catch {}
+		if (canvas.parentNode) canvas.remove();
 		throw error;
 	}
 	app.stage.addChild(model as never);
 
 	let camInput: { dx: number; dy: number } | null = null;
 	let gyroInput: { dx: number; dy: number } | null = null;
+	// Exponential smoothing toward the targets — the old model.focus() path
+	// had this built in (FocusController); without it the discrete gaze
+	// samples make pan/angle visibly jitter. ~0.18/frame ≈ 200ms to settle.
+	let camSm = { dx: 0, dy: 0 };
+	let gyroSm = { dx: 0, dy: 0 };
+	const LOOK_LERP = 0.18;
+
+	/** Advance the smoothed vectors one frame toward their targets. */
+	const smoothLook = () => {
+		const tx = camInput ?? { dx: 0, dy: 0 };
+		const ty = gyroInput ?? { dx: 0, dy: 0 };
+		camSm.dx += (tx.dx - camSm.dx) * LOOK_LERP;
+		camSm.dy += (tx.dy - camSm.dy) * LOOK_LERP;
+		gyroSm.dx += (ty.dx - gyroSm.dx) * LOOK_LERP;
+		gyroSm.dy += (ty.dy - gyroSm.dy) * LOOK_LERP;
+	};
+
+	/** True while a look source is active or the smoothed vectors have not settled back to zero. */
+	const lookSettling = () =>
+		camInput !== null ||
+		gyroInput !== null ||
+		Math.abs(camSm.dx) + Math.abs(camSm.dy) + Math.abs(gyroSm.dx) + Math.abs(gyroSm.dy) > 0.004;
 	let lookParams: LookParams = { ...DEFAULT_LOOK_PARAMS };
 	let baseX = 0;
 	let baseY = 0;
@@ -104,8 +170,8 @@ export async function mountModel(
 
 	const applyTransform = () => {
 		model.scale.set(baseScale * userScale);
-		const lookX = (camInput ? camInput.dx * lookParams.camPanGain : 0) + (gyroInput ? gyroInput.dx * lookParams.gyroPanGain : 0);
-		const lookY = (camInput ? camInput.dy * lookParams.camPanGain : 0) + (gyroInput ? gyroInput.dy * lookParams.gyroPanGain : 0);
+		const lookX = camSm.dx * lookParams.camPanGain + gyroSm.dx * lookParams.gyroPanGain;
+		const lookY = camSm.dy * lookParams.camPanGain + gyroSm.dy * lookParams.gyroPanGain;
 		const w = container.clientWidth || 1;
 		const h = container.clientHeight || 1;
 		model.position.set(baseX + userPanX - lookX * lookParams.panRange * w, baseY + userPanY - lookY * lookParams.panRange * h);
@@ -127,42 +193,54 @@ export async function mountModel(
 	observer.observe(container);
 
 	// The bundled d.ts lost its @pixi/utils import (dts-bundle-generator), so
-	// EventEmitter methods and the Cubism4-only lipSyncIds field need a local
-	// structural view of the internal model.
+	// EventEmitter methods and the lipSyncIds field need a local structural
+	// view of the internal model.
 	const internal = model.internalModel as unknown as {
-		coreModel: { setParameterValueById(id: string, value: number): void };
+		coreModel: { setParameterValueById?(id: string, value: number): void; setParamFloat?(id: string, value: number): void };
 		motionManager: { lipSyncIds?: string[] };
 		on(event: "beforeModelUpdate", listener: () => void): unknown;
+	};
+	// Cubism 2 uses uppercase PARAM_* ids, Cubism 3+ uses camelCase — the
+	// cores are case-sensitive, so keep format-specific fallbacks.
+	const MOUTH_FALLBACK = kind === "moc2" ? "PARAM_MOUTH_OPEN_Y" : "ParamMouthOpenY";
+	const LOOK_IDS = kind === "moc2"
+		? { angleX: "PARAM_ANGLE_X", angleY: "PARAM_ANGLE_Y", angleZ: "PARAM_ANGLE_Z", bodyX: "PARAM_BODY_ANGLE_X", bodyY: "PARAM_BODY_ANGLE_Y", eyeX: "PARAM_EYE_BALL_X", eyeY: "PARAM_EYE_BALL_Y" }
+		: { angleX: "ParamAngleX", angleY: "ParamAngleY", angleZ: "ParamAngleZ", bodyX: "ParamBodyAngleX", bodyY: "ParamBodyAngleY", eyeX: "ParamEyeBallX", eyeY: "ParamEyeBallY" };
+	const setParam = (id: string, value: number) => {
+		const core = internal.coreModel;
+		if (typeof core.setParamFloat === "function") core.setParamFloat(id, value);
+		else if (typeof core.setParameterValueById === "function") core.setParameterValueById(id, value);
 	};
 	const lipSyncIds: string[] =
 		internal.motionManager.lipSyncIds && internal.motionManager.lipSyncIds.length > 0
 			? internal.motionManager.lipSyncIds
-			: ["ParamMouthOpenY"];
+			: [MOUTH_FALLBACK];
 	internal.on("beforeModelUpdate", () => {
 		const value = getMouth();
 		const applied = value > 0.002 ? value : 0;
-		for (const id of lipSyncIds) internal.coreModel.setParameterValueById(id, applied);
-		// Unified look: camera + gyro both contribute to head/body/eye angles
-		const camOn = camInput !== null;
-		const gyroOn = gyroInput !== null;
-		if (camOn || gyroOn) {
-			const camA = camInput ? lookParams.camAngleGain : 0;
-			const gyroA = gyroInput ? lookParams.gyroAngleGain : 0;
+		for (const id of lipSyncIds) setParam(id, applied);
+		// Unified look: camera + gyro both contribute to head/body/eye angles.
+		// Runs while any source is live AND while the smoothed vectors ease
+		// back to zero after both stop, so tracking loss glides home.
+		if (lookSettling()) {
+			smoothLook();
+			const camA = camInput !== null ? lookParams.camAngleGain : 0;
+			const gyroA = gyroInput !== null ? lookParams.gyroAngleGain : 0;
 			const total = camA + gyroA || 1;
-			const lx = ((camInput ? camInput.dx * camA : 0) + (gyroInput ? gyroInput.dx * gyroA : 0)) / total;
-			const ly = ((camInput ? camInput.dy * camA : 0) + (gyroInput ? gyroInput.dy * gyroA : 0)) / total;
+			const lx = (camSm.dx * camA + gyroSm.dx * gyroA) / total;
+			const ly = (camSm.dy * camA + gyroSm.dy * gyroA) / total;
 			const ar = lookParams.angleRange;
 			const rr = lookParams.rollRange;
 			const angles: Array<[string, number]> = [
-				["ParamAngleX", lx * ar],
-				["ParamAngleY", ly * ar],
-				["ParamAngleZ", lx * rr],
-				["ParamBodyAngleX", lx * ar * 0.5],
-				["ParamBodyAngleY", ly * ar * 0.5],
-				["ParamEyeBallX", lx],
-				["ParamEyeBallY", ly],
+				[LOOK_IDS.angleX, lx * ar],
+				[LOOK_IDS.angleY, ly * ar],
+				[LOOK_IDS.angleZ, lx * rr],
+				[LOOK_IDS.bodyX, lx * ar * 0.5],
+				[LOOK_IDS.bodyY, ly * ar * 0.5],
+				[LOOK_IDS.eyeX, lx],
+				[LOOK_IDS.eyeY, ly],
 			];
-			for (const [id, v] of angles) internal.coreModel.setParameterValueById(id, v);
+			for (const [id, v] of angles) setParam(id, v);
 			applyTransform();
 		}
 	});
@@ -337,7 +415,8 @@ export async function mountModel(
 		setLook(cam, gyro) {
 			camInput = cam;
 			gyroInput = gyro;
-			if (cam === null && gyro === null) applyTransform();
+			// When both stop, lookSettling() keeps easing the smoothed
+			// vectors home — no instant snap here.
 		},
 		setLookParams(params) {
 			lookParams = { ...lookParams, ...params };

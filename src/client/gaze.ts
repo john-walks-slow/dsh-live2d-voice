@@ -219,6 +219,9 @@ export class GazeTracker {
 		this.running = true;
 		this.events.onState("starting");
 		try {
+			if (!navigator.mediaDevices?.getUserMedia) {
+				throw new Error("摄像头 API 不可用：请通过 HTTPS 或 localhost 访问（局域网 IP + HTTP 不支持）");
+			}
 			this.stream = await navigator.mediaDevices.getUserMedia({
 				video: { facingMode: "user", width: { ideal: 320 }, height: { ideal: 240 } },
 				audio: false,

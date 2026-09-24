@@ -554,6 +554,81 @@ body[data-live2d-active="true"] [class*="taskBoard"] {
 	padding: 2px 0 4px;
 }
 
+/* 预设按钮组 */
+.lv-look-presets {
+	display: flex;
+	gap: 6px;
+	margin: 4px 0 2px;
+}
+
+.lv-look-preset {
+	flex: 1;
+	padding: 5px 0;
+	border-radius: 8px;
+	border: 1px solid var(--lv-border);
+	background: var(--lv-surface-2);
+	color: var(--lv-fg-2);
+	font-size: 12px;
+	cursor: pointer;
+	transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+
+.lv-look-preset:hover {
+	background: var(--lv-hover);
+	color: var(--lv-fg);
+}
+
+.lv-look-preset.lv-current {
+	background: color-mix(in srgb, var(--lv-accent) 14%, transparent);
+	border-color: var(--lv-accent);
+	color: var(--lv-accent);
+	font-weight: 600;
+}
+
+/* 折叠开关 */
+.lv-look-fold {
+	display: flex;
+	align-items: center;
+	gap: 5px;
+	width: 100%;
+	padding: 6px 2px 2px;
+	border: none;
+	background: transparent;
+	color: var(--lv-fg-3);
+	font-size: 11.5px;
+	cursor: pointer;
+	transition: color 0.15s ease;
+}
+
+.lv-look-fold:hover {
+	color: var(--lv-fg);
+}
+
+.lv-look-caret {
+	display: inline-block;
+	font-size: 10px;
+	transition: transform 0.2s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+.lv-look-caret.lv-open {
+	transform: rotate(90deg);
+}
+
+/* 分组滑块 */
+.lv-slider-group {
+	margin-top: 4px;
+}
+
+.lv-slider-group-title {
+	font-size: 10.5px;
+	font-weight: 600;
+	color: var(--lv-fg-3);
+	letter-spacing: 0.05em;
+	padding: 4px 0 2px;
+	border-bottom: 1px dashed var(--lv-border-soft);
+	margin-bottom: 2px;
+}
+
 .lv-slider-row {
 	display: grid;
 	grid-template-columns: 88px 1fr 40px;
