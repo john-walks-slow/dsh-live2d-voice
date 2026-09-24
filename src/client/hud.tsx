@@ -35,6 +35,10 @@ export interface HudProps {
 	popoverOpen: boolean;
 	fullscreen: boolean;
 	micState: MicState;
+	/** True only when the mic is on AND the live RMS level is above the
+	    "user is actually speaking" threshold. Drives the mic button's halo
+	    pulse animation — the halo only plays while the user is talking. */
+	micLoud: boolean;
 	asrConfigured: boolean;
 	presets: VoicePreset[];
 	languages: LanguageOption[];
@@ -151,13 +155,13 @@ export function Hud(props: HudProps) {
 			{/* 1. 麦克风录音控制 */}
 			<button
 				type="button"
-				className={`lv-btn lv-mic${micOn ? " lv-on lv-mic-live" : ""}`}
+				className={`lv-btn lv-mic${micOn ? " lv-on lv-mic-live" : ""}${micOn && props.micLoud ? " lv-mic-loud" : ""}`}
 				title={
 					!props.asrConfigured
 						? "语音输入未配置（可在设置中配置火山 ASR 凭证）"
 						: micOn
 							? "关闭语音输入"
-							: "开启语音对话：连续倾听，说完一句自动发送；说话可直接打断"
+							: "开启语音对话：连续倾听"
 				}
 				onClick={props.onToggleMic}
 			>

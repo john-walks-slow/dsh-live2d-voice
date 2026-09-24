@@ -607,6 +607,32 @@ export function Live2DView(props: ViewProps) {
 		if (inputOpen) inputRef.current?.focus();
 	}, [inputOpen]);
 
+	/**
+	 * Track the on-screen IME height so the input bar / mic bar / toast can
+	 * sit just above the soft keyboard on mobile. The IME height is the
+	 * delta between window.innerHeight and visualViewport.height — that is
+	 * the only reliable signal that works across iOS Safari and Android
+	 * Chrome (CSS env() keyboard-inset-* is not universally supported).
+	 *
+	 * We only update the CSS variable while the input panel is open — when
+	 * it is closed the IME cannot be visible anyway and writing on every
+	 * viewport resize would be wasted work.
+	 */
+	useEffect(() => {
+		if (!inputOpen) return undefined;
+		const vv = typeof window !== "undefined" ? window.visualViewport : null;
+		if (!vv) return undefined;
+		const root = rootRef.current;
+		if (!root) return undefined;
+		const apply = () => {
+			const offset = Math.max(0, window.innerHeight - Math.round(vv.height));
+			root.style.setProperty("--lv-ime-height", `${offset}px`);
+		};
+		apply();
+		vv.addEventListener("resize", apply);
+		return () => vv.removeEventListener("resize", apply);
+	}, [inputOpen]);
+
 	const toggleMute = () => {
 		const next = !muted;
 		setMuted(next);
@@ -892,7 +918,7 @@ export function Live2DView(props: ViewProps) {
 	};
 
 	return (
-		<div ref={rootRef} className="lv-root" data-no-gesture>
+		<div ref={rootRef} className={`lv-root${inputOpen ? " lv-keyboard-open" : ""}`} data-no-gesture>
 			<div className="lv-ambient" />
 			<div ref={stageRef} className="lv-stage" />
 
@@ -951,7 +977,7 @@ export function Live2DView(props: ViewProps) {
 								? "角色说话中（开口可打断）"
 								: micLevel > 0.04
 									? "正在聆听…"
-									: "倾听中，说完自动发送"}
+									: "倾听中"}
 					</span>
 				</div>
 			)}
@@ -992,6 +1018,11 @@ export function Live2DView(props: ViewProps) {
 				inputOpen={inputOpen}
 				popoverOpen={popoverOpen}
 				micState={micState}
+				/* Halo pulse only plays while the user is actually speaking.
+				   Keep the threshold identical to the one used in the mic-bar
+				   label below ("正在聆听…") so the visual + textual feedback
+				   agree on what counts as "talking". */
+				micLoud={(micState === "listening" || micState === "requesting") && micLevel > 0.04}
 				asrConfigured={asrConfigured}
 				fullscreen={fullscreen}
 				onToggleFullscreen={toggleFullscreen}
