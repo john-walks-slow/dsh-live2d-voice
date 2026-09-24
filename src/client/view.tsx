@@ -10,15 +10,22 @@
 
 import { useEffect, useRef, useState, type FC } from "react";
 import type { ConvViewProps } from "@deepseek-ai/dsh-client-ui-conversation/client";
-import { fetchConfig, fetchModelInfo, openStream, postMessage, recognizeUtterance, saveConfig } from "./api.js";
+import { fetchConfig, fetchModelInfo, openStream, postCameraResult, postMessage, recognizeUtterance, saveConfig } from "./api.js";
 import { SpeechEngine } from "./engine.js";
 import { Hud } from "./hud.js";
 import { isCubismCoreLoaded, mountModel, type Live2DHandle } from "./model.js";
 import { MicCapture, type MicState } from "./mic.js";
+import { GazeTracker, capturePhoto } from "./gaze.js";
 import { SubtitleOverlay, SUBTITLE_TTL_MS, type SubtitleLine } from "./subtitle.js";
 import type { LanguageOption, ModelInfo, VoicePreset } from "./types.js";
 
 type Status = "boot" | "no-model" | "core-missing" | "loading" | "ready" | "error";
+
+/** Minimal Screen Wake Lock Sentinel shape (not in older TS lib DOM). */
+interface SentinelLike {
+	release: () => Promise<void>;
+	addEventListener?: (type: string, listener: () => void) => void;
+}
 
 const HUD_IDLE_FADE_MS = 2500;
 
@@ -55,12 +62,22 @@ export function Live2DView(props: ViewProps) {
 	const [draft, setDraft] = useState("");
 	const [sending, setSending] = useState(false);
 	const [toast, setToast] = useState<string | null>(null);
+	// Toast throttle: repeated identical messages within 8s are dropped
+	// (a flapping network must not turn into toast spam during long idle).
+	const lastToastRef = useRef<{ text: string; at: number }>({ text: "", at: 0 });
+	const showToast = (text: string) => {
+		const now = Date.now();
+		if (lastToastRef.current.text === text && now - lastToastRef.current.at < 8000) return;
+		lastToastRef.current = { text, at: now };
+		setToast(text);
+	};
 	const [presets, setPresets] = useState<VoicePreset[]>([]);
 	const [languages, setLanguages] = useState<LanguageOption[]>([]);
 	const [voiceId, setVoiceId] = useState("");
 	const [apiKeyCount, setApiKeyCount] = useState(-1);
 	const [speechPrompt, setSpeechPrompt] = useState("");
 	const [popoverOpen, setPopoverOpen] = useState(false);
+	const [fullscreen, setFullscreen] = useState(false);
 	const [faded, setFaded] = useState(false);
 	const activeUtterance = useRef("");
 
@@ -70,6 +87,8 @@ export function Live2DView(props: ViewProps) {
 	const [asrPending, setAsrPending] = useState(false);
 	const [asrConfigured, setAsrConfigured] = useState(false);
 	const [sttLanguage, setSttLanguage] = useState("auto");
+	const [eyeTracking, setEyeTracking] = useState(false);
+	const gazeRef = useRef<GazeTracker | null>(null);
 	// Mirror the turn-running flag for non-render callbacks (auto-submit mode).
 	const sessionRunning = props.useSession?.((snapshot) => snapshot.running) ?? false;
 	const sessionRunningRef = useRef(sessionRunning);
@@ -128,6 +147,7 @@ export function Live2DView(props: ViewProps) {
 				setSpeechPrompt(config.speechPrompt);
 				setAsrConfigured(config.asrConfigured);
 				setSttLanguage(config.sttLanguage);
+				setEyeTracking(config.eyeTracking);
 			})
 			.catch((error) => console.error("[dsh-live2d-voice] config load failed", error));
 		fetchModelInfo(sessionId)
@@ -211,6 +231,14 @@ export function Live2DView(props: ViewProps) {
 			},
 			onSubtitle: ({ role, text, lineId }) => pushSubtitle(role, text, lineId),
 			onSubtitleTranslation: ({ lineId, text }) => attachTranslation(lineId, text),
+			onCameraCapture: ({ requestId }) => {
+				void (async () => {
+					showToast("📸 正在通过前置摄像头拍摄…");
+					const shot = await capturePhoto(gazeRef.current);
+					if (!shot) showToast("摄像头不可用（未授权或无摄像头）");
+					await postCameraResult(requestId, shot);
+				})();
+			},
 			onError: ({ message }) => pushSubtitle("error", message),
 		});
 		return close;
@@ -223,6 +251,121 @@ export function Live2DView(props: ViewProps) {
 		}, 1000);
 		return () => window.clearInterval(timer);
 	}, []);
+
+	// Experimental gaze tracking lifecycle: the tracker runs while the
+	// config says so; gaze position drives model.focus, and while active
+	// the mouse focus is muted (model.setGazeMode).
+	useEffect(() => {
+		if (!eyeTracking) {
+			gazeRef.current?.stop();
+			gazeRef.current = null;
+			modelRef.current?.setGazeMode(false);
+			return undefined;
+		}
+		const tracker = new GazeTracker({
+			onGaze: (x, y) => {
+				const stage = stageRef.current;
+				if (!stage) return;
+				const width = stage.clientWidth;
+				const height = stage.clientHeight;
+				if (x === null) {
+					modelRef.current?.focus(width / 2, height * 0.42);
+					return;
+				}
+				// Amplify slightly so small head movements are readable.
+				const gain = 1.4;
+				modelRef.current?.focus(
+					width * Math.min(1, Math.max(0, 0.5 + (x - 0.5) * gain)),
+					height * Math.min(1, Math.max(0, 0.45 + (y - 0.5) * gain)),
+				);
+			},
+			onState: (state) => {
+				if (state === "starting") showToast("视线追踪启动中（首次需下载模型）…");
+				else if (state === "tracking") modelRef.current?.setGazeMode(true);
+				else if (typeof state === "object") showToast(`视线追踪不可用：${state.error}`);
+			},
+		});
+		gazeRef.current = tracker;
+		void tracker.start();
+		return () => {
+			tracker.stop();
+			modelRef.current?.setGazeMode(false);
+		};
+	}, [eyeTracking]);
+
+	// First-run hint (once): the icon-only HUD needs one pointer.
+	useEffect(() => {
+		if (window.localStorage.getItem("lv2d.hinted") === "1") return;
+		window.localStorage.setItem("lv2d.hinted", "1");
+		showToast("点 🎙 开始语音对话 · ⚙ 音色/语言设置 · ⛶ 全屏");
+	}, []);
+
+	// Fullscreen (immersive mode) + screen wake lock. The wake lock is the
+	// "leave an old phone on this page" feature: while fullscreen and
+	// listening, the screen stays on; it re-acquires after tab switches.
+	const toggleFullscreen = () => {
+		const root = rootRef.current;
+		if (root === null) return;
+		if (document.fullscreenElement === root) {
+			void Promise.resolve(document.exitFullscreen?.()).catch(() => undefined);
+			return;
+		}
+		// requestFullscreen is missing on iPhone Safari (sync TypeError).
+		if (typeof root.requestFullscreen !== "function") {
+			showToast("此浏览器不支持全屏");
+			return;
+		}
+		void root.requestFullscreen().catch(() => showToast("此浏览器不允许全屏"));
+	};
+
+	useEffect(() => {
+		const syncFullscreen = () => setFullscreen(document.fullscreenElement === rootRef.current);
+		document.addEventListener("fullscreenchange", syncFullscreen);
+		return () => document.removeEventListener("fullscreenchange", syncFullscreen);
+	}, []);
+
+	useEffect(() => {
+		let sentinel: SentinelLike | null = null;
+		let cancelled = false;
+		const release = () => {
+			try {
+				void sentinel?.release();
+			} catch {
+				/* already released */
+			}
+			sentinel = null;
+		};
+		const acquire = async () => {
+			if (cancelled || !fullscreen || micState !== "listening") return;
+			const nav = navigator as Navigator & { wakeLock?: { request: (type: "screen") => Promise<SentinelLike> } };
+			if (!nav.wakeLock) return;
+			try {
+				const requested = await nav.wakeLock.request("screen");
+				if (cancelled) {
+					try {
+						void requested.release();
+					} catch {
+						/* already gone */
+					}
+					return;
+				}
+				sentinel = requested;
+				sentinel.addEventListener?.("release", release);
+			} catch {
+				/* wake lock denied (low battery etc.) — screen may sleep */
+			}
+		};
+		void acquire();
+		const onVisible = () => {
+			if (document.visibilityState === "visible") void acquire();
+		};
+		document.addEventListener("visibilitychange", onVisible);
+		return () => {
+			cancelled = true;
+			document.removeEventListener("visibilitychange", onVisible);
+			release();
+		};
+	}, [fullscreen, micState]);
 
 	// Toast auto-dismiss.
 	useEffect(() => {
@@ -280,7 +423,7 @@ export function Live2DView(props: ViewProps) {
 			setPopoverOpen(false);
 			setToast(config.voiceId === preset.voiceId ? `音色已切换：${preset.label}` : `已保存全局音色 ${preset.label}（本工作区配置了覆盖）`);
 		} catch (error) {
-			setToast(`音色切换失败：${String((error as Error)?.message ?? error)}`);
+			showToast(`音色切换失败：${String((error as Error)?.message ?? error)}`);
 		}
 	};
 
@@ -288,9 +431,20 @@ export function Live2DView(props: ViewProps) {
 		try {
 			const { config } = await saveConfig({ sttLanguage: id });
 			setSttLanguage(config.sttLanguage);
-			setToast(`识别语言：${languages.find((l) => l.id === id)?.label ?? id}`);
+			showToast(`识别语言：${languages.find((l) => l.id === id)?.label ?? id}`);
 		} catch (error) {
-			setToast(`切换失败：${String((error as Error)?.message ?? error)}`);
+			showToast(`切换失败：${String((error as Error)?.message ?? error)}`);
+		}
+	};
+
+	const toggleEyeTracking = async () => {
+		const next = !eyeTracking;
+		try {
+			const { config } = await saveConfig({ eyeTracking: next });
+			setEyeTracking(config.eyeTracking);
+			if (!config.eyeTracking) showToast("视线追踪已关闭");
+		} catch (error) {
+			showToast(`切换失败：${String((error as Error)?.message ?? error)}`);
 		}
 	};
 
@@ -302,7 +456,7 @@ export function Live2DView(props: ViewProps) {
 			setModelInfo(info);
 			setToast(info.current === name ? `角色已切换：${info.name ?? name}` : `已保存全局角色 ${name}（本工作区配置了覆盖）`);
 		} catch (error) {
-			setToast(`角色切换失败：${String((error as Error)?.message ?? error)}`);
+			showToast(`角色切换失败：${String((error as Error)?.message ?? error)}`);
 		}
 	};
 
@@ -310,9 +464,9 @@ export function Live2DView(props: ViewProps) {
 		try {
 			const { config } = await saveConfig({ speechPrompt: text });
 			setSpeechPrompt(config.speechPrompt);
-			setToast(config.speechPrompt.trim() ? "自定义提示词已保存，下一句生效" : "自定义提示词已清空");
+			showToast(config.speechPrompt.trim() ? "自定义提示词已保存，下一句生效" : "自定义提示词已清空");
 		} catch (error) {
-			setToast(`保存失败：${String((error as Error)?.message ?? error)}`);
+			showToast(`保存失败：${String((error as Error)?.message ?? error)}`);
 		}
 	};
 
@@ -337,7 +491,7 @@ export function Live2DView(props: ViewProps) {
 			engineRef.current?.unmuzzle();
 			return true;
 		} catch (error) {
-			setToast(`发送失败：${String((error as Error)?.message ?? error)}`);
+			showToast(`发送失败：${String((error as Error)?.message ?? error)}`);
 			return false;
 		}
 	};
@@ -393,7 +547,7 @@ export function Live2DView(props: ViewProps) {
 			return;
 		}
 		if (!asrConfigured) {
-			setToast("语音输入未配置：live2d-voice.json → asrCredentialsFile（火山引擎 ASR 凭证）");
+			showToast("语音输入未配置：live2d-voice.json → asrCredentialsFile（火山引擎 ASR 凭证）");
 			return;
 		}
 		setMicState("requesting");
@@ -440,7 +594,7 @@ export function Live2DView(props: ViewProps) {
 						voiceSubmitChainRef.current = voiceSubmitChainRef.current.then(submit, submit);
 					})
 					.catch((error) => {
-						setToast(`语音识别错误：${String((error as Error)?.message ?? error)}`);
+						showToast(`语音识别错误：${String((error as Error)?.message ?? error)}`);
 					})
 					.finally(() => {
 						asrPendingCount.current -= 1;
@@ -454,7 +608,7 @@ export function Live2DView(props: ViewProps) {
 					});
 			},
 			onError: (message) => {
-				setToast(`麦克风错误：${message}`);
+				showToast(`麦克风错误：${message}`);
 				stopListening();
 			},
 		});
@@ -463,7 +617,7 @@ export function Live2DView(props: ViewProps) {
 		} catch (error) {
 			const name = (error as Error)?.name ?? "";
 			setMicState(name === "NotAllowedError" ? "denied" : "error");
-			setToast(name === "NotAllowedError" ? "麦克风权限被拒绝，请在浏览器设置中允许" : `麦克风启动失败：${String((error as Error)?.message ?? error)}`);
+			showToast(name === "NotAllowedError" ? "麦克风权限被拒绝，请在浏览器设置中允许" : `麦克风启动失败：${String((error as Error)?.message ?? error)}`);
 			return;
 		}
 		// Cancelled while awaiting permission (double-click) — do not adopt.
@@ -568,6 +722,10 @@ export function Live2DView(props: ViewProps) {
 				popoverOpen={popoverOpen}
 				micState={micState}
 				asrConfigured={asrConfigured}
+				fullscreen={fullscreen}
+				onToggleFullscreen={toggleFullscreen}
+				eyeTracking={eyeTracking}
+				onToggleEyeTracking={() => void toggleEyeTracking()}
 				presets={presets}
 				languages={languages}
 				currentVoiceId={voiceId}
@@ -579,8 +737,14 @@ export function Live2DView(props: ViewProps) {
 				speechPrompt={speechPrompt}
 				onToggleMute={toggleMute}
 				onToggleSubtitles={toggleSubtitles}
-				onToggleInput={() => setInputOpen((open) => !open)}
-				onTogglePopover={() => setPopoverOpen((open) => !open)}
+				onToggleInput={() => {
+				setPopoverOpen(false);
+				setInputOpen((open) => !open);
+			}}
+				onTogglePopover={() => {
+				setInputOpen(false);
+				setPopoverOpen((open) => !open);
+			}}
 				onToggleMic={() => void toggleMic()}
 				onPickVoice={(preset) => void pickVoice(preset)}
 				onPickSttLanguage={(id) => void pickSttLanguage(id)}

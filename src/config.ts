@@ -67,6 +67,12 @@ export interface PluginConfig {
 	 * exit reminder tells the model these constraints are gone in chat mode.
 	 */
 	speechPrompt: string;
+	/**
+	 * Experimental: front-camera gaze tracking (MediaPipe FaceLandmarker) —
+	 * the character looks at the user's face. Off by default; the runtime
+	 * downloads lazily on first enable through the plugin's own routes.
+	 */
+	eyeTracking: boolean;
 	/** Emotion tag → model expression name/index map. */
 	emotionMap: Record<string, number | string>;
 	/** Per-workspace overrides keyed by the workspace root path (cwd). */
@@ -121,6 +127,7 @@ export const DEFAULT_CONFIG: PluginConfig = {
 	speechLanguage: "ja",
 	subtitleLanguage: "zh",
 	speechPrompt: "",
+	eyeTracking: false,
 	emotionMap: { ...DEFAULT_EMOTION_MAP },
 	workspaces: {},
 };

@@ -11,6 +11,7 @@ import type {
 	LanguageOption,
 	ModelInfo,
 	PublicConfig,
+	CameraCapturePayload,
 	SpeechEndPayload,
 	StreamHandlers,
 	SubtitlePayload,
@@ -77,6 +78,15 @@ export async function recognizeUtterance(pcm: ArrayBuffer, language: string): Pr
 	return body.text ?? "";
 }
 
+/** Deliver a camera frame (or a failure) for a pending camera-capture request. */
+export async function postCameraResult(requestId: string, shot: { dataUrl: string; width: number; height: number } | null): Promise<void> {
+	await fetch("/live2d-voice/camera-result", {
+		method: "POST",
+		headers: { "content-type": "application/json" },
+		body: JSON.stringify(shot ? { requestId, ...shot } : { requestId, dataUrl: "" }),
+	}).catch(() => undefined);
+}
+
 /**
  * Open the session SSE stream. Returns a closer. EventSource auto-reconnects;
  * listeners tolerate duplicate `hello` events after a reconnect.
@@ -102,6 +112,7 @@ export function openStream(sessionId: string, handlers: StreamHandlers): () => v
 	wire<{ utteranceId: string }>("audio-end", handlers.onAudioEnd);
 	wire<SubtitlePayload>("subtitle", handlers.onSubtitle);
 	wire<SubtitleTranslationPayload>("subtitle-translation", handlers.onSubtitleTranslation);
+	wire<CameraCapturePayload>("camera-capture", handlers.onCameraCapture);
 	wire<ErrorPayload>("error", handlers.onError);
 	return () => source.close();
 }

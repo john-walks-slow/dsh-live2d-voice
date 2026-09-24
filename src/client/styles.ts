@@ -54,14 +54,19 @@ const CSS = `
 .lv-btn.lv-on { color: #7ab8ff; background: rgba(96, 150, 255, 0.14); }
 .lv-btn:disabled { opacity: 0.35; cursor: not-allowed; }
 .lv-hud-sep { width: 1px; height: 22px; margin: 0 3px; background: rgba(255, 255, 255, 0.12); }
+/* Touch targets: 44px minimum on coarse pointers (phones/tablets). */
+@media (pointer: coarse) {
+	.lv-btn { width: 44px; height: 44px; font-size: 19px; }
+	.lv-langs { gap: 8px; }
+	.lv-lang { padding: 9px 14px; font-size: 13.5px; }
+}
 
 /* ---------- voice popover ---------- */
 .lv-pop {
 	position: absolute;
 	bottom: calc(100% + 10px);
 	right: 0;
-	width: 250px;
-	padding: 10px;
+	width: 280px;
 	border-radius: 14px;
 	background: rgba(18, 20, 32, 0.94);
 	backdrop-filter: blur(14px);
@@ -70,8 +75,78 @@ const CSS = `
 	color: #dfe3f0;
 	font-size: 13px;
 	z-index: 9;
+	overflow: hidden;
+	display: flex;
+	flex-direction: column;
+	max-height: min(calc(100vh - 380px), 480px);
 }
-.lv-pop h4 { margin: 2px 4px 8px; font-size: 12px; font-weight: 600; color: #9aa3bd; letter-spacing: 0.04em; }
+.lv-pop-head {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	padding: 10px 12px 8px;
+	font-size: 13px;
+	font-weight: 650;
+	color: #f0f2fa;
+	border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+	flex: none;
+}
+.lv-pop-close {
+	width: 26px;
+	height: 26px;
+	border: none;
+	border-radius: 8px;
+	background: transparent;
+	color: #9aa3bd;
+	font-size: 13px;
+	cursor: pointer;
+	line-height: 1;
+}
+.lv-pop-close:hover { background: rgba(255, 255, 255, 0.1); color: #f0f2fa; }
+.lv-pop-body {
+	overflow-y: auto;
+	padding: 10px;
+	scrollbar-width: thin;
+	scrollbar-color: rgba(255, 255, 255, 0.18) transparent;
+}
+.lv-pop-body::-webkit-scrollbar { width: 5px; }
+.lv-pop-body::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.18); border-radius: 3px; }
+.lv-pop h4 { margin: 8px 4px 8px; font-size: 11px; font-weight: 600; color: #8f99b5; letter-spacing: 0.06em; }
+.lv-pop .lv-langs { margin: 0 2px; }
+.lv-pop .lv-pop-note { margin: 6px 4px 2px; }
+.lv-switch-row {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 10px;
+	margin: 2px 4px 6px;
+	font-size: 12.5px;
+	color: #c6cde0;
+}
+.lv-switch {
+	flex: none;
+	width: 40px;
+	height: 22px;
+	border-radius: 999px;
+	border: 1px solid rgba(255, 255, 255, 0.16);
+	background: rgba(255, 255, 255, 0.08);
+	position: relative;
+	cursor: pointer;
+	padding: 0;
+	transition: background 0.2s ease, border-color 0.2s ease;
+}
+.lv-switch.lv-on { background: rgba(120, 160, 255, 0.45); border-color: rgba(159, 193, 255, 0.6); }
+.lv-switch-knob {
+	position: absolute;
+	top: 2px;
+	left: 2px;
+	width: 16px;
+	height: 16px;
+	border-radius: 50%;
+	background: #e8ecf8;
+	transition: transform 0.2s ease;
+}
+.lv-switch.lv-on .lv-switch-knob { transform: translateX(18px); }
 .lv-voice {
 	display: flex;
 	justify-content: space-between;
@@ -246,7 +321,7 @@ const CSS = `
 	.lv-subs { width: min(92%, 640px); }
 	.lv-input { width: min(92%, 640px); }
 	.lv-toast { max-width: 92%; }
-	.lv-pop { width: min(88vw, 300px); }
+	.lv-pop { width: min(94vw, 320px); }
 }
 
 /* ---------- text input ---------- */
@@ -322,6 +397,15 @@ const CSS = `
 	z-index: 10;
 	max-width: 72%;
 }
+
+/* ---------- fullscreen (immersive mode) ---------- */
+.lv-root:fullscreen {
+	width: 100vw;
+	height: 100vh;
+	background: #10121c;
+}
+.lv-root:fullscreen .lv-stage { position: absolute; inset: 0; }
+
 `;
 
 let injected = false;

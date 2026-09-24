@@ -14,6 +14,7 @@ export interface PublicConfig {
 	speechLanguage: string;
 	subtitleLanguage: string;
 	speechPrompt: string;
+	eyeTracking: boolean;
 	emotionMap: Record<string, number | string>;
 	apiKeyCount: number;
 	asrConfigured: boolean;
@@ -65,6 +66,11 @@ export interface SubtitlePayload {
 	lineId?: string;
 }
 
+/** The camera tool asks the page for a photo (host → browser). */
+export interface CameraCapturePayload {
+	requestId: string;
+}
+
 /** A translated assistant subtitle line (arrives after its original). */
 export interface SubtitleTranslationPayload {
 	lineId: string;
@@ -89,5 +95,6 @@ export interface StreamHandlers {
 	onAudioEnd?: (payload: { utteranceId: string }) => void;
 	onSubtitle?: (payload: SubtitlePayload) => void;
 	onSubtitleTranslation?: (payload: SubtitleTranslationPayload) => void;
+	onCameraCapture?: (payload: CameraCapturePayload) => void;
 	onError?: (payload: ErrorPayload) => void;
 }

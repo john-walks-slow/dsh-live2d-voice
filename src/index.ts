@@ -19,9 +19,10 @@ import { SseHub } from "./events.js";
 import { applySpeechTap } from "./speech.js";
 import { SpeechModes, applySystemPrompt } from "./system-prompt.js";
 import { installRoutes } from "./routes.js";
+import { applyCameraTool, CameraBridge } from "./camera-tool.js";
 
 export const name = "dsh-live2d-voice";
-export const inject = ["agents", "llm"];
+export const inject = ["agents", "llm", "attachments"];
 
 export function apply(ctx: Context): () => void {
 	const hub = new SseHub();
@@ -42,11 +43,14 @@ export function apply(ctx: Context): () => void {
 		getConfig,
 		resolveSession: (sessionId) => resolveSessionConfig(ctx.agents, getConfig(), sessionId),
 	});
-	const disposeRoutes = installRoutes(ctx, { hub, getConfig, resolveKeys: resolveApiKeys, saveConfig });
+	const cameraBridge = new CameraBridge(hub);
+	const disposeCameraTool = applyCameraTool(ctx, hub, cameraBridge);
+	const disposeRoutes = installRoutes(ctx, { hub, getConfig, resolveKeys: resolveApiKeys, saveConfig, cameraBridge });
 
 	ctx.logger.info("dsh-live2d-voice: loaded (config: " + loadConfig().voiceId.slice(0, 8) + "… voice)");
 	return () => {
 		disposeRoutes?.();
+		disposeCameraTool();
 		disposePrompt?.();
 	};
 }

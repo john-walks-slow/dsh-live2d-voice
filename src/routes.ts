@@ -19,8 +19,11 @@
  * index.html render (the model loader requires window.Live2DCubismCore).
  */
 
-import { readFileSync, statSync } from "node:fs";
+import { readFileSync, statSync, existsSync, mkdirSync, writeFileSync, createWriteStream, rmSync } from "node:fs";
+import { createRequire } from "node:module";
+import { pipeline } from "node:stream/promises";
 import { join, resolve, sep, dirname } from "node:path";
+import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { Context } from "@deepseek-ai/cordis";
@@ -38,6 +41,9 @@ const PCM_MAX_BYTES = 2 * 1024 * 1024;
 /** Below 100ms of audio the recognizer has nothing to work with. */
 const PCM_MIN_BYTES = 3200;
 const MODELS_PREFIX = "/live2d-voice/models";
+const GAZE_PREFIX = "/live2d-voice/gaze";
+const FACE_LANDMARKER_URL = "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task";
+const FACE_LANDMARKER_MAX_BYTES = 16 * 1024 * 1024;
 const CORE_SCRIPT_PATH = "/live2d-voice/core/live2dcubismcore.min.js";
 
 interface WebServerLike {
@@ -49,6 +55,8 @@ export interface RouteDeps {
 	getConfig: () => PluginConfig;
 	saveConfig: (patch: Partial<PluginConfig>) => PluginConfig;
 	resolveKeys: (config: PluginConfig) => string[];
+	/** The camera tool's pending-capture bridge. */
+	cameraBridge: { deliver(requestId: string, shot: { dataUrl: string; width: number; height: number } | null): boolean };
 }
 
 function writeJson(res: ServerResponse, status: number, body: unknown): void {
@@ -56,12 +64,12 @@ function writeJson(res: ServerResponse, status: number, body: unknown): void {
 	res.end(JSON.stringify(body));
 }
 
-async function readJsonBody(req: IncomingMessage): Promise<Record<string, unknown>> {
+async function readJsonBody(req: IncomingMessage, maxBytes = BODY_MAX_BYTES): Promise<Record<string, unknown>> {
 	const chunks: Buffer[] = [];
 	let size = 0;
 	for await (const chunk of req) {
 		size += (chunk as Buffer).length;
-		if (size > BODY_MAX_BYTES) throw new Error("body too large");
+		if (size > maxBytes) throw new Error("body too large");
 		chunks.push(chunk as Buffer);
 	}
 	const parsed = JSON.parse(Buffer.concat(chunks).toString("utf-8"));
@@ -91,12 +99,13 @@ function publicConfig(config: PluginConfig, keyCount: number) {
 }
 
 function mimeOf(path: string): string {
-	if (path.endsWith(".js")) return "text/javascript; charset=utf-8";
+	if (path.endsWith(".js") || path.endsWith(".mjs")) return "text/javascript; charset=utf-8";
 	if (path.endsWith(".json")) return "application/json; charset=utf-8";
 	if (path.endsWith(".png")) return "image/png";
 	if (path.endsWith(".jpg") || path.endsWith(".jpeg")) return "image/jpeg";
 	if (path.endsWith(".webp")) return "image/webp";
 	if (path.endsWith(".txt")) return "text/plain; charset=utf-8";
+	if (path.endsWith(".wasm")) return "application/wasm";
 	return "application/octet-stream";
 }
 
@@ -203,6 +212,7 @@ export function installRoutes(ctx: Context, deps: RouteDeps): (() => void) | und
 					for (const key of ["modelPath", "modelSelection", "voiceId", "ttsModel", "apiKeyFile", "sttLanguage", "asrCredentialsFile", "speechLanguage", "subtitleLanguage", "speechPrompt"] as const) {
 						if (typeof body[key] === "string") patch[key] = body[key] as string;
 					}
+					if (typeof body.eyeTracking === "boolean") patch.eyeTracking = body.eyeTracking;
 					if (Array.isArray(body.apiKeys)) {
 						patch.apiKeys = body.apiKeys.filter((key): key is string => typeof key === "string" && key.length > 0);
 					}
@@ -249,6 +259,38 @@ export function installRoutes(ctx: Context, deps: RouteDeps): (() => void) | und
 				})
 				.catch((error: unknown) => {
 					writeJson(res, 400, { code: "bad_message", message: error instanceof Error ? error.message : String(error) });
+				});
+		} })
+	);
+
+	// Camera tool result: the browser delivers the captured frame for a
+	// pending `camera-capture` request (or reports failure with null).
+	disposers.push(
+		webServer.register({ kind: "exact", path: "/live2d-voice/camera-result", handler: (req, res) => {
+			if (req.method !== "POST") {
+				writeJson(res, 405, { code: "method_not_allowed" });
+				return;
+			}
+			// 640px JPEG base64 lands at 55–310KB; allow generous headroom.
+			void readJsonBody(req, 9 * 1024 * 1024)
+				.then((body) => {
+					const requestId = typeof body.requestId === "string" ? body.requestId : "";
+					const dataUrl = typeof body.dataUrl === "string" ? body.dataUrl : "";
+					const width = Number(body.width) || 0;
+					const height = Number(body.height) || 0;
+					if (!requestId) {
+						writeJson(res, 400, { code: "bad_request", message: "requestId is required" });
+						return;
+					}
+					if (dataUrl.length > 8 * 1024 * 1024) {
+						writeJson(res, 413, { code: "too_large", message: "image too large" });
+						return;
+					}
+					const shot = dataUrl.startsWith("data:image/jpeg") ? { dataUrl, width, height } : null;
+					writeJson(res, 200, { ok: deps.cameraBridge.deliver(requestId, shot) });
+				})
+				.catch((error: unknown) => {
+					writeJson(res, 400, { code: "bad_request", message: error instanceof Error ? error.message : String(error) });
 				});
 		} })
 	);
@@ -317,6 +359,101 @@ export function installRoutes(ctx: Context, deps: RouteDeps): (() => void) | und
 				if (isFile && serveFile(res, target, 3600)) return;
 			}
 			writeJson(res, 404, { code: "not_found" });
+		} })
+	);
+
+	// Experimental gaze tracking assets: the MediaPipe runtime is served
+	// from the plugin's own node_modules, and the face_landmarker model is
+	// downloaded once (through the host's network) and cached — the phone
+	// browser never needs external network access.
+	const mediapipeDir = (() => {
+		try {
+			const require = createRequire(import.meta.url);
+			// The package exports map hides package.json — resolve the entry
+			// and walk up to the directory that owns it.
+			let dir = dirname(require.resolve("@mediapipe/tasks-vision"));
+			for (let i = 0; i < 4; i++) {
+				if (existsSync(join(dir, "wasm")) && existsSync(join(dir, "vision_bundle.mjs"))) return dir;
+				dir = dirname(dir);
+			}
+			return "";
+		} catch {
+			return "";
+		}
+	})();
+	const gazeModelCache = (() => {
+		const dir = join(process.env.DSH_HOME ?? resolve(homedir(), ".dsh"), "live2d-voice-cache");
+		try {
+			if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+			return join(dir, "face_landmarker.task");
+		} catch {
+			return "";
+		}
+	})();
+	let gazeModelPromise: Promise<string> | null = null;
+	const ensureGazeModel = (): Promise<string> => {
+		if (gazeModelCache && existsSync(gazeModelCache)) return Promise.resolve(gazeModelCache);
+		gazeModelPromise ??= (async () => {
+			if (!gazeModelCache) throw new Error("cache dir unavailable");
+			const response = await fetch(FACE_LANDMARKER_URL);
+			if (!response.ok || !response.body) throw new Error(`model download failed: HTTP ${response.status}`);
+			const length = Number(response.headers.get("content-length") ?? "0");
+			if (length > FACE_LANDMARKER_MAX_BYTES) throw new Error("model download too large");
+			const temp = `${gazeModelCache}.tmp`;
+			await pipeline(response.body, createWriteStream(temp));
+			const stat = statSync(temp);
+			if (stat.size > FACE_LANDMARKER_MAX_BYTES || stat.size < 1024) throw new Error("model download corrupt");
+			writeFileSync(gazeModelCache, readFileSync(temp)); // atomic-ish publish
+			rmSync(temp, { force: true });
+			return gazeModelCache;
+		})().catch((error: unknown) => {
+			gazeModelPromise = null; // allow retry on the next request
+			throw error;
+		});
+		return gazeModelPromise;
+	};
+	disposers.push(
+		webServer.register({ kind: "prefix", path: GAZE_PREFIX, handler: (req, res) => {
+			if (req.method !== "GET") {
+				writeJson(res, 405, { code: "method_not_allowed" });
+				return;
+			}
+			const url = (req.url ?? "").split("?")[0];
+			let relative: string;
+			try {
+				relative = decodeURIComponent(url.slice(GAZE_PREFIX.length)).replace(/^\/+/, "");
+			} catch {
+				writeJson(res, 400, { code: "bad_path" });
+				return;
+			}
+			void (async () => {
+				if (relative === "model") {
+					const file = await ensureGazeModel();
+					if (!serveFile(res, file, 86_400)) writeJson(res, 502, { code: "model_unavailable" });
+					return;
+				}
+				if (!mediapipeDir) {
+					writeJson(res, 404, { code: "mediapipe_missing" });
+					return;
+				}
+				if (relative === "vision.mjs") {
+					if (!serveFile(res, join(mediapipeDir, "vision_bundle.mjs"), 0)) writeJson(res, 404, { code: "not_found" });
+					return;
+				}
+				if (relative.startsWith("wasm/")) {
+					const root = resolve(join(mediapipeDir, "wasm"));
+					const target = resolve(join(root, relative.slice(5)));
+					if (target !== root && !target.startsWith(root + sep)) {
+						writeJson(res, 403, { code: "path_forbidden" });
+						return;
+					}
+					if (!serveFile(res, target, 86_400)) writeJson(res, 404, { code: "not_found" });
+					return;
+				}
+				writeJson(res, 404, { code: "not_found" });
+			})().catch((error: unknown) => {
+				writeJson(res, 502, { code: "gaze_asset_error", message: error instanceof Error ? error.message : String(error) });
+			});
 		} })
 	);
 

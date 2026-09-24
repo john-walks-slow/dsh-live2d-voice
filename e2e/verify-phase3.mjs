@@ -150,12 +150,19 @@ try {
     return { hasSection: true, buttons: el ? [...el.querySelectorAll('button')].map((b) => b.textContent) : [] };
   });
   check('P2b', popInfo.hasSection && popInfo.buttons.length === 2, `⚙ model section (${JSON.stringify(popInfo.buttons)})`);
-  // click haru-alt
-  await ev(() => {
-    const langs = [...document.querySelectorAll('.lv-pop .lv-langs')][0];
-    const btn = [...langs.querySelectorAll('button')].find((b) => b.textContent === 'haru-alt');
+  // click haru-alt (the model section's pills — NOT the first .lv-langs,
+  // which is the voice section since the v1.1.0 HUD rework)
+  const clicked = await ev(() => {
+    const section = [...document.querySelectorAll('.lv-pop h4')].find((h) => h.textContent === '角色模型');
+    if (!section) return false;
+    let el = section.nextElementSibling;
+    while (el && !el.classList.contains('lv-langs')) el = el.nextElementSibling;
+    if (!el) return false;
+    const btn = [...el.querySelectorAll('button')].find((b) => b.textContent === 'haru-alt');
     btn?.click();
+    return Boolean(btn);
   });
+  if (!clicked) console.log('  (model button not found — section missing?)');
   await sleep(2500);
   const modelInfo2 = JSON.parse(await ev(async () => {
     const r = await fetch('/live2d-voice/model', { headers: { accept: 'application/json' } });

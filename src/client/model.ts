@@ -15,6 +15,10 @@ import { Live2DModel } from "pixi-live2d-display-lipsyncpatch/cubism4";
 export interface Live2DHandle {
 	/** Apply an expression by name or index; unknown ids are ignored. */
 	setExpression(expression: number | string): void;
+	/** Make the character look at a stage-local point (pixels). */
+	focus(x: number, y: number): void;
+	/** When true, camera gaze owns the focus and the mouse is ignored. */
+	setGazeMode(enabled: boolean): void;
 	destroy(): void;
 }
 
@@ -72,13 +76,35 @@ export async function mountModel(container: HTMLElement, modelUrl: string, getMo
 		for (const id of lipSyncIds) internal.coreModel.setParameterValueById(id, applied);
 	});
 
+	// Mouse gaze: the character follows the pointer (desktop). Camera gaze
+	// (experimental) can override this by calling focus() itself.
+	const stage = container;
+	let gazeMode = false;
+	const onPointerMove = (event: PointerEvent) => {
+		if (gazeMode) return; // camera gaze owns the focus
+		const rect = stage.getBoundingClientRect();
+		model.focus(event.clientX - rect.left, event.clientY - rect.top);
+	};
+	stage.addEventListener("pointermove", onPointerMove);
+
 	return {
 		setExpression(expression) {
 			void model.expression(expression).catch((error) => {
 				console.warn(`[dsh-live2d-voice] expression ${String(expression)} failed`, error);
 			});
 		},
+		focus(x, y) {
+			model.focus(x, y);
+		},
+		setGazeMode(enabled) {
+			gazeMode = enabled;
+			if (!enabled) return;
+			// Reset to center when the camera takes over.
+			const rect = stage.getBoundingClientRect();
+			model.focus(rect.width / 2, rect.height * 0.42);
+		},
 		destroy() {
+			stage.removeEventListener("pointermove", onPointerMove);
 			observer.disconnect();
 			model.destroy();
 			app.destroy(true, { children: true });

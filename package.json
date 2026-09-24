@@ -1,6 +1,6 @@
 {
 	"name": "dsh-live2d-voice",
-	"version": "1.0.0",
+	"version": "1.1.0",
 	"description": "Live2D session view with realtime voice: continuous voice input, subtitle translation, multi-model catalog, per-workspace overrides",
 	"type": "module",
 	"main": "./lib/index.js",
@@ -45,7 +45,15 @@
 		}
 	},
 	"dependencies": {
+		"@deepseek-ai/dsh-attachment": "^0.1.5-rc.3",
+		"@deepseek-ai/dsh-code-runtime": "^0.1.5-rc.3",
+		"@deepseek-ai/dsh-invariants": "^0.1.5-rc.3",
 		"@deepseek-ai/dsh-llm": "0.1.5-rc.3",
+		"@deepseek-ai/dsh-scope": "^0.1.5-rc.3",
+		"@deepseek-ai/dsh-system-prompt": "^0.1.5-rc.3",
+		"@deepseek-ai/dsh-tools": "^0.1.5-rc.3",
+		"@deepseek-ai/dsh-user-approval": "^0.1.5-rc.3",
+		"@mediapipe/tasks-vision": "^0.10.35",
 		"ws": "^8.21.3"
 	},
 	"peerDependencies": {

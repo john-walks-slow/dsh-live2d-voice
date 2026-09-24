@@ -142,7 +142,15 @@ export class MicCapture {
 			} finally {
 				URL.revokeObjectURL(url);
 			}
-			this.node = new AudioWorkletNode(this.context, "lv-capture");
+			// Mobile browsers suspend AudioContexts while the page is hidden —
+		// without an auto-resume the VAD would die silently after the user
+		// switches away and back (the "phone left on this page" scenario).
+		this.context.onstatechange = () => {
+			if (this.running && this.context?.state === "suspended") {
+				void this.context.resume().catch(() => undefined);
+			}
+		};
+		this.node = new AudioWorkletNode(this.context, "lv-capture");
 			this.node.port.onmessage = (message: MessageEvent) => {
 				const data = message.data as { pcm?: Int16Array; level?: number };
 				if (data.pcm) this.handleFrame(data.pcm);

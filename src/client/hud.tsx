@@ -1,10 +1,11 @@
 /**
  * The bottom HUD capsule: mic (continuous voice input), TTS mute, subtitles,
- * keyboard input, and the voice settings popover (presets + custom speech
- * prompt).
+ * keyboard input, fullscreen, and the voice settings drawer (presets, model
+ * picker, recognition language, custom speech prompt).
  *
  * The capsule fades to a whisper after 2.5s of pointer idleness (class
- * toggling owned by the view); hover restores it.
+ * toggling owned by the view); hover restores it. While the mic is live the
+ * faded capsule stays clearly visible — the stop control must stay findable.
  */
 
 import { useState } from "react";
@@ -17,6 +18,7 @@ export interface HudProps {
 	subtitlesOn: boolean;
 	inputOpen: boolean;
 	popoverOpen: boolean;
+	fullscreen: boolean;
 	micState: MicState;
 	asrConfigured: boolean;
 	presets: VoicePreset[];
@@ -28,14 +30,17 @@ export interface HudProps {
 	currentModel?: string;
 	apiKeyCount: number;
 	speechPrompt: string;
+	eyeTracking: boolean;
 	onToggleMute: () => void;
 	onToggleSubtitles: () => void;
 	onToggleInput: () => void;
 	onTogglePopover: () => void;
+	onToggleFullscreen: () => void;
 	onToggleMic: () => void;
 	onPickVoice: (preset: VoicePreset) => void;
 	onPickSttLanguage: (id: string) => void;
 	onPickModel: (name: string) => void;
+	onToggleEyeTracking: () => void;
 	onSavePrompt: (text: string) => void;
 }
 
@@ -83,6 +88,14 @@ export function Hud(props: HudProps) {
 			>
 				⌨️
 			</button>
+			<button
+				type="button"
+				className={`lv-btn${props.fullscreen ? " lv-on" : ""}`}
+				title={props.fullscreen ? "退出全屏" : "全屏（沉浸模式，适合把这台设备当作角色终端）"}
+				onClick={props.onToggleFullscreen}
+			>
+				⛶
+			</button>
 			<div className="lv-hud-sep" />
 			<button
 				type="button"
@@ -98,74 +111,105 @@ export function Hud(props: HudProps) {
 			</button>
 			{props.popoverOpen && (
 				<div className="lv-pop">
-					<h4>音色</h4>
-					{props.presets.map((preset) => (
+					<div className="lv-pop-head">
+						<span>语音设置</span>
 						<button
-							key={preset.id}
 							type="button"
-							className={`lv-voice${preset.voiceId === props.currentVoiceId ? " lv-current" : ""}`}
-							onClick={() => props.onPickVoice(preset)}
+							className="lv-pop-close"
+							title="关闭"
+							onClick={() => {
+								setDraftPrompt(null);
+								props.onTogglePopover();
+							}}
 						>
-							<span>{preset.label}</span>
-							{preset.voiceId === props.currentVoiceId && <span>✓</span>}
+							✕
 						</button>
-					))}
-					{props.models.length > 1 && (
-					<>
-						<h4>角色模型</h4>
+					</div>
+					<div className="lv-pop-body">
+						<h4>音色</h4>
 						<div className="lv-langs">
-							{props.models.map((model) => (
+							{props.presets.map((preset) => (
 								<button
-									key={model.name}
+									key={preset.id}
 									type="button"
-									className={`lv-lang${model.name === props.currentModel ? " lv-current" : ""}`}
-									onClick={() => props.onPickModel(model.name)}
+									className={`lv-lang${preset.voiceId === props.currentVoiceId ? " lv-current" : ""}`}
+									onClick={() => props.onPickVoice(preset)}
 								>
-									{model.name}
+									{preset.label}
 								</button>
 							))}
 						</div>
-					</>
-				)}
-				<h4>识别语言</h4>
-					<div className="lv-langs">
-						{props.languages.map((language) => (
+						{props.models.length > 1 && (
+							<>
+								<h4>角色模型</h4>
+								<div className="lv-langs">
+									{props.models.map((model) => (
+										<button
+											key={model.name}
+											type="button"
+											className={`lv-lang${model.name === props.currentModel ? " lv-current" : ""}`}
+											onClick={() => props.onPickModel(model.name)}
+										>
+											{model.name}
+										</button>
+									))}
+								</div>
+							</>
+						)}
+						<h4>识别语言</h4>
+						<div className="lv-langs">
+							{props.languages.map((language) => (
+								<button
+									key={language.id}
+									type="button"
+									className={`lv-lang${language.id === props.currentSttLanguage ? " lv-current" : ""}`}
+									onClick={() => props.onPickSttLanguage(language.id)}
+								>
+									{language.label}
+								</button>
+							))}
+						</div>
+						<p className="lv-pop-note">自动检测覆盖中/日/英；识别不稳时锁定语种。</p>
+						<h4>实验性</h4>
+						<div className="lv-switch-row">
+							<span>视线追踪（前置摄像头，角色看着你）</span>
 							<button
-								key={language.id}
 								type="button"
-								className={`lv-lang${language.id === props.currentSttLanguage ? " lv-current" : ""}`}
-								onClick={() => props.onPickSttLanguage(language.id)}
+								role="switch"
+								aria-checked={props.eyeTracking}
+								className={`lv-switch${props.eyeTracking ? " lv-on" : ""}`}
+								title="首次开启需下载视线模型并授权摄像头；仅在本设备运行"
+								onClick={props.onToggleEyeTracking}
 							>
-								{language.label}
+								<span className="lv-switch-knob" />
 							</button>
-						))}
+						</div>
+						<h4>自定义提示词</h4>
+						<textarea
+							className="lv-prompt-input"
+							value={promptValue}
+							rows={3}
+							placeholder={"仅在 Live2D 语音模式下生效的额外要求，例如：\n无论用户说什么语言，总是用日语自然交流。"}
+							onChange={(event) => setDraftPrompt(event.target.value)}
+						/>
+						<button
+							type="button"
+							className="lv-prompt-save"
+							disabled={draftPrompt === null || draftPrompt.trim() === props.speechPrompt.trim()}
+							onClick={() => {
+								props.onSavePrompt(promptValue.trim());
+								setDraftPrompt(null);
+							}}
+						>
+							保存提示词
+						</button>
+						<p className="lv-pop-note">随语音模式注入；切回普通对话自动失效。</p>
+						<p className={`lv-pop-note${props.apiKeyCount === 0 ? " lv-warn" : ""}`}>
+							{props.apiKeyCount === 0
+								? "未配置 Fish Audio API key，语音不可用。在 ~/.dsh/live2d-voice.json 配置 apiKeys 或 apiKeyFile。"
+								: `Fish Audio key ×${props.apiKeyCount} · 当前音色立即生效于下一句话`}
+						</p>
 					</div>
-					<p className="lv-pop-note">自动检测覆盖中/日/英；识别不稳时锁定语种。</p>
-					<h4>自定义提示词</h4>
-					<textarea
-						className="lv-prompt-input"
-						value={promptValue}
-						rows={3}
-						placeholder={"仅在 Live2D 语音模式下生效的额外要求，例如：\n无论用户说什么语言，总是用日语自然交流。"}
-						onChange={(event) => setDraftPrompt(event.target.value)}
-					/>
-					<button
-						type="button"
-						className="lv-prompt-save"
-						disabled={draftPrompt === null || draftPrompt.trim() === props.speechPrompt.trim()}
-						onClick={() => {
-							props.onSavePrompt(promptValue.trim());
-							setDraftPrompt(null);
-						}}
-					>
-						保存提示词
-					</button>
-					<p className="lv-pop-note">随语音模式注入；切回普通对话自动失效。</p>
-					<p className={`lv-pop-note${props.apiKeyCount === 0 ? " lv-warn" : ""}`}>
-						{props.apiKeyCount === 0
-							? "未配置 Fish Audio API key，语音不可用。在 ~/.dsh/live2d-voice.json 配置 apiKeys 或 apiKeyFile。"
-							: `Fish Audio key ×${props.apiKeyCount} · 当前音色立即生效于下一句话`}
-					</p>
 				</div>
 			)}
 		</div>

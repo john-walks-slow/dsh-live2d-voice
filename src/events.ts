@@ -18,6 +18,7 @@ export type SseEventName =
 	| "audio-end"
 	| "subtitle"
 	| "subtitle-translation"
+	| "camera-capture"
 	| "error"
 	| "hello";
 
@@ -32,6 +33,7 @@ const HEARTBEAT_MS = 15_000;
 export class SseHub {
 	private connections = new Map<string, Set<SseConnection>>();
 	private lastCloseListeners = new Set<(sessionId: string) => void>();
+	private firstOpenListeners = new Set<(sessionId: string) => void>();
 
 	/**
 	 * Register a callback fired when a session's LAST connection closes —
@@ -42,9 +44,15 @@ export class SseHub {
 		return () => this.lastCloseListeners.delete(listener);
 	}
 
+	/** Register a callback fired when a session's FIRST connection opens. */
+	onFirstOpen(listener: (sessionId: string) => void): () => void {
+		this.firstOpenListeners.add(listener);
+		return () => this.firstOpenListeners.delete(listener);
+	}
+
 	/** Whether at least one Live view listens on this session (speech gate). */
 	has(sessionId: string): boolean {
-		return this.connections.get(sessionId)?.size !== undefined && (this.connections.get(sessionId)?.size ?? 0) > 0;
+		return (this.connections.get(sessionId)?.size ?? 0) > 0;
 	}
 
 	attach(sessionId: string, req: IncomingMessage, res: ServerResponse): SseConnection {
@@ -90,7 +98,9 @@ export class SseHub {
 			set = new Set();
 			this.connections.set(sessionId, set);
 		}
+		const wasEmpty = set.size === 0;
 		set.add(connection);
+		if (wasEmpty) for (const listener of this.firstOpenListeners) listener(sessionId);
 		res.write(": connected\n\n");
 		connection.send("hello", { sessionId });
 		return connection;
