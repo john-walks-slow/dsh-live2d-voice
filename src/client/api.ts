@@ -82,6 +82,8 @@ export async function recognizeUtterance(pcm: ArrayBuffer, language: string): Pr
 }
 
 export interface AsrUpload {
+	/** Identifies this upload in the asr-interim/asr-final SSE payloads. */
+	uploadId: string;
 	/** Feed one 16kHz s16le mono PCM frame into the upload stream. */
 	push(pcm: Int16Array): void;
 	/** End the utterance (finalize) — the transcript arrives via asr-final. */
@@ -105,7 +107,8 @@ export interface AsrUpload {
  */
 export function startAsrUpload(sessionId: string, language: string): AsrUpload {
 	const pending: Int16Array[] = [];
-	const ws = new WebSocket(`/live2d-voice/asr/ws?session=${encodeURIComponent(sessionId)}&lang=${encodeURIComponent(language)}`);
+	const uploadId = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+	const ws = new WebSocket(`/live2d-voice/asr/ws?session=${encodeURIComponent(sessionId)}&lang=${encodeURIComponent(language)}&up=${uploadId}`);
 	let settling = false;
 	let resolveDone: (() => void) | null = null;
 	let rejectDone: ((error: Error) => void) | null = null;
@@ -134,6 +137,7 @@ export function startAsrUpload(sessionId: string, language: string): AsrUpload {
 		}
 	};
 	return {
+		uploadId,
 		push,
 		finish: () => {
 			settling = true;
@@ -220,8 +224,8 @@ export function openStream(sessionId: string, handlers: StreamHandlers): () => v
 	wire<SubtitlePayload>("subtitle", handlers.onSubtitle);
 	wire<SubtitleTranslationPayload>("subtitle-translation", handlers.onSubtitleTranslation);
 	wire<CameraCapturePayload>("camera-capture", handlers.onCameraCapture);
-	wire<{ text: string }>("asr-interim", handlers.onAsrInterim);
-	wire<{ text: string }>("asr-final", handlers.onAsrFinal);
+	wire<{ text: string; up: string }>("asr-interim", handlers.onAsrInterim);
+	wire<{ text: string; up: string }>("asr-final", handlers.onAsrFinal);
 	wire<ErrorPayload>("error", handlers.onError);
 	return () => source.close();
 }

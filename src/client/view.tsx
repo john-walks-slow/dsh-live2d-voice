@@ -138,6 +138,8 @@ export function Live2DView(props: ViewProps) {
 	const assistantEchoRef = useRef("");
 	/** The live upload feeding the current speech segment (streaming ASR). */
 	const asrUploadRef = useRef<AsrUpload | null>(null);
+	/** The upload id of the utterance this view is currently speaking into. */
+	const currentUploadRef = useRef<string | null>(null);
 
 	const pushSubtitle = (role: SubtitleLine["role"], text: string, lineId?: string) => {
 		if (role === "assistant") {
@@ -432,12 +434,19 @@ export function Live2DView(props: ViewProps) {
 					await postCameraResult(requestId, shot);
 				})();
 			},
-			onAsrInterim: ({ text }) => {
+			onAsrInterim: ({ text, up }) => {
 				if (asrModeRef.current !== "stream") return;
+				// Only the view that uploaded this utterance shows its live
+				// transcript — kept-alive view instances must stay silent.
+				if (up !== currentUploadRef.current) return;
 				setInterimText(text);
 			},
-			onAsrFinal: ({ text }) => {
+			onAsrFinal: ({ text, up }) => {
 				if (asrModeRef.current !== "stream") return;
+				// Submit only the utterance THIS view uploaded; any other
+				// view instance that hears the same asr-final must not
+				// re-submit it (that is how duplicate messages happened).
+				if (up !== currentUploadRef.current) return;
 				handleAsrFinalText(text);
 			},
 			onError: ({ message }) => {
@@ -737,6 +746,7 @@ export function Live2DView(props: ViewProps) {
 		micRef.current = null;
 		asrUploadRef.current?.abort();
 		asrUploadRef.current = null;
+		currentUploadRef.current = null;
 		engineRef.current?.unmuzzle();
 		setMicState("idle");
 		setMicLevel(0);
@@ -764,6 +774,7 @@ export function Live2DView(props: ViewProps) {
 			asrPendingCount.current = 0;
 			setAsrPending(false);
 		}
+		currentUploadRef.current = null;
 		engineRef.current?.unmuzzle();
 		setInterimText("");
 	};
@@ -815,6 +826,7 @@ export function Live2DView(props: ViewProps) {
 				setAsrPending(true);
 				const upload = startAsrUpload(sessionId, sttLanguageRef.current);
 				asrUploadRef.current = upload;
+				currentUploadRef.current = upload.uploadId;
 				for (const frame of preRoll) upload.push(frame);
 				upload.done.catch((error) => {
 					if (asrModeRef.current !== "stream") return;
@@ -829,6 +841,7 @@ export function Live2DView(props: ViewProps) {
 				if (kind === "blip") {
 					// Too short to be an utterance — discard without a result.
 					upload.abort();
+					currentUploadRef.current = null;
 					finishAsrSegment();
 				} else {
 					// release / forced — finalize; asr-final owns the submit.

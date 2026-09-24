@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.4.1 (2026-09-25)
+
+- **修复语音消息重复提交**：流式 ASR 事件此前按会话广播，同一会话若有多个 Live2D 视图实例（如 GUI tab 未卸载、或 GUI + 独立入口双开）会各自提交同一句语音 → 对话里出现重复消息。现在每次上行携带随机 `up` 上传标识（WS 查询参数 → SSE `asr-interim`/`asr-final` payload 回传），只有发起该次上传的视图才提交/显示 interim，其余视图静默——单视图、多视图、双设备场景都只提交一次
+- **语音模式提示词注入与 preset**：`systemPrompt` 的 `complete: true` 语义会丢弃除 persona 外的所有 section（dsh 设计如此）——`chat` 等极简预设下 Live2D 语音模式（情绪标签/日语指令/自定义附加要求）不会注入，表现为角色不遵守语音格式。已在 chat preset 配置中改为 `complete: false`；其他自建预设遇到同样问题时检查 persona 是否 `complete: true`
+- e2e：新增 `verify-nodup.mjs`（GUI tab + 独立入口双视图监听同一会话，语音只提交一次且 15s 内无延迟重复）
+
 ## 1.4.0 (2026-09-24)
 
 - **语音识别流式化**：ASR 从「整句缓冲 → 一次性识别」改为「VAD 分句 + 实时推流」——浏览器边录边传（每句一条 WebSocket 上行），host 转发火山 `bigmodel_async` 双向流式优化版 + `enable_nonstream` 二遍识别；识别文本经 SSE `asr-interim` 实时上屏（听懂即显示），句末 `{"t":"finish"}` 定稿后经 `asr-final` 自动提交。实测尾延迟从 ≈1.9s（0.55s 判停 + 1.3s 识别）降到 ≈1.2s（判停 + 0.6s 定稿），且字幕全程实时跟进

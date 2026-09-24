@@ -210,6 +210,7 @@ export function installRoutes(ctx: Context, deps: RouteDeps): (() => void) | und
 		webServer.registerUpgrade({ path: "/live2d-voice/asr/ws", handler: (req, socket, head) => {
 			const url = new URL(req.url ?? "/", "http://localhost");
 			const sessionId = url.searchParams.get("session")?.trim() ?? "";
+			const up = url.searchParams.get("up")?.trim() ?? "";
 			if (!sessionId) {
 				socket.destroy();
 				return;
@@ -221,9 +222,12 @@ export function installRoutes(ctx: Context, deps: RouteDeps): (() => void) | und
 				return;
 			}
 			asrWss.handleUpgrade(req, socket, head, (ws) => {
-				const session = new StreamingAsrSession(credentials, (text) => {
-					deps.hub.emit(sessionId, "asr-interim", { text });
-				});
+				// The `up` id rides along on every ASR event so only the view
+				// that actually uploaded this utterance acts on it — other
+				// view instances (kept-alive tabs, a second device) see the
+				// event but must not submit the same utterance again.
+				const emitInterim = (text: string) => deps.hub.emit(sessionId, "asr-interim", { text, up });
+				const session = new StreamingAsrSession(credentials, emitInterim);
 				let finalized = false;
 				let size = 0;
 				ws.on("message", (data, isBinary) => {
@@ -246,7 +250,7 @@ export function installRoutes(ctx: Context, deps: RouteDeps): (() => void) | und
 							finalized = true;
 							void session
 								.end()
-								.then((text) => deps.hub.emit(sessionId, "asr-final", { text }))
+								.then((text) => deps.hub.emit(sessionId, "asr-final", { text, up }))
 								.catch((error: unknown) => {
 									deps.hub.emit(sessionId, "error", { message: error instanceof Error ? error.message : String(error) });
 								})

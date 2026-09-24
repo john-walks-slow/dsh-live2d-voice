@@ -146,8 +146,8 @@ export interface StreamHandlers {
 	onSubtitleTranslation?: (payload: SubtitleTranslationPayload) => void;
 	onCameraCapture?: (payload: CameraCapturePayload) => void;
 	/** Live ASR interim transcript (updates while the user is speaking). */
-	onAsrInterim?: (payload: { text: string }) => void;
+	onAsrInterim?: (payload: { text: string; up: string }) => void;
 	/** Live ASR final transcript — submit this utterance. */
-	onAsrFinal?: (payload: { text: string }) => void;
+	onAsrFinal?: (payload: { text: string; up: string }) => void;
 	onError?: (payload: ErrorPayload) => void;
 }

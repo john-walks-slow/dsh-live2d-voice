@@ -105,6 +105,8 @@ pnpm install && sv restart dsh   # 重启 dsh 生效
 
 **提示词注入是会话级、按需生效的**：只有当前会话打开了 Live2D 视图（SSE 在连）时，才会注入"语音输出格式 + 情绪标签"提示词（含 `speechPrompt` 自定义指令）；普通 Chat 会话完全不受影响。从 Live2D 切回普通对话后的首轮回复会自动附上一段"已退出语音模式"的提醒，模型随即恢复正常 Markdown/代码块输出，对话可以无缝续接。
 
+> **注意（与 dsh preset 的兼容）**：`systemPrompt` 的 `complete: true` 预设（如 `chat` 极简预设）会丢弃除 persona 外的所有提示词 section——Live2D 语音模式（情绪标签/语言指令/自定义要求）不会注入，角色表现为不遵守语音格式。使用此类预设时需将 persona 的 `complete` 改为 `false`（`~/.dsh/.agent-presets/<preset>/agent.cordis.yml`）。
+
 内置音色预设（HUD ⚙ 里可直接切换）：
 
 | 预设 | voiceId |
@@ -191,6 +193,7 @@ cd ~/.dsh/live2d-voice-models
 - TTS 与 Turn 解耦：LLM 流结束即放行 Agent Turn 结算，剩余句子在后台继续合成；新一轮流开始或视图关闭时自动中止旧合成
 - 多 key 轮询：单 key 401/402/429 自动切下一个，全部失败才报错（SSE `error` 事件）
 - 语音识别（流式，默认）用火山 `bigmodel_async`（双向流式优化版 + `enable_nonstream` 二遍，v3 sauc 二进制帧协议，帧不带 seq）：边说边出实数 interim（SSE `asr-interim`），句末 `{"t":"finish"}` 控制帧触发定稿（SSE `asr-final`）；实测 4.7s 中文句说完 ≈0.6s 出最终文本；**语言参数仅 nostream 端点支持**，双向流式只覆盖中英+方言（日语实测空文本），故 `asrMode: nostream` 保留旧的 `bigmodel_nostream` 一次性整句识别（25 语种 `enable_auto_lang`，含 ja-JP）
+- 防重复提交：每次上行带随机 `up` 标识，`asr-interim`/`asr-final` 事件回传该标识，仅发起上传的视图处理（GUI tab 缓存未卸载、GUI + 独立入口双开、双设备都不再重复提交同一句）
 - 浏览器→host 上行走 WebSocket（每句一连接）：Chromium 的 `ReadableStream` fetch body 只支持 HTTP/2（HTTP/1.1 下 `ERR_ALPN_NEGOTIATION_FAILED`），而 harness webserver 是 HTTP/1.1
 - 字幕翻译是 host 侧一次性 `ctx.llm.stream` 调用（复用会话的 provider/model，无 sessionId/purpose 故不会被本插件 tap 回环）；每会话串行队列、最多积压 2 句，超出丢最旧——字幕时效优先；译文经 SSE `subtitle-translation` 按 `lineId` 回贴
 
