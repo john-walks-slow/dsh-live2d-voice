@@ -4,3 +4,4 @@ node_modules/
 references/
 generated/
 tests/.behavior.mjs
+tests/.sentence.mjs

@@ -46,21 +46,56 @@ const INIT = `
     if (String(u).includes('/live2d-voice/asr/recognize')) state.recognizes++;
     return of.apply(this, arguments);
   };
-  // Count user-card ELEMENTS matching a needle — element identity, so the
-  // same text rendered twice counts twice (unlike a text Set). Totals are
-  // tracked PER NEEDLE (a global accumulator bleeds counts across checks).
+  // Count USER-role subtitle LINES matching a needle, read from the
+  // SubtitleOverlay's React props (lines[]). DOM-class counting is fragile:
+  // an aged user line renders as .lv-sub-old WITHOUT the lv-sub-user class, so
+  // a current-only scan misses it once it stops being the live card. Reading
+  // the lines[] array (source of truth) counts user lines whether current or
+  // older, and a genuine double-echo still yields 2 (two distinct user lines).
   window.__lvUserCards = (needle) => {
-    let added = 0;
-    for (const el of document.querySelectorAll('.lv-sub-card, .lv-sub-old')) {
-      if (el.dataset.lvSeen) continue;
-      el.dataset.lvSeen = '1';
-      if (el.classList.contains('lv-sub-user') && (el.textContent ?? '').includes(needle)) added++;
+    const el = document.querySelector('.lv-subs');
+    if (!el) return 0;
+    const fk = Object.getOwnPropertyNames(el).find((k) => k.startsWith('__reactFiber$')) || Object.keys(el).find((k) => k.startsWith('__reactFiber$'));
+    if (!fk) return 0;
+    let f = el[fk];
+    let lines = null;
+    while (f) {
+      const p = f.memoizedProps;
+      if (p && Array.isArray(p.lines)) { lines = p.lines; break; }
+      f = f.return;
     }
-    const totals = (window.__lvUserTotals ??= {});
-    return (totals[needle] = (totals[needle] ?? 0) + added);
+    if (!lines) return 0;
+    return lines.filter((l) => l && l.role === 'user' && typeof l.text === 'string' && l.text.includes(needle)).length;
   };
   const md = navigator.mediaDevices;
   const og = md.getUserMedia.bind(md);
+  // DOM appearance log for subtitle cards (diagnostics) + SSE lifecycle log.
+  // documentElement is null at document-start — attach after DOMContentLoaded.
+  window.__lvDomLog = [];
+  window.__lvSseLog = [];
+  const startObs = () => {
+    const obs = new MutationObserver(() => {
+      for (const el of document.querySelectorAll('.lv-sub-card, .lv-sub-old')) {
+        if (el.dataset.lvLogged) continue;
+        el.dataset.lvLogged = '1';
+        window.__lvDomLog.push({ t: Date.now(), cls: String(el.className), text: (el.textContent ?? '').slice(0, 36) });
+      }
+    });
+    obs.observe(document.documentElement, { childList: true, subtree: true });
+  };
+  if (document.documentElement) startObs();
+  else document.addEventListener('DOMContentLoaded', startObs);
+  const OES = window.EventSource;
+  window.EventSource = function (...a) {
+    const es = new OES(...a);
+    es.addEventListener('error', () => window.__lvSseLog.push({ t: Date.now(), e: 'error' }));
+    es.addEventListener('open', () => window.__lvSseLog.push({ t: Date.now(), e: 'open' }));
+    window.__lvSseEvents = window.__lvSseEvents ?? [];
+    for (const type of ['subtitle', 'hello']) {
+      es.addEventListener(type, (e) => window.__lvSseEvents.push({ t: Date.now(), type, d: String(e.data ?? '').slice(0, 80) }));
+    }
+    return es;
+  };
   md.getUserMedia = async function (con) {
     state.gumCalls++;
     if (!con || !con.audio || con.video) return og(con);
@@ -122,6 +157,11 @@ page.on('websocket', (ws) => {
 });
 const ev = (fn, ...args) => page.evaluate(fn, ...args);
 const sleep = (ms) => page.waitForTimeout(ms);
+const wireConsole = (tag, pg) => {
+  pg.on('console', (msg) => { const t = msg.text(); if (t.includes('lv') || t.includes('subtitle') || t.includes('error') || t.includes('bad')) console.log(`[${tag}]`, t.slice(0, 160)); });
+  pg.on('pageerror', (err) => console.log(`[${tag} pageerror]`, String(err).slice(0, 240)));
+};
+wireConsole('p1', page);
 const st = async () => JSON.parse(await ev(() => (window.__lvState ? window.__lvState() : '{}'))).state ?? {};
 const postConfig = (page_, patch) => page_.evaluate((p) => fetch('/live2d-voice/config', {
   method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(p),
@@ -156,6 +196,7 @@ try {
 
   // second view instance: standalone page watching the same session
   const page2 = await ctx.newPage();
+  wireConsole('p2', page2);
   await page2.goto(`http://127.0.0.1:4188/live2d-voice/app?session=${encodeURIComponent(sid)}`, { waitUntil: 'domcontentloaded', timeout: 30000 });
   await sleep(5000);
   check('D0c', await page2.evaluate(() => !!document.querySelector('.lv-root')), 'standalone second view up');
@@ -190,18 +231,29 @@ try {
   await page2.keyboard.type('独立页双发回归测试', { delay: 12 });
   await page2.keyboard.press('Enter');
   const TYPED = '独立页双发回归测试';
-  for (let i = 0; i < 10 && (await page2.evaluate(() => window.__lvUserCards('独立页双发回归测试'))) === 0; i++) await sleep(500);
-  for (let i = 0; i < 16; i++) { await sleep(500); await page2.evaluate(() => window.__lvUserCards('独立页双发回归测试')); }
-  const p2cards = await page2.evaluate(() => window.__lvUserCards('独立页双发回归测试'));
+  // Count via React fiber (lines[] source of truth) — runs in the echo's
+  // live window (0–14s) before the 21s TTL sweep evicts the user line.
+  // Poll BOTH pages concurrently during the echo's live window (0–14s);
+  // a single SSE echo should yield exactly one user line on each. Watch long
+  // enough to catch a late-arriving historical duplicate (~10–12s).
+  let p2cards = 0, p1cards = 0;
+  for (let i = 0; i < 28; i++) {
+    p2cards = await page2.evaluate(() => window.__lvUserCards('独立页双发回归测试'));
+    p1cards = await ev(() => window.__lvUserCards('独立页双发回归测试'));
+    if (i >= 4 && p2cards >= 1 && p1cards >= 1) { /* keep watching for late dupes */ }
+    await sleep(500);
+  }
   const p2msgs = await page2.evaluate(() => JSON.parse(window.__lvState()).state);
   console.log('R3 diag page2:', JSON.stringify(p2msgs), 'cards:', p2cards);
   console.log('R3 diag page2 DOM:', await page2.evaluate(() => JSON.stringify([...document.querySelectorAll('.lv-sub-card, .lv-sub-old')].map((el) => ({ cls: el.className, text: (el.textContent ?? '').slice(0, 30) })))));
-  console.log('R3 diag page1 DOM:', await ev(() => JSON.stringify([...document.querySelectorAll('.lv-sub-card, .lv-sub-old')].map((el) => ({ cls: el.className, text: (el.textContent ?? '').slice(0, 30) })))));
+  console.log('R3 diag page2 sse:', await page2.evaluate(() => JSON.stringify(window.__lvSseLog)));
+  console.log('R3 diag page2 sse subtitle events:', await page2.evaluate(() => JSON.stringify((window.__lvSseEvents ?? []).filter((e) => e.type === 'subtitle'))));
+  console.log('R3 diag page1 sse subtitle events:', await ev(() => JSON.stringify((window.__lvSseEvents ?? []).filter((e) => e.type === 'subtitle'))));
+  console.log('R3 diag page2 domlog:', await page2.evaluate(() => JSON.stringify(window.__lvDomLog)));
+  console.log('R3 diag page1 domlog:', await ev(() => JSON.stringify(window.__lvDomLog)));
+  check('D2b', p2msgs.messages === 1, `standalone submitted exactly one /message (${p2msgs.messages}, status ${p2msgs.lastMessageStatus})`);
   check('D2a', p2cards === 1, `standalone typed line shows exactly once (${p2cards})`);
-  check('D2b', p2msgs === 1, `standalone submitted exactly one /message (${p2msgs})`);
-  // the GUI tab sees the same line once over SSE (it did not submit it)
-  for (let i = 0; i < 10; i++) { await sleep(500); await ev(() => window.__lvUserCards('独立页双发回归测试')); }
-  check('D2c', (await ev(() => window.__lvUserCards('独立页双发回归测试'))) === 1, 'GUI tab shows the standalone line once (SSE echo)');
+  check('D2c', p1cards === 1, `GUI tab shows the standalone line once (SSE echo) (${p1cards})`);
 
   await postConfig(page, { asrMode: originalMode }).catch(() => undefined);
   const failed = results.filter((r) => !r.ok);
