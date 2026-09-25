@@ -307,15 +307,23 @@ body[data-live2d-active="true"] [class*="taskBoard"] {
 	background: color-mix(in srgb, var(--lv-accent) 12%, transparent);
 }
 
-/* Mic pulse halo */
+/* Mic pulse halo — only plays while the user is actually speaking (level
+   above the threshold), so the animation reflects real input instead of
+   looping forever even in silence. The base state stays visually quiet. */
 .lv-btn.lv-mic-live::after {
 	content: "";
 	position: absolute;
 	inset: -3px;
 	border-radius: 50%;
 	border: 1.5px solid color-mix(in srgb, var(--lv-accent) 60%, transparent);
-	animation: lv-halo 2s ease-in-out infinite;
 	pointer-events: none;
+	/* Default: hidden. The keyframes' opacity overrides this while the
+	   animation is running on `.lv-mic-loud`. */
+	opacity: 0;
+}
+
+.lv-btn.lv-mic-live.lv-mic-loud::after {
+	animation: lv-halo 1.4s ease-in-out infinite;
 }
 
 .lv-hud-sep {
@@ -797,6 +805,69 @@ body[data-live2d-active="true"] [class*="taskBoard"] {
 .lv-input button:disabled {
 	opacity: 0.5;
 	cursor: not-allowed;
+}
+
+/* ==========================================================================
+   7b. Keyboard (IME) Open State
+   --------------------------------------------------------------------------
+   When the user opens the text-input panel the Live2D stage must NOT shrink
+   when the soft keyboard pops up — the model keeps its full layout-viewport
+   size and the IME is allowed to cover the lower portion. We achieve it by
+   pinning the root to the layout viewport via position: fixed so the model
+   container stops following the shrunken visual viewport.
+
+   lv-input / lv-micbar / lv-toast are pushed up by the IME height
+   (--lv-ime-height, written by the visualViewport handler in view.tsx) so
+   they stay visible just above the on-screen keyboard.
+
+   The HUD operation bar moves from the bottom to the top so it does not
+   collide with the on-screen keyboard; the popover flips down from the HUD.
+   ========================================================================== */
+.lv-root.lv-keyboard-open {
+	position: fixed;
+	inset: 0;
+	z-index: 50;
+	/* Updated by the visualViewport handler. Defaults to 0 so the rules below
+	   work fine on desktop / when no IME is showing. */
+	--lv-ime-height: 0px;
+}
+
+.lv-root.lv-keyboard-open .lv-stage {
+	/* Position fixed inside an already-fixed root keeps the stage anchored
+	   to the layout viewport. The canvas inside never re-sizes because its
+	   container's box never shrinks — which is the point of the whole block. */
+	position: fixed;
+	inset: 0;
+	width: 100%;
+	height: 100%;
+}
+
+/* HUD moves to top when keyboard panel is open. The existing transform
+   keeps horizontal centering intact. */
+.lv-root.lv-keyboard-open .lv-hud {
+	bottom: auto;
+	top: var(--lv-chrome-top, 16px);
+}
+
+/* Popover (lv-pop) sits above its parent HUD with bottom: 100%. With the
+   HUD at the top of the viewport the popover would fly off-screen — flip
+   it to sit just below the HUD instead. */
+.lv-root.lv-keyboard-open .lv-pop {
+	bottom: auto;
+	top: calc(100% + 12px);
+	transform-origin: top right;
+}
+
+.lv-root.lv-keyboard-open .lv-input {
+	bottom: calc(var(--lv-ime-height) + 12px);
+}
+
+.lv-root.lv-keyboard-open .lv-micbar {
+	bottom: calc(var(--lv-ime-height) + 64px);
+}
+
+.lv-root.lv-keyboard-open .lv-toast {
+	bottom: calc(var(--lv-ime-height) + 120px);
 }
 
 /* ==========================================================================
