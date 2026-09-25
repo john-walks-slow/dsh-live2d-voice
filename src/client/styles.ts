@@ -1294,6 +1294,12 @@ export function injectLiveStyles(): void {
 	injected = true;
 	const style = document.createElement("style");
 	style.id = "dsh-live2d-voice-styles";
+	// Claim ownership for the host's HMR bookkeeping: the client module
+	// system tags every untagged <style> to whichever plugin materializes
+	// next, and a plugin reload deletes all tags it owns. Without this
+	// marker, another plugin's reload cycle claims this stylesheet and
+	// deletes it on its next rebuild (all lv-* rules vanish until refresh).
+	style.setAttribute("data-plugin", "dsh-live2d-voice");
 	style.textContent = CSS;
 	document.head.appendChild(style);
 }

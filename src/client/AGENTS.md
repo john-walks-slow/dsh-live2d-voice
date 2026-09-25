@@ -30,6 +30,7 @@
   - 写参数时序：`beforeModelUpdate` → `model.update()`（raw 消费参数重算 drawables）→ `loadParameters()`（恢复 motion 态）；draw 只读 drawables。绝对写入放 `beforeModelUpdate` 是正确位置（唇形同步/视线同款路径）。
   - `raw.drawables.vertexPositions` 是 per-drawable 的数组套数组，不是扁平 Float32Array。
   - VLM（modlens）对 13~30° 头部转向的判断不可靠（多次把明显转头判成"正面"）；视觉回归一律用受控 A/B 像素 diff（同一页面两状态截图 + PIL 阈值统计）。
+- **运行时注入的 `<style>` 必须打 `data-plugin="dsh-live2d-voice"` 标**（styles.ts `injectLiveStyles` 已做）：宿主在 materialize 时机用 `claimStyles` 把未打标 style 认领给下一个 materialize 的插件，该插件 HMR 重载时会 `removeOwnedStyles` 连带删除——任何插件连续两次 rebuild 就能让本插件全部样式消失（260925 Live 按钮失样式 bug，回归 `e2e/verify-style-claim.mjs`）。新增任何 DOM 注入样式的路径时同样处理。
 - 字幕 DOM 类名（`.lv-sub-card` / `.lv-sub-old` / `.lv-sub-pending`）是 e2e 脚本的断言契约，改名或重构字幕结构时同步更新 `e2e/verify-*.mjs` 选择器。
 - audioSeq 字幕 hold 的 seq 空间**按 speaker 隔离**：assistant 与 player 的 seq 计数器各自每轮从 0 起，engine 的 `currentSeq(speaker)` 按 speaker 过滤——跨 speaker 比较 seq 会击穿 hold（字幕提前或立即释放）。
 - **第三人称对视世界观**：双模型是"舞台剧"，两角色基准朝向对方（faceBiasX ±0.6 → ±13.2°（angleRange 默认 22））、仿佛不知道玩家存在；视线/陀螺仪输入在 dual 下只做 panRange 位置视差（camAngleGain/gyroAngleGain 归零），不驱动转头看用户；单模型模式保持"角色看你"不变。改 look 管线时保住这个分界。
