@@ -1411,7 +1411,16 @@ export function Live2DView(props: ViewProps) {
 		if (!text || sending) return;
 		setSending(true);
 		try {
-			if (await submitText(text)) setDraft("");
+			if (await submitText(text)) {
+				setDraft("");
+				// Touch devices: collapse the input bar after send so the soft
+				// keyboard closes and the avatar regains the screen. The HUD
+				// keyboard button re-opens it for the next message.
+				if (typeof window !== "undefined" && window.matchMedia?.("(pointer: coarse)").matches) {
+					inputRef.current?.blur();
+					setInputOpen(false);
+				}
+			}
 		} finally {
 			setSending(false);
 		}
