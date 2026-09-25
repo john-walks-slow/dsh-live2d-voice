@@ -7,6 +7,9 @@
  * T1 config surface: /model reports thirdPerson + player entry; settings
  *    ⚙ popover shows the 第三人称 block (model/voice/polish controls).
  * T2 dual stage: two canvases render (AI stage + player overlay).
+ *    T2c-e gesture regression: drag/wheel/dblclick still work on the shared
+ *    stage (the 14bd6e4 refactor gated listener attach on !shared, leaving
+ *    NO model with gestures; dataset.lvTransform must move).
  * T3 polish-off UI round trip: typed line → pending placeholder
  *    ("酝酿中…") → player subtitle (你 badge, raw text, speaker:player SSE)
  *    → player audio → assistant reply; player chunks strictly precede
@@ -133,6 +136,38 @@ try {
   check('T2a', playerAttr === PLAYER_MODEL, `player avatar mounted on shared stage (data-lv-player="${playerAttr}")`);
   check('T2b', canvasCount === 1, `single shared canvas (Cubism needs one WebGL context, ${canvasCount})`);
   await shot('01-dual-stage');
+
+  // ---- T2c-e: gestures on the shared stage (regression: 14bd6e4 gated
+  // listener attach on !shared — every mount went shared, so pan/zoom died
+  // in BOTH single and dual mode). dataset.lvTransform is "panX,panY,scale".
+  console.log('=== T2 gestures (dual stage) ===');
+  {
+    const readTransform = () => ev(() => {
+      const [x = 0, y = 0, s = 0] = (document.querySelector('.lv-stage')?.dataset.lvTransform ?? '').split(',').map(Number);
+      return { x, y, s };
+    });
+    const box = await page.locator('.lv-stage').boundingBox();
+    const cx = box.x + box.width * 0.5;
+    const cy = box.y + box.height * 0.45;
+    const g0 = await readTransform();
+    await page.mouse.move(cx, cy);
+    await page.mouse.down();
+    for (let i = 1; i <= 8; i++) await page.mouse.move(cx + 20 * i, cy - 4 * i);
+    await page.mouse.up();
+    await sleep(400);
+    const g1 = await readTransform();
+    check('T2c', Math.abs(g1.x - g0.x) >= 80, `single-pointer drag pans (${g0.x} → ${g1.x})`);
+    const g2a = await readTransform();
+    for (let i = 0; i < 5; i++) await page.mouse.wheel(0, -240);
+    await sleep(400);
+    const g2 = await readTransform();
+    check('T2d', g2.s >= g2a.s + 0.15, `wheel zooms in (${g2a.s.toFixed(2)} → ${g2.s.toFixed(2)})`);
+    await page.mouse.dblclick(cx, cy);
+    await sleep(400);
+    const g3 = await readTransform();
+    check('T2e', Math.abs(g3.x) <= 5 && Math.abs(g3.s - 1) <= 0.05, `double-click resets (pan ${g3.x}, scale ${g3.s.toFixed(2)})`);
+    await shot('02-gestures-dual');
+  }
 
   // ---- T3: polish-off UI round trip ----
   console.log('=== T3 polish-off round trip ===');
@@ -266,9 +301,19 @@ try {
   await sleep(4000);
   const list6 = JSON.parse(await ev(() => JSON.stringify(window.__tp)));
   const playerEvents6 = list6.filter((e) => e.data?.speaker === 'player');
-  const asst6 = list6.find((e) => e.name === 'subtitle' && e.data.role === 'assistant');
   check('T6a', sent6 === 200 && playerEvents6.length === 0, `off → no player SSE events (${playerEvents6.length})`);
-  check('T6b', !!asst6 || list6.some((e) => e.name === 'audio' && e.data.speaker === undefined), 'off → assistant still replies to the submitted text');
+  // The assistant reply is LLM-latency bound — poll instead of a fixed 4s
+  // read (a fixed window flaked when the model answered slowly).
+  let asst6 = null;
+  let audio6 = false;
+  for (let i = 0; i < 30; i++) {
+    const l6 = JSON.parse(await ev(() => JSON.stringify(window.__tp)));
+    asst6 = l6.find((e) => e.name === 'subtitle' && e.data.role === 'assistant') ?? asst6;
+    audio6 = audio6 || l6.some((e) => e.name === 'audio' && e.data.speaker === undefined);
+    if (asst6 || audio6) break;
+    await sleep(1000);
+  }
+  check('T6b', !!asst6 || audio6, 'off → assistant still replies to the submitted text');
   let log6 = '';
   for (let i = 0; i < 12; i++) { log6 = sessionLog(); if (log6.includes(RAW6)) break; await sleep(1000); }
   check('T6c', log6.includes(RAW6), 'off → raw text submitted as the user message');
@@ -292,6 +337,31 @@ try {
     if (canvasCount6 === 1) break;
   }
   check('T6e', canvasCount6 === 1, `toggle off → player avatar unmounted (${canvasCount6 === 1 ? 'stage is AI-only' : 'still dual'})`);
+  // T6f: the single-model stage must keep its gestures too (the original
+  // regression hit single-model mode as much as dual). Close the ⚙ popover
+  // first — it overlays the stage center and (correctly) eats pointer
+  // events, being a sibling of .lv-stage rather than a child.
+  {
+    await ev(() => { document.querySelector('.lv-pop-close')?.click(); return true; });
+    await sleep(400);
+    const box = await page.locator('.lv-stage').boundingBox();
+    const cx = box.x + box.width * 0.5;
+    const cy = box.y + box.height * 0.45;
+    const s0 = await ev(() => {
+      const [x = 0, y = 0, s = 0] = (document.querySelector('.lv-stage')?.dataset.lvTransform ?? '').split(',').map(Number);
+      return { x, y, s };
+    });
+    await page.mouse.move(cx, cy);
+    await page.mouse.down();
+    for (let i = 1; i <= 8; i++) await page.mouse.move(cx - 20 * i, cy + 3 * i);
+    await page.mouse.up();
+    await sleep(400);
+    const s1 = await ev(() => {
+      const [x = 0, y = 0, s = 0] = (document.querySelector('.lv-stage')?.dataset.lvTransform ?? '').split(',').map(Number);
+      return { x, y, s };
+    });
+    check('T6f', Math.abs(s1.x - s0.x) >= 80, `single-model drag pans (${s0.x} → ${s1.x})`);
+  }
   await shot('04-toggle-off');
   check('T7', pageErrors.length === 0, `zero pageerror (${pageErrors.length})`);
 } catch (e) {

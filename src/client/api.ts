@@ -12,6 +12,7 @@ import type {
 	ModelCatalog,
 	ModelInfo,
 	ModelSelection,
+	MotionPayload,
 	PublicConfig,
 	CameraCapturePayload,
 	SpeechEndPayload,
@@ -32,7 +33,7 @@ async function getJson<T>(url: string): Promise<T> {
  * Load the voice presets + the effective config. With a session id the
  * config carries the workspace overlay; without it the global layer.
  */
-export function fetchConfig(sessionId?: string): Promise<{ config: PublicConfig; presets: VoicePreset[]; languages: LanguageOption[] }> {
+export function fetchConfig(sessionId?: string): Promise<{ config: PublicConfig; presets: VoicePreset[]; voiceLanguages: LanguageOption[]; languages: LanguageOption[] }> {
 	const query = sessionId ? `?session=${encodeURIComponent(sessionId)}` : "";
 	return getJson(`/live2d-voice/config${query}`);
 }
@@ -235,6 +236,7 @@ export function openStream(sessionId: string, handlers: StreamHandlers): () => v
 	};
 	wire<never>("hello", undefined);
 	wire<ExpressionPayload>("expression", handlers.onExpression);
+	wire<MotionPayload>("motion", handlers.onMotion);
 	wire<{ utteranceId: string }>("speech-start", handlers.onSpeechStart);
 	wire<SpeechEndPayload>("speech-end", handlers.onSpeechEnd);
 	wire<AudioStartPayload>("audio-start", handlers.onAudioStart);

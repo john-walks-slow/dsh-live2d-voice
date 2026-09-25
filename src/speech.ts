@@ -21,7 +21,7 @@
 import { randomUUID } from "node:crypto";
 import type { Context } from "@deepseek-ai/cordis";
 import { createUserMessage, type StreamChunk } from "@deepseek-ai/dsh-llm";
-import { SentenceBuffer, extractEmotionTags } from "./sentence.js";
+import { SentenceBuffer, extractEmotionTags, extractMotionTags } from "./sentence.js";
 import { PCM_SAMPLE_RATE, synthesize } from "./tts.js";
 import { languageLabel, type PluginConfig } from "./config.js";
 import type { SseHub } from "./events.js";
@@ -220,15 +220,24 @@ async function* speak(
 	};
 	const handleSentence = (raw: string): void => {
 		if (sentenceMode) {
-			enqueueUnit(`${utteranceId}-${++lineSeq}`, raw);
+			const { clean, motions } = extractMotionTags(raw);
+			for (const motion of motions) {
+				deps.hub.emit(sessionId, "motion", { utteranceId, motion, speaker: "assistant" });
+			}
+			const cleaned = extractMotionTags(raw).clean;
+			enqueueUnit(`${utteranceId}-${++lineSeq}`, cleaned);
 			return;
 		}
-		const { clean, emotions } = extractEmotionTags(raw, vocabulary);
+		const { clean: cleanEmotion, emotions } = extractEmotionTags(raw, vocabulary);
+		const { clean: cleanMotion, motions } = extractMotionTags(cleanEmotion);
 		const emotion = emotions.at(-1);
 		if (emotion !== undefined) {
 			deps.hub.emit(sessionId, "expression", { utteranceId, emotion, expression: config.emotionMap[emotion] });
 		}
-		const text = clean.trim();
+		for (const motion of motions) {
+			deps.hub.emit(sessionId, "motion", { utteranceId, motion, speaker: "assistant" });
+		}
+		const text = cleanMotion.trim();
 		if (!text) return;
 		blockLines.push(text);
 		const chars = blockLines.reduce((n, line) => n + line.length, 0);
@@ -312,10 +321,14 @@ async function speakSentence(
 	lines: Array<{ lineId: string; text: string }>,
 ): Promise<void> {
 	const vocabulary = new Set(Object.keys(config.emotionMap));
-	const { clean, emotions } = extractEmotionTags(raw, vocabulary);
+	const { clean: cleanEmotion, emotions } = extractEmotionTags(raw, vocabulary);
+	const { clean, motions } = extractMotionTags(cleanEmotion);
 	const emotion = emotions.at(-1);
 	if (emotion !== undefined) {
 		deps.hub.emit(sessionId, "expression", { utteranceId, emotion, expression: config.emotionMap[emotion] });
+	}
+	for (const motion of motions) {
+		deps.hub.emit(sessionId, "motion", { utteranceId, motion, speaker: "assistant" });
 	}
 	const text = clean.trim();
 	if (!text) return;

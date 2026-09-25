@@ -11,9 +11,10 @@ import type { ConvViewProps } from "@deepseek-ai/dsh-client-ui-conversation/clie
 import { fetchConfig, fetchModelInfo, fetchModelCatalog, fetchModelSelection, openStream, postMessage, postPlayerLine, recognizeUtterance, saveConfig, selectModel, postCameraResult, startAsrUpload, type AsrUpload } from "./api.js";
 import { SpeechEngine } from "./engine.js";
 import { Hud } from "./hud.js";
-import { isCubismCoreLoaded, mountModel, createLive2DStage, DEFAULT_LOOK_PARAMS, type Live2DHandle, type LookParams, type SharedStage } from "./model.js";
+import { isCubismCoreLoaded, mountModel, createLive2DStage, DEFAULT_LOOK_PARAMS, type Live2DHandle, type LookParams, type SharedStage, type BehaviorPose } from "./model.js";
 import { MicCapture, type MicState } from "./mic.js";
 import { GazeTracker, capturePhoto } from "./gaze.js";
+import { BehaviorController, loadBehaviorTuning, saveBehaviorTuning, type BehaviorTuning } from "./behavior.js";
 import { TiltParallax } from "./tilt.js";
 import { SubtitleOverlay, SUBTITLE_TTL_MS, type SubtitleLine } from "./subtitle.js";
 import type { LanguageOption, ModelCatalog, ModelInfo, ModelSelection, Speaker, VoicePreset } from "./types.js";
@@ -105,6 +106,9 @@ export function Live2DView(props: ViewProps) {
 
 	const [presets, setPresets] = useState<VoicePreset[]>([]);
 	const [languages, setLanguages] = useState<LanguageOption[]>([]);
+	const [voiceLanguages, setVoiceLanguages] = useState<LanguageOption[]>([]);
+	const [voiceLang, setVoiceLang] = useState("all");
+	const [idleInterval, setIdleInterval] = useState(20);
 	const [voiceId, setVoiceId] = useState("");
 	const [apiKeyCount, setApiKeyCount] = useState(-1);
 	const [speechPrompt, setSpeechPrompt] = useState("");
@@ -150,6 +154,28 @@ export function Live2DView(props: ViewProps) {
 	const lookParamsRef = useRef<LookParams>(loadLookParams());
 	/** State mirror so the HUD sliders re-render on change. */
 	const [lookParams, setLookParams] = useState<LookParams>(lookParamsRef.current);
+
+	// ── Lifelike gaze behavior (natural mode + idle liveliness) ──
+	// Config-backed master switches; the experiment tuning lives client-side
+	// (localStorage) like lookParams. See behavior.ts for the policy.
+	const [gazeMode, setGazeMode] = useState<"follow" | "natural">("natural");
+	const [idleGaze, setIdleGaze] = useState(true);
+	const behaviorTuningRef = useRef<BehaviorTuning>(loadBehaviorTuning());
+	const [behaviorTuning, setBehaviorTuning] = useState<BehaviorTuning>(behaviorTuningRef.current);
+	const behaviorRef = useRef<BehaviorController | null>(null);
+	/** Perception + conversation signals feeding the behavior controller. */
+	const userLookRef = useRef(false);
+	const userLookRisingRef = useRef(false);
+	const userSpeakingRef = useRef(false);
+	const thinkingRef = useRef(false);
+	const sentenceBoundaryRef = useRef(false);
+	const speechStartRef = useRef(false);
+	const speakingRef = useRef<"assistant" | "player" | null>(null);
+	const dualRef = useRef(false);
+	const gazeModeRef = useRef(gazeMode);
+	gazeModeRef.current = gazeMode;
+	const idleGazeRef = useRef(idleGaze);
+	idleGazeRef.current = idleGaze;
 
 	// LLM model catalog and current selection for the model selector.
 	const [modelCatalog, setModelCatalog] = useState<ModelCatalog | null>(null);
@@ -243,6 +269,10 @@ export function Live2DView(props: ViewProps) {
 			const ready = pendingSubsRef.current.filter(due);
 			if (ready.length === 0) return;
 			pendingSubsRef.current = pendingSubsRef.current.filter((line) => !due(line));
+			// The previous sentence's audio has just ended (this one is
+			// starting) — that is the REAL turn-yield moment for the behavior
+			// controller (SSE arrival would be far ahead of playback).
+			if (ready.some((line) => line.speaker !== "player")) sentenceBoundaryRef.current = true;
 			for (const line of ready) showSubtitle(line.role, line.text, line.lineId, line.at, line.translation, line.speaker);
 		}, 250);
 		return () => window.clearInterval(id);
@@ -250,9 +280,10 @@ export function Live2DView(props: ViewProps) {
 
 	useEffect(() => {
 		fetchConfig(sessionId)
-			.then(({ config, presets, languages: langs }) => {
+			.then(({ config, presets, languages: langs, voiceLanguages: vlangs }) => {
 				setPresets(presets);
 				if (langs) setLanguages(langs);
+				if (vlangs) setVoiceLanguages(vlangs);
 				setVoiceId(config.voiceId);
 				setApiKeyCount(config.apiKeyCount);
 				setSpeechPrompt(config.speechPrompt);
@@ -263,6 +294,9 @@ export function Live2DView(props: ViewProps) {
 				micNsRef.current = config.micNoiseSuppression !== false;
 				setEyeTracking(config.eyeTracking);
 				setGyroParallax(config.gyroParallax);
+				setGazeMode(config.gazeMode ?? "natural");
+				setIdleGaze(config.idleGaze !== false);
+				setIdleInterval(typeof config.idleInterval === "number" ? config.idleInterval : 20);
 				setThirdPerson(config.thirdPerson === true);
 				setPlayerVoiceId(config.playerVoiceId || "");
 				setPlayerPolish(config.playerPolish !== false);
@@ -345,6 +379,19 @@ export function Live2DView(props: ViewProps) {
 		setModelInfo((prev) => (prev ? { ...prev } : prev));
 	}, []);
 
+	// Third-person resting gaze: the two avatars face each other (stage-play
+	// framing — they don't know the viewer exists) instead of staring at the
+	// camera; the AI (right) looks left, the player (left) looks right.
+	const AI_FACE_BIAS = -0.6;
+	const PLAYER_FACE_BIAS = 0.6;
+	// In third-person the avatars must not turn toward the user: zero the
+	// head/body angle gains and keep only the positional parallax so
+	// camera/gyro still add depth. Single-model keeps the user's params.
+	const stageLookParams = (): LookParams =>
+		modelInfo?.thirdPerson === true && Boolean(modelInfo?.player?.url)
+			? { ...lookParamsRef.current, camAngleGain: 0, gyroAngleGain: 0 }
+			: lookParamsRef.current;
+
 	// The stage's shared Pixi application — created once per view (both
 	// avatars mount into it; see sharedStageRef). Destroyed on unmount.
 	useEffect(() => {
@@ -392,7 +439,7 @@ export function Live2DView(props: ViewProps) {
 				logger.warn("WebGL context lost callback triggered, requesting model reload");
 				reloadModel();
 			},
-			dual ? { xFraction: 0.72, scaleGain: 0.8 } : undefined,
+			dual ? { xFraction: 0.72, scaleGain: 0.8, faceBiasX: AI_FACE_BIAS } : undefined,
 			sharedStageRef.current ?? undefined,
 		);
 
@@ -410,7 +457,8 @@ export function Live2DView(props: ViewProps) {
 				modelRef.current = mounted;
 				setStatus("ready");
 				logger.info(`Live2D model ready: ${modelInfo?.name}`);
-				if (gazeRef.current?.active || tiltRef.current?.active) { modelRef.current?.setLook(camLookRef.current, gyroLookRef.current); modelRef.current?.setLookParams(lookParamsRef.current); }
+				if (gazeRef.current?.active || tiltRef.current?.active) modelRef.current?.setLook(camLookRef.current, gyroLookRef.current);
+				modelRef.current?.setLookParams(stageLookParams());
 			})
 			.catch((error) => {
 				if (cancelled) return;
@@ -427,6 +475,7 @@ export function Live2DView(props: ViewProps) {
 				} catch (err) {
 					logger.warn("handle.destroy threw error, safely suppressed", err);
 				}
+				handle = null;
 			}
 			mountPromise.then((mounted) => {
 				try {
@@ -440,7 +489,15 @@ export function Live2DView(props: ViewProps) {
 	// right half — refit without reloading the model.
 	useEffect(() => {
 		const dual = modelInfo?.thirdPerson === true && Boolean(modelInfo?.player?.url);
-		modelRef.current?.setLayout({ xFraction: dual ? 0.72 : 0.5, scaleGain: dual ? 0.8 : 1 });
+		dualRef.current = dual;
+		modelRef.current?.setLayout({ xFraction: dual ? 0.72 : 0.5, scaleGain: dual ? 0.8 : 1, faceBiasX: dual ? AI_FACE_BIAS : 0 });
+		// Clear the player bias on the way out too — its effect cleanup
+		// destroys the model, but until then the layout must not keep a
+		// stale "turned toward a vanished partner" state.
+		playerModelRef.current?.setLayout({ faceBiasX: dual ? PLAYER_FACE_BIAS : 0 });
+		const look = stageLookParams();
+		modelRef.current?.setLookParams(look);
+		playerModelRef.current?.setLookParams(look);
 	}, [modelInfo?.thirdPerson, modelInfo?.player?.url]);
 
 	// The player's own avatar (third-person mode): a second model on the
@@ -464,7 +521,7 @@ export function Live2DView(props: ViewProps) {
 				logger.warn("Player model WebGL context lost, remounting");
 				setModelInfo((prev) => (prev ? { ...prev, player: prev.player ? { ...prev.player } : prev.player } : prev));
 			},
-			{ xFraction: 0.28, scaleGain: 0.8 },
+			{ xFraction: 0.28, scaleGain: 0.8, faceBiasX: PLAYER_FACE_BIAS },
 			stage,
 		);
 		mountPromise
@@ -486,6 +543,10 @@ export function Live2DView(props: ViewProps) {
 					pendingPlayerExpressionRef.current = null;
 					mounted.setExpression(pendingExpression);
 				}
+				// Join the look pipeline (parallax only in third-person) with
+				// the resting gaze already facing the AI avatar.
+				if (gazeRef.current?.active || tiltRef.current?.active) mounted.setLook(camLookRef.current, gyroLookRef.current);
+				mounted.setLookParams(stageLookParams());
 				if (stageRef.current) stageRef.current.dataset.lvPlayer = String(modelInfo?.player?.name ?? "");
 				logger.info(`Player Live2D model ready: ${modelInfo?.player?.name}`);
 			})
@@ -504,6 +565,7 @@ export function Live2DView(props: ViewProps) {
 				} catch (err) {
 					logger.warn("player handle.destroy threw error, safely suppressed", err);
 				}
+				handle = null;
 			}
 			mountPromise
 				.then((mounted) => {
@@ -514,6 +576,89 @@ export function Live2DView(props: ViewProps) {
 				.catch(() => {});
 		};
 	}, [modelInfo?.thirdPerson, modelInfo?.player?.url]);
+
+	// Idle scheduler: replaces the engine's automatic random-idle loop (which
+	// plays successive idle motions back-to-back with no gap, producing
+	// visually janky transitions). While the model is mounted and no audio is
+	// playing, after `idleInterval` seconds of inactivity the scheduler
+	// randomly picks one motion and plays it once; if no idle group exists
+	// (most models ship with an empty default group) we fall back to a
+	// random motion from any group. Each successful play resets the timer.
+	const lastInteractionRef = useRef<number>(Date.now());
+	const lastAudioEndRef = useRef<number>(Date.now());
+	const audioPlayingRef = useRef<boolean>(false);
+	// Track audio playing for the idle gate (independent of speaker).
+	useEffect(() => {
+		const onAudioStart = () => {
+			audioPlayingRef.current = true;
+			lastInteractionRef.current = Date.now();
+		};
+		const onAudioEnd = () => {
+			audioPlayingRef.current = false;
+			lastAudioEndRef.current = Date.now();
+		};
+		const onActivity = () => { lastInteractionRef.current = Date.now(); };
+		window.addEventListener("pointerdown", onActivity, true);
+		window.addEventListener("pointermove", onActivity, true);
+		window.addEventListener("keydown", onActivity, true);
+		// We don't get direct audio hooks here; piggyback on SSE — but
+		// audio-start/end events are already wired to the engine, which sets
+		// these flags via the side-effect below.
+		audioPlayingRef.current = false;
+		return () => {
+			window.removeEventListener("pointerdown", onActivity, true);
+			window.removeEventListener("pointermove", onActivity, true);
+			window.removeEventListener("keydown", onActivity, true);
+			onAudioEnd();
+		};
+	}, []);
+
+	useEffect(() => {
+		let timer: number | undefined;
+		const tick = () => {
+			const interval = Math.max(0, idleInterval);
+			if (interval > 0 && !audioPlayingRef.current && modelRef.current) {
+				const sinceInteraction = (Date.now() - lastInteractionRef.current) / 1000;
+				if (sinceInteraction >= interval) {
+					const defs = modelRef.current.getMotions();
+					// Prefer the "Idle" group; fall back to "" (default for many ripped models).
+					const idleGroup = defs.find((m) => m.group === "Idle") ? "Idle" : "";
+					const idlePool = defs.filter((m) => m.group === idleGroup);
+					if (idlePool.length > 0) {
+						const pick = idlePool[Math.floor(Math.random() * idlePool.length)];
+						void modelRef.current.playMotion(pick);
+					}
+					lastInteractionRef.current = Date.now();
+				}
+			}
+			timer = window.setTimeout(tick, 1000);
+		};
+		timer = window.setTimeout(tick, 1000);
+		return () => {
+			if (timer !== undefined) window.clearTimeout(timer);
+		};
+	}, [idleInterval, modelInfo?.name]);
+
+	// Wire audio start/end to the playing flag.
+	useEffect(() => {
+		const wire = window.setInterval(() => {
+			const speaking = engineRef.current?.currentSpeaker();
+			speakingRef.current = speaking ?? null;
+			if (speaking !== undefined && !audioPlayingRef.current) {
+				audioPlayingRef.current = true;
+				lastInteractionRef.current = Date.now();
+			} else if (speaking === undefined && audioPlayingRef.current) {
+				audioPlayingRef.current = false;
+				lastAudioEndRef.current = Date.now();
+			}
+		}, 250);
+		return () => window.clearInterval(wire);
+	}, []);
+
+	// User-speaking signal for the behavior controller (mic live).
+	useEffect(() => {
+		userSpeakingRef.current = micState === "listening" || micState === "requesting";
+	}, [micState]);
 
 	// Gaze tracking lifecycle: the tracker owns the front camera while the
 	// config says so; normalized gaze (dx/dy in -1..1) lands in camLookRef.
@@ -527,6 +672,11 @@ export function Live2DView(props: ViewProps) {
 		const tracker = new GazeTracker({
 			onGaze: (x, y) => {
 				camLookRef.current = x === null ? null : { dx: (x - 0.5) * 2, dy: (y - 0.5) * 2 };
+			},
+			onUserLook: (looking) => {
+				// Edge + level for the behavior controller ("noticed you" script).
+				userLookRisingRef.current = looking && !userLookRef.current;
+				userLookRef.current = looking;
 			},
 			onState: (state) => {
 				if (state === "starting") {
@@ -580,16 +730,67 @@ export function Live2DView(props: ViewProps) {
 
 	// Unified look loop: while any motion source is active, drive the model
 	// every frame from the latest cam/gyro vectors and current look params.
+	// In lifelike mode (gazeMode=natural, or idleGaze with no camera) the
+	// BehaviorController owns the target — the driver gets a pose payload.
 	useEffect(() => {
+		const controller = new BehaviorController(loadBehaviorTuning(), Math.random);
+		behaviorRef.current = controller;
 		let raf = 0;
 		const tick = () => {
-			if (gazeRef.current?.active || tiltRef.current?.active) {
-				modelRef.current?.setLook(camLookRef.current, gyroLookRef.current);
+			const now = performance.now();
+			const behaviorOn =
+				!dualRef.current &&
+				(gazeModeRef.current === "natural" || idleGazeRef.current) &&
+				modelRef.current != null;
+			if (behaviorOn) {
+				const out = controller.update(
+					{
+						face: camLookRef.current ? { x: (camLookRef.current.dx + 1) / 2, y: (camLookRef.current.dy + 1) / 2 } : null,
+						userLooking: userLookRef.current,
+						userLookRising: userLookRisingRef.current,
+						speaking: speakingRef.current,
+						userSpeaking: userSpeakingRef.current,
+						thinking: thinkingRef.current,
+						sentenceBoundary: sentenceBoundaryRef.current,
+						speechStart: speechStartRef.current,
+					},
+					now,
+				);
+				// Pulses are one-shot: consumed on the frame they were set.
+				userLookRisingRef.current = false;
+				sentenceBoundaryRef.current = false;
+				speechStartRef.current = false;
+				const cam = { dx: (out.x - 0.5) * 2, dy: (out.y - 0.5) * 2 };
+				const pose: BehaviorPose = { nod: out.nod, tilt: out.tilt, turn: out.turn, bodySway: out.bodySway };
+				modelRef.current?.setLook(cam, gyroLookRef.current, pose);
+				playerModelRef.current?.setLook(cam, gyroLookRef.current, pose);
+				// e2e assertion contract: which behavior state is live right now.
+				if (stageRef.current && stageRef.current.dataset.lvGaze !== out.state) {
+					stageRef.current.dataset.lvGaze = out.state;
+				}
+			} else {
+				// Legacy path — always dispatch so the model glides home even
+				// when NO source is active (otherwise the last behavior pose
+				// sticks forever after the master switch is turned off).
+				modelRef.current?.setLook(
+					gazeRef.current?.active ? camLookRef.current : null,
+					tiltRef.current?.active ? gyroLookRef.current : null,
+					null,
+				);
+				playerModelRef.current?.setLook(
+					gazeRef.current?.active ? camLookRef.current : null,
+					tiltRef.current?.active ? gyroLookRef.current : null,
+					null,
+				);
+				if (stageRef.current?.dataset.lvGaze) delete stageRef.current.dataset.lvGaze;
 			}
 			raf = window.requestAnimationFrame(tick);
 		};
 		raf = window.requestAnimationFrame(tick);
-		return () => window.cancelAnimationFrame(raf);
+		return () => {
+			window.cancelAnimationFrame(raf);
+			behaviorRef.current = null;
+		};
 	}, []);
 
 	// SSE stream
@@ -609,6 +810,20 @@ export function Live2DView(props: ViewProps) {
 					return;
 				}
 				modelRef.current?.setExpression(expression);
+			},
+			onMotion: ({ motion: motionName, utteranceId, speaker }) => {
+				const isPlayer = speaker === "player";
+				const active = isPlayer ? activePlayerUtterance : activeAssistantUtterance;
+				if (utteranceId && utteranceId !== active.current) return;
+				const target = isPlayer ? playerModelRef.current : modelRef.current;
+				if (!target) return;
+				const defs = target.getMotions();
+				const def = defs.find((m) => m.name === motionName);
+				if (!def) {
+					logger.warn(`motion ${motionName} not found on model`);
+					return;
+				}
+				void target.playMotion(def);
 			},
 			onSpeechStart: ({ utteranceId, speaker }) => {
 				const isPlayer = speaker === "player";
@@ -630,6 +845,12 @@ export function Live2DView(props: ViewProps) {
 						return line.speaker === "player"; // an assistant utterance never kills the player's queued line
 					});
 				}
+				if (!isPlayer) {
+					// The assistant started talking: generation is over, and a
+					// turn-start aversion is the natural first beat.
+					thinkingRef.current = false;
+					speechStartRef.current = true;
+				}
 				void engineRef.current?.resume();
 			},
 			onSpeechEnd: ({ utteranceId, reason, speaker }) => {
@@ -647,7 +868,11 @@ export function Live2DView(props: ViewProps) {
 				if (utteranceId !== active.current) return;
 				engineRef.current?.enqueueBase64(b64, seq, speaker ?? "assistant");
 			},
-			onSubtitle: ({ role, text, lineId, audioSeq, utteranceId, speaker }) => pushSubtitle(role, text, lineId, audioSeq, utteranceId, speaker),
+			onSubtitle: ({ role, text, lineId, audioSeq, utteranceId, speaker }) => {
+				// Turn-yield pulse fires at actual audio playback (see the
+				// voice–subtitle sync interval), not on SSE arrival.
+				pushSubtitle(role, text, lineId, audioSeq, utteranceId, speaker);
+			},
 			onSubtitleTranslation: ({ lineId, text }) => attachTranslation(lineId, text),
 			onCameraCapture: ({ requestId }) => {
 				void (async () => {
@@ -916,11 +1141,58 @@ export function Live2DView(props: ViewProps) {
 		}
 	};
 
+	// ── Lifelike gaze behavior switches (config-backed) ──
+	const toggleGazeMode = async () => {
+		const next: "follow" | "natural" = gazeMode === "natural" ? "follow" : "natural";
+		try {
+			const { config } = await saveConfig({ gazeMode: next });
+			setGazeMode(config.gazeMode);
+			showToast(next === "natural" ? "自然视线已开启" : "已切换为跟随模式（持续盯着用户）");
+		} catch (error) {
+			showToast(`切换失败：${String((error as Error)?.message ?? error)}`);
+		}
+	};
+
+	const toggleIdleGaze = async () => {
+		const next = !idleGaze;
+		try {
+			const { config } = await saveConfig({ idleGaze: next });
+			setIdleGaze(config.idleGaze);
+			if (!config.idleGaze) showToast("待机眼神微动已关闭");
+		} catch (error) {
+			showToast(`切换失败：${String((error as Error)?.message ?? error)}`);
+		}
+	};
+
+	/** Master switch: one tap turns ALL new lively behavior off (back to legacy). */
+	const toggleLivelyGaze = async () => {
+		const next = !(gazeMode === "natural" || idleGaze);
+		try {
+			const { config } = await saveConfig({ gazeMode: next ? "natural" : "follow", idleGaze: next });
+			setGazeMode(config.gazeMode);
+			setIdleGaze(config.idleGaze);
+			showToast(next ? "自然行为已开启" : "自然行为已全部关闭（回到旧行为）");
+		} catch (error) {
+			showToast(`切换失败：${String((error as Error)?.message ?? error)}`);
+		}
+	};
+
+	/** Live-update behavior experiment tuning: ref + state + controller, no server round-trip. */
+	const changeBehaviorTuning = (patch: Partial<BehaviorTuning>) => {
+		const next = { ...behaviorTuningRef.current, ...patch };
+		behaviorTuningRef.current = next;
+		setBehaviorTuning(next);
+		saveBehaviorTuning(next);
+		behaviorRef.current?.setTuning(patch);
+	};
+
 	/** Live-update look params: ref + state + model, no round-trip to the server. */
 	const changeLookParams = (patch: Partial<LookParams>) => {
 		lookParamsRef.current = { ...lookParamsRef.current, ...patch };
 		setLookParams(lookParamsRef.current);
-		modelRef.current?.setLookParams(lookParamsRef.current);
+		const look = stageLookParams();
+		modelRef.current?.setLookParams(look);
+		playerModelRef.current?.setLookParams(look);
 		try {
 			localStorage.setItem(LOOK_PARAMS_STORE, JSON.stringify(lookParamsRef.current));
 		} catch {
@@ -1029,6 +1301,13 @@ export function Live2DView(props: ViewProps) {
 				}
 			}
 			engineRef.current?.unmuzzle();
+			// "Thinking" window for the behavior controller: starts at submit,
+			// ends when the assistant's speech-start arrives (or 15s timeout —
+			// covers TTS failure with no reply at all).
+			thinkingRef.current = true;
+			window.setTimeout(() => {
+				thinkingRef.current = false;
+			}, 15000);
 			return true;
 		} catch (error) {
 			showToast(`发送失败：${String((error as Error)?.message ?? error)}`);
@@ -1312,14 +1591,36 @@ export function Live2DView(props: ViewProps) {
 				onToggleEyeTracking={() => void toggleEyeTracking()}
 				gyroParallax={gyroParallax}
 				onToggleGyroParallax={() => void toggleGyroParallax()}
+				gazeMode={gazeMode}
+				idleGaze={idleGaze}
+				behaviorTuning={behaviorTuning}
+				onToggleGazeMode={() => void toggleGazeMode()}
+				onToggleIdleGaze={() => void toggleIdleGaze()}
+				onToggleLivelyGaze={() => void toggleLivelyGaze()}
+				onBehaviorTuningChange={changeBehaviorTuning}
 				lookParams={lookParams}
 				onLookParamsChange={changeLookParams}
 				presets={presets}
 				languages={languages}
+				voiceLanguages={voiceLanguages}
+				currentVoiceLang={voiceLang}
+				onPickVoiceLang={(id) => setVoiceLang(id)}
 				currentVoiceId={voiceId}
 				currentSttLanguage={sttLanguage}
 				models={modelInfo?.models ?? []}
 				currentModel={modelInfo?.current}
+				currentModelGroup={(modelInfo?.models ?? []).find((m) => m.name === modelInfo?.current)?.group ?? ""}
+				onPickModelGroup={(id) => {
+					const first = (modelInfo?.models ?? []).find((m) => (m.group ?? "") === id);
+					if (first) void pickModel(first.name);
+				}}
+				idleInterval={idleInterval}
+				onChangeIdleInterval={(value) => {
+					setIdleInterval(value);
+					void saveConfig({ idleInterval: value });
+				}}
+				motions={modelInfo?.motions ?? []}
+				onPlayMotion={(motion) => void modelRef.current?.playMotion(motion)}
 				onPickModel={(name) => void pickModel(name)}
 				thirdPerson={thirdPerson}
 				playerPolish={playerPolish}

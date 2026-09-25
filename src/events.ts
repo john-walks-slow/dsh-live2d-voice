@@ -11,6 +11,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 
 export type SseEventName =
 	| "expression"
+	| "motion"
 	| "speech-start"
 	| "speech-end"
 	| "audio-start"

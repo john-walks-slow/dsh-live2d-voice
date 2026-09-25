@@ -56,10 +56,32 @@ export const LOOK_PRESETS: ReadonlyArray<{ id: string; label: string; params: Lo
 	},
 ];
 
+/** Behavior-pose intents from the gaze-behavior controller (-1..1 each). */
+export interface BehaviorPose {
+	nod: number;
+	tilt: number;
+	turn: number;
+	bodySway: number;
+}
+
 export interface Live2DHandle {
-	setExpression(expression: number | string): void;
+	setExpression(expression: number | string): void;	/**
+	 * Play a motion defined in the model's settings file. Returns true on
+	 * success, false if the motion could not be started (missing group,
+	 * out-of-range index, etc.).
+	 */
+	playMotion(motion: { name: string; group: string; index: number }): Promise<boolean>;
+	/** Play a random motion from the named group (used by the idle scheduler). */
+	playRandomMotion(group: string, priority?: "idle" | "normal" | "force"): Promise<boolean>;
+	/** Read the motion catalog baked into the loaded model. */
+	getMotions(): { name: string; group: string; index: number }[];
 	getEyePosition(): { x: number; y: number };
-	setLook(camera: { dx: number; dy: number } | null, gyro: { dx: number; dy: number } | null): void;
+	/**
+	 * Drive the look: camera gaze target + gyro parallax, plus optional
+	 * behavior-pose intents (nod/tilt/turn/body-sway in -1..1). Omit `pose`
+	 * to keep the legacy camera/gyro-only path.
+	 */
+	setLook(camera: { dx: number; dy: number } | null, gyro: { dx: number; dy: number } | null, pose?: BehaviorPose | null): void;
 	setLookParams(params: Partial<LookParams>): void;
 	/**
 	 * Update the stage layout (third-person mode shifts the two avatars
@@ -78,6 +100,8 @@ export interface Live2DHandle {
 export interface StageLayout {
 	xFraction: number;
 	scaleGain: number;
+	/** Resting horizontal gaze bias (-1..1): 0 = face the viewer, negative = look left. Third-person gives the two avatars opposing biases so they face each other. */
+	faceBiasX: number;
 }
 
 export function isCubismCoreLoaded(): boolean {
@@ -127,7 +151,7 @@ export async function mountModel(
 	// destroy never touches the application or canvas.
 	const app = shared?.app ?? createLive2DStage(container).app;
 	const canvas = app.view as unknown as HTMLCanvasElement;
-	const stageLayout: StageLayout = { xFraction: 0.5, scaleGain: 1, ...layout };
+	const stageLayout: StageLayout = { xFraction: 0.5, scaleGain: 1, faceBiasX: 0, ...layout };
 
 	const onWebglLost = (e: Event) => {
 		e.preventDefault();
@@ -153,6 +177,7 @@ export async function mountModel(
 		scale: { set(x?: number, y?: number): void };
 		position: { set(x: number, y: number): void };
 		anchor: { set(x: number, y: number): void };
+		parent?: { removeChild(child: never): unknown } | null;
 		internalModel: {
 			originalWidth: number;
 			originalHeight: number;
@@ -189,23 +214,73 @@ export async function mountModel(
 	// samples make pan/angle visibly jitter. ~0.18/frame ≈ 200ms to settle.
 	let camSm = { dx: 0, dy: 0 };
 	let gyroSm = { dx: 0, dy: 0 };
-	const LOOK_LERP = 0.18;
+	// Lifelike gaze driver state: eyes lead, head follows with lag; amplitude
+	// split (small shifts = eyes only, big shifts bring head & body in);
+	// pose channels (nod/tilt/turn/body-sway) from the behavior controller;
+	// pink-noise micro jitter so a fixating eye is never dead-still.
+	let camTarget = { dx: 0, dy: 0 };
+	let headSm = { dx: 0, dy: 0 };
+	let bodySm = { dx: 0, dy: 0 };
+	let poseInput: { nod: number; tilt: number; turn: number; bodySway: number } | null = null;
+	let poseSm = { nod: 0, tilt: 0, turn: 0, bodySway: 0 };
+	let breathPhase = Math.random() * Math.PI * 2;
+	const SACCADE_LERP = 0.5, SETTLE_LERP = 0.12;
+	const HEAD_LERP = 0.09, POSE_LERP = 0.14;
+	/** Amplitude split thresholds in -1..1 look space (≈ screen fractions). */
+	const SPLIT_SMALL = 0.15, SPLIT_LARGE = 0.55;
+	const HEAD_RATIO = 0.6, BODY_RATIO = 0.22;
+	/** Pink-noise micro jitter amplitude on the eye-ball params. */
+	const EYE_JITTER = 0.05;
+	const NOD_DEG = 3, TILT_DEG = 5, TURN_DEG = 5, BODY_SWAY_DEG = 2.2, BREATH_DEG = 0.7;
+	// Voss-McCartney pink noise (16 rows of uniform white) — pure arithmetic.
+	const pinkRows = new Float32Array(16);
+	let pinkSum = 0;
+	const pinkNext = () => {
+		const white = Math.random() * 2 - 1;
+		const idx = Math.floor(Math.random() * 16);
+		pinkSum += white - pinkRows[idx];
+		pinkRows[idx] = white;
+		return pinkSum / 16;
+	};
+	const clamp01 = (v: number) => Math.max(0, Math.min(1, v));
 
 	/** Advance the smoothed vectors one frame toward their targets. */
 	const smoothLook = () => {
 		const tx = camInput ?? { dx: 0, dy: 0 };
 		const ty = gyroInput ?? { dx: 0, dy: 0 };
-		camSm.dx += (tx.dx - camSm.dx) * LOOK_LERP;
-		camSm.dy += (tx.dy - camSm.dy) * LOOK_LERP;
-		gyroSm.dx += (ty.dx - gyroSm.dx) * LOOK_LERP;
-		gyroSm.dy += (ty.dy - gyroSm.dy) * LOOK_LERP;
+		// Saccade-aware rate: keep the fast rate while the EYE is still far
+		// from the target (residual distance, not target-to-target delta —
+		// the latter would brake 1 frame after every jump), then settle slow.
+		const dist = Math.hypot(tx.dx - camSm.dx, tx.dy - camSm.dy);
+		camTarget = tx;
+		const rate = dist > 0.1 ? SACCADE_LERP : SETTLE_LERP;
+		camSm.dx += (tx.dx - camSm.dx) * rate;
+		camSm.dy += (tx.dy - camSm.dy) * rate;
+		gyroSm.dx += (ty.dx - gyroSm.dx) * SETTLE_LERP;
+		gyroSm.dy += (ty.dy - gyroSm.dy) * SETTLE_LERP;
+		// Head trails the eyes (eyes lead, head follows); the body lags the
+		// head further (the two-stage inertia chain).
+		headSm.dx += (camSm.dx - headSm.dx) * HEAD_LERP;
+		headSm.dy += (camSm.dy - headSm.dy) * HEAD_LERP;
+		bodySm.dx += (headSm.dx - bodySm.dx) * 0.05;
+		bodySm.dy += (headSm.dy - bodySm.dy) * 0.05;
+		// Pose channels (nod fast, tilt/turn/sway slow).
+		const p = poseInput ?? { nod: 0, tilt: 0, turn: 0, bodySway: 0 };
+		poseSm.nod += (p.nod - poseSm.nod) * 0.25;
+		poseSm.tilt += (p.tilt - poseSm.tilt) * POSE_LERP;
+		poseSm.turn += (p.turn - poseSm.turn) * POSE_LERP;
+		poseSm.bodySway += (p.bodySway - poseSm.bodySway) * 0.07;
+		breathPhase = (breathPhase + 0.035) % (Math.PI * 2);
 	};
 
 	/** True while a look source is active or the smoothed vectors have not settled back to zero. */
 	const lookSettling = () =>
 		camInput !== null ||
 		gyroInput !== null ||
-		Math.abs(camSm.dx) + Math.abs(camSm.dy) + Math.abs(gyroSm.dx) + Math.abs(gyroSm.dy) > 0.004;
+		poseInput !== null ||
+		stageLayout.faceBiasX !== 0 ||
+		Math.abs(camSm.dx) + Math.abs(camSm.dy) + Math.abs(gyroSm.dx) + Math.abs(gyroSm.dy) +
+			Math.abs(poseSm.nod) + Math.abs(poseSm.tilt) + Math.abs(poseSm.turn) + Math.abs(poseSm.bodySway) > 0.004;
 	let lookParams: LookParams = { ...DEFAULT_LOOK_PARAMS };
 	let baseX = 0;
 	let baseY = 0;
@@ -221,6 +296,12 @@ export async function mountModel(
 		const w = container.clientWidth || 1;
 		const h = container.clientHeight || 1;
 		model.position.set(baseX + userPanX - lookX * lookParams.panRange * w, baseY + userPanY - lookY * lookParams.panRange * h);
+		// Gesture/zoom state as a DOM observable — the e2e suite asserts
+		// against it (same convention as dataset.lvPlayer).
+		// e2e assertion contract; skip the DOM write when unchanged — dual
+		// mode keeps lookSettling() true, so applyTransform runs every frame.
+		const next = `${Math.round(userPanX)},${Math.round(userPanY)},${userScale.toFixed(3)}`;
+		if (container.dataset.lvTransform !== next) container.dataset.lvTransform = next;
 	};
 
 	const fit = () => {
@@ -243,7 +324,11 @@ export async function mountModel(
 	// view of the internal model.
 	const internal = model.internalModel as unknown as {
 		coreModel: { setParameterValueById?(id: string, value: number): void; setParamFloat?(id: string, value: number): void };
-		motionManager: { lipSyncIds?: string[] };
+		motionManager: {
+			lipSyncIds?: string[];
+			/** Framework motion queue — isFinished() === false while a motion plays (drives the look/pose yield). */
+			queueManager?: { isFinished?: () => boolean };
+		};
 		on(event: "beforeModelUpdate", listener: () => void): unknown;
 	};
 	// Cubism 2 uses uppercase PARAM_* ids, Cubism 3+ uses camelCase — the
@@ -265,6 +350,10 @@ export async function mountModel(
 		const value = getMouth();
 		const applied = value > 0.002 ? value : 0;
 		for (const id of lipSyncIds) setParam(id, applied);
+		// A full-body motion (idle/gesture) owns the head/body pose — the
+		// look/pose driver yields while one plays so it doesn't fight the
+		// motion's own animation (mouth lip-sync keeps running).
+		if (internal.motionManager.queueManager?.isFinished?.() === false) return;
 		// Unified look: camera + gyro both contribute to head/body/eye angles.
 		// Runs while any source is live AND while the smoothed vectors ease
 		// back to zero after both stop, so tracking loss glides home.
@@ -273,18 +362,35 @@ export async function mountModel(
 			const camA = camInput !== null ? lookParams.camAngleGain : 0;
 			const gyroA = gyroInput !== null ? lookParams.gyroAngleGain : 0;
 			const total = camA + gyroA || 1;
-			const lx = (camSm.dx * camA + gyroSm.dx * gyroA) / total;
-			const ly = (camSm.dy * camA + gyroSm.dy * gyroA) / total;
+			const parallaxX = (camSm.dx * camA + gyroSm.dx * gyroA) / total;
+			const parallaxY = (camSm.dy * camA + gyroSm.dy * gyroA) / total;
+			// Eyes lead, head follows, body trails: the head/body angles are
+			// driven by the lagged headSm/bodySm channels, not the eye vector.
+			const headX = (headSm.dx * camA + gyroSm.dx * gyroA) / total;
+			const headY = (headSm.dy * camA + gyroSm.dy * gyroA) / total;
+			const bodyX = (bodySm.dx * camA + gyroSm.dx * gyroA) / total;
+			const bodyY = (bodySm.dy * camA + gyroSm.dy * gyroA) / total;
+			// Amplitude split (eyes lead, head follows, body only on big
+			// shifts): small offsets move only the eyeballs; the head joins
+			// with headRatio as the shift grows; the body trails behind.
+			const mag = Math.hypot(parallaxX, parallaxY);
+			const headGain = clamp01((mag - SPLIT_SMALL) / (SPLIT_LARGE - SPLIT_SMALL));
 			const ar = lookParams.angleRange;
 			const rr = lookParams.rollRange;
+			// faceBiasX turns head/body/eyes toward the other avatar; roll
+			// (angleZ) stays unbiased — a constant head tilt would look off.
+			const bias = stageLayout.faceBiasX;
+			// Subtle breath-synced head sway — the SDK drives ParamBreath, we
+			// mirror a tiny bit of its phase into the head angles.
+			const breath = Math.sin(breathPhase) * BREATH_DEG;
 			const angles: Array<[string, number]> = [
-				[LOOK_IDS.angleX, lx * ar],
-				[LOOK_IDS.angleY, ly * ar],
-				[LOOK_IDS.angleZ, lx * rr],
-				[LOOK_IDS.bodyX, lx * ar * 0.5],
-				[LOOK_IDS.bodyY, ly * ar * 0.5],
-				[LOOK_IDS.eyeX, lx],
-				[LOOK_IDS.eyeY, ly],
+				[LOOK_IDS.angleX, (bias + headX * headGain * HEAD_RATIO) * ar + poseSm.turn * TURN_DEG + breath],
+				[LOOK_IDS.angleY, headY * headGain * HEAD_RATIO * ar - poseSm.nod * NOD_DEG + breath * 0.5],
+				[LOOK_IDS.angleZ, parallaxX * rr + poseSm.tilt * TILT_DEG],
+				[LOOK_IDS.bodyX, (bias + bodyX * headGain * BODY_RATIO) * ar + poseSm.bodySway * BODY_SWAY_DEG],
+				[LOOK_IDS.bodyY, bodyY * headGain * BODY_RATIO * ar],
+				[LOOK_IDS.eyeX, clamp01((bias + parallaxX + pinkNext() * EYE_JITTER) * 0.5 + 0.5) * 2 - 1],
+				[LOOK_IDS.eyeY, clamp01((parallaxY + pinkNext() * EYE_JITTER) * 0.5 + 0.5) * 2 - 1],
 			];
 			for (const [id, v] of angles) setParam(id, v);
 			applyTransform();
@@ -430,22 +536,82 @@ export async function mountModel(
 		applyTransform();
 	};
 
-	// Shared-mode models are pure visuals (the player avatar): the owner
-	// model's listeners already handle all interaction on the stage.
-	if (!shared) {
-		stage.addEventListener("pointerdown", onPointerDown);
-		stage.addEventListener("pointermove", onPointerMove);
-		stage.addEventListener("pointerup", onPointerUp);
-		stage.addEventListener("pointercancel", onPointerUp);
-		stage.addEventListener("wheel", onWheel, { passive: false });
-		stage.addEventListener("dblclick", onDblClick);
-	}
+	// Every mounted model listens on the stage and keeps its own gesture
+	// state: with a single avatar this is the classic pan/pinch; on a shared
+	// two-avatar stage both models react in lockstep, so a drag or pinch
+	// moves and zooms the whole scene. (Gating this on !shared left NO
+	// listeners attached once every mount went through the shared stage.)
+	stage.addEventListener("pointerdown", onPointerDown);
+	stage.addEventListener("pointermove", onPointerMove);
+	stage.addEventListener("pointerup", onPointerUp);
+	stage.addEventListener("pointercancel", onPointerUp);
+	stage.addEventListener("wheel", onWheel, { passive: false });
+	stage.addEventListener("dblclick", onDblClick);
+
+	// Cache the motion catalog at mount time — internalModel.motionManager.definitions
+	// is the source of truth but re-reading it on every call is wasteful.
+	const motionCatalog: { name: string; group: string; index: number }[] = (() => {
+		const defs = (model.internalModel as unknown as {
+			motionManager: { definitions?: Record<string, unknown[]> };
+		}).motionManager.definitions ?? {};
+		const seen = new Set<string>();
+		const out: { name: string; group: string; index: number }[] = [];
+		for (const [group, list] of Object.entries(defs)) {
+			if (!Array.isArray(list)) continue;
+			list.forEach((item, index) => {
+				const file = (item as { File?: string; file?: string })?.File || (item as { File?: string; file?: string })?.file || "";
+				const fileBase = file ? file.split("/").pop() || "" : "";
+				let base = fileBase.replace(/\.(motion3|exp3|mtn)\.json$|\.mtn$/, "");
+				if (!base) base = group ? `${group}_${index}` : `motion_${index}`;
+				let name = base;
+				if (seen.has(name)) name = `${base}_${index}`;
+				seen.add(name);
+				out.push({ name, group, index });
+			});
+		}
+		return out;
+	})();
+
+	const priorityValue = (priority?: "idle" | "normal" | "force"): number => {
+		// pixi-live2d-display MotionPriority enum (NONE=0, IDLE=1, NORMAL=2, FORCE=3)
+		switch (priority) {
+			case "normal": return 2;
+			case "force": return 3;
+			case "idle":
+			default: return 1;
+		}
+	};
 
 	return {
 		setExpression(expression) {
 			void model.expression(expression).catch((error) => {
 				logger.warn(`expression ${String(expression)} failed`, error);
 			});
+		},
+		async playMotion(motion) {
+			try {
+				return await (model as unknown as {
+					motion(group: string, index?: number, priority?: number): Promise<boolean>;
+				}).motion(motion.group, motion.index, 3);
+			} catch (error) {
+				logger.warn(`motion ${motion.name} failed`, error);
+				return false;
+			}
+		},
+		async playRandomMotion(group, priority) {
+			try {
+				const fn = (model as unknown as {
+					startRandomMotion: (g: string, p?: number) => Promise<boolean>;
+				}).startRandomMotion;
+				if (typeof fn !== "function") return false;
+				return await fn(group, priorityValue(priority));
+			} catch (error) {
+				logger.warn(`random motion ${group} failed`, error);
+				return false;
+			}
+		},
+		getMotions() {
+			return motionCatalog.slice();
 		},
 		getEyePosition() {
 			const width = container.clientWidth || 1;
@@ -462,9 +628,10 @@ export async function mountModel(
 				y: Math.round(Math.max(20, Math.min(height - 20, eyeY))),
 			};
 		},
-		setLook(cam, gyro) {
+		setLook(cam, gyro, pose) {
 			camInput = cam;
 			gyroInput = gyro;
+			poseInput = pose ?? null;
 			// When both stop, lookSettling() keeps easing the smoothed
 			// vectors home — no instant snap here.
 		},
@@ -479,15 +646,18 @@ export async function mountModel(
 		destroy() {
 			canvas.removeEventListener("webglcontextlost", onWebglLost);
 			canvas.removeEventListener("webglcontextrestored", onWebglRestored);
-			if (!shared) {
-				stage.removeEventListener("pointerdown", onPointerDown);
-				stage.removeEventListener("pointermove", onPointerMove);
-				stage.removeEventListener("pointerup", onPointerUp);
-				stage.removeEventListener("pointercancel", onPointerUp);
-				stage.removeEventListener("wheel", onWheel);
-				stage.removeEventListener("dblclick", onDblClick);
-			}
+			stage.removeEventListener("pointerdown", onPointerDown);
+			stage.removeEventListener("pointermove", onPointerMove);
+			stage.removeEventListener("pointerup", onPointerUp);
+			stage.removeEventListener("pointercancel", onPointerUp);
+			stage.removeEventListener("wheel", onWheel);
+			stage.removeEventListener("dblclick", onDblClick);
 			observer.disconnect();
+			try {
+				if (model.parent) {
+					model.parent.removeChild(model as never);
+				}
+			} catch {}
 			try {
 				model.destroy();
 			} catch (err) {

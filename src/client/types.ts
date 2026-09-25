@@ -25,7 +25,13 @@ export interface PublicConfig {
 	/** Per-sentence subtitles/TTS (on by default); off → paragraph chunks. */
 	sentenceSubtitles: boolean;
 	speechPrompt: string;
+	/** Seconds between automatic random idle motions (0 = off). */
+	idleInterval: number;
 	eyeTracking: boolean;
+	/** Gaze behavior mode: "follow" = rigid camera tracking (legacy), "natural" = lifelike gaze/head/body behavior. */
+	gazeMode: "follow" | "natural";
+	/** Idle liveliness without camera: micro eye/head/body motion even when eyeTracking is off. */
+	idleGaze: boolean;
 	gyroParallax: boolean;
 	emotionMap: Record<string, number | string>;
 	/** Third-person mode: the player avatar speaks the (polished) user line first. */
@@ -52,6 +58,7 @@ export interface VoicePreset {
 	id: string;
 	label: string;
 	voiceId: string;
+	lang?: string;
 }
 
 export interface LanguageOption {
@@ -73,12 +80,14 @@ export interface ModelInfo {
 	groupLabel?: string;
 	/** The effective selection (equals name). */
 	current?: string;
+	/** Motion definitions available on the selected model. */
+	motions?: ModelMotion[];
 	/** The full catalog when modelPath is a directory of models. */
 	models?: { name: string; label?: string; kind?: "moc2" | "moc3"; group?: string; groupLabel?: string; url: string }[];
 	/** Third-person mode on (the stage hosts a second, player avatar). */
 	thirdPerson?: boolean;
 	/** The player avatar's model when third-person is on and a selection matches. */
-	player?: { name: string; label?: string; kind?: "moc2" | "moc3"; url: string };
+	player?: { name: string; label?: string; kind?: "moc2" | "moc3"; url: string; motions?: ModelMotion[] };
 }
 
 export interface ExpressionPayload {
@@ -86,6 +95,20 @@ export interface ExpressionPayload {
 	emotion: string;
 	expression: number | string;
 	/** Which avatar the expression drives (absent = assistant). */
+	speaker?: Speaker;
+}
+
+/** One motion definition extracted from a model's settings file. */
+export interface ModelMotion {
+	name: string;
+	group: string;
+	index: number;
+}
+
+export interface MotionPayload {
+	utteranceId?: string;
+	motion: string;
+	/** Which avatar plays the motion (absent = assistant). */
 	speaker?: Speaker;
 }
 
@@ -186,6 +209,7 @@ export interface ModelCatalog {
 
 export interface StreamHandlers {
 	onExpression?: (payload: ExpressionPayload) => void;
+	onMotion?: (payload: MotionPayload) => void;
 	onSpeechStart?: (payload: { utteranceId: string; speaker?: Speaker }) => void;
 	onSpeechEnd?: (payload: SpeechEndPayload) => void;
 	onAudioStart?: (payload: AudioStartPayload) => void;

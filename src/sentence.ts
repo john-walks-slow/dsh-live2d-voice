@@ -24,6 +24,17 @@ export function extractEmotionTags(text: string, vocabulary: ReadonlySet<string>
 	return { clean, emotions };
 }
 
+/** Strip motion tags [motion:name] from a text and collect them in order. */
+export function extractMotionTags(text: string): { clean: string; motions: string[] } {
+	if (!text.includes("[motion:")) return { clean: text, motions: [] };
+	const motions: string[] = [];
+	const clean = text.replace(/\[motion:([a-zA-Z0-9_-]+)\]/gi, (_whole, tag: string) => {
+		motions.push(tag);
+		return "";
+	});
+	return { clean, motions };
+}
+
 /**
  * Accumulates text deltas and yields complete sentences.
  * `push` returns every sentence that became complete; `flush` drains the

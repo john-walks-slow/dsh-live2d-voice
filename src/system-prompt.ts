@@ -25,9 +25,10 @@
  * session completes (see speech.ts's tap), so it does not linger forever.
  */
 
+import { join } from "node:path";
 import type { Context } from "@deepseek-ai/cordis";
 import type { SseHub } from "./events.js";
-import { speechLanguageInstruction, type PluginConfig } from "./config.js";
+import { speechLanguageInstruction, resolveModelCatalog, resolveModelSelection, extractModelMotions, type PluginConfig } from "./config.js";
 
 export type SessionSpeechMode = "live" | "exited";
 
@@ -97,6 +98,25 @@ function liveSection(config: PluginConfig): string {
 		`  ${emotions.map((emotion) => `[${emotion}]`).join(" ")}`,
 		"- 标签只用于控制角色表情，不会被朗读；没有情绪变化时省略标签即可。",
 	];
+
+	// Dynamically inject motion tags available for the current model.
+	try {
+		const catalog = resolveModelCatalog(config);
+		const selection = resolveModelSelection(config, catalog);
+		if (selection && config.modelPath) {
+			const motions = extractModelMotions(join(config.modelPath, selection.relative));
+			if (motions.length > 0) {
+				const uniqueNames = Array.from(new Set(motions.map((m) => m.name)));
+				lines.push(
+					"- 你还可以控制角色的身体动作，在需要表达动作的句子中插入动作标签（标签只用于触发角色动画，不会被朗读，适度使用）：",
+					`  ${uniqueNames.map((name) => `[motion:${name}]`).join(" ")}`
+				);
+			}
+		}
+	} catch {
+		// graceful fallback if motion inspection fails
+	}
+
 	if (config.thirdPerson) {
 		lines.push("- 当前为第三人称模式：用户的消息由其角色化身说出（可能已经过润色或翻译），请把它当作角色扮演中对方的台词来回应。");
 	}

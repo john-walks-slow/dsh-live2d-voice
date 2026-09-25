@@ -9,6 +9,7 @@ import type { MicState } from "./mic.js";
 import type { LanguageOption, VoicePreset } from "./types.js";
 import type { ModelCatalog, ModelProviderGroup, ModelSelection } from "./types.js";
 import type { LookParams } from "./model.js";
+import type { BehaviorTuning } from "./behavior.js";
 import { LOOK_PRESETS } from "./model.js";
 import {
 	IconMic,
@@ -42,11 +43,16 @@ export interface HudProps {
 	asrConfigured: boolean;
 	presets: VoicePreset[];
 	languages: LanguageOption[];
+	voiceLanguages: LanguageOption[];
+	currentVoiceLang: string;
+	onPickVoiceLang: (id: string) => void;
 	currentVoiceId: string;
 	currentSttLanguage: string;
 	/** Live2D model catalog */
 	models: { name: string; label?: string; kind?: "moc2" | "moc3"; group?: string; groupLabel?: string; url: string }[];
 	currentModel?: string;
+	currentModelGroup: string;
+	onPickModelGroup: (id: string) => void;
 	/** Third-person mode: the player's own avatar + voice speaks the user's line first. */
 	thirdPerson: boolean;
 	/** Polish/translate the user's input into the player persona's line. */
@@ -59,10 +65,26 @@ export interface HudProps {
 	/** The player avatar's current voice preset id. */
 	currentPlayerVoiceId: string;
 	onPickPlayerVoice: (preset: VoicePreset) => void;
+	/** Idle motion trigger interval (seconds). */
+	idleInterval: number;
+	onChangeIdleInterval: (value: number) => void;
+	/** Motion definitions available on the current AI model. */
+	motions: { name: string; group: string; index: number }[];
+	/** Callback invoked when the user clicks a motion debug button. */
+	onPlayMotion: (motion: { name: string; group: string; index: number }) => void;
 	apiKeyCount: number;
 	speechPrompt: string;
 	eyeTracking: boolean;
 	gyroParallax: boolean;
+	/** Lifelike gaze behavior: config-backed mode + idle liveliness + experiment tuning. */
+	gazeMode: "follow" | "natural";
+	idleGaze: boolean;
+	behaviorTuning: BehaviorTuning;
+	onToggleGazeMode: () => void;
+	onToggleIdleGaze: () => void;
+	/** Master switch: turns the whole new lively behavior off/on at once. */
+	onToggleLivelyGaze: () => void;
+	onBehaviorTuningChange: (patch: Partial<BehaviorTuning>) => void;
 	/** Current look parameters (pan/angle gains). */
 	lookParams: LookParams;
 	/** Called when a look parameter changes (live feedback). */
@@ -136,11 +158,68 @@ function formatLookValue(key: keyof LookParams, value: number): string {
 	return String(Math.round(value * 100) / 100);
 }
 
+/** Behavior experiment sliders, grouped (all fields of BehaviorTuning). */
+const BEHAVIOR_SLIDER_GROUPS: ReadonlyArray<{
+	group: string;
+	sliders: ReadonlyArray<{ key: keyof BehaviorTuning; label: string; min: number; max: number; step: number; unit?: string }>;
+}> = [
+	{
+		group: "视线节奏",
+		sliders: [
+			{ key: "eyeContactMinMs", label: "互视最短", min: 200, max: 2000, step: 100, unit: "ms" },
+			{ key: "eyeContactMaxMs", label: "互视最长", min: 1000, max: 6000, step: 100, unit: "ms" },
+			{ key: "aversionMinMs", label: "回避最短", min: 100, max: 1000, step: 50, unit: "ms" },
+			{ key: "aversionMaxMs", label: "回避最长", min: 300, max: 3000, step: 100, unit: "ms" },
+		],
+	},
+	{
+		group: "注视概率",
+		sliders: [
+			{ key: "speakLookRatio", label: "说话时注视率", min: 0.2, max: 0.9, step: 0.05 },
+			{ key: "listenLookRatio", label: "倾听时注视率", min: 0.5, max: 1, step: 0.05 },
+			{ key: "thinkAversionRatio", label: "思考回避率", min: 0.3, max: 0.95, step: 0.05 },
+		],
+	},
+	{
+		group: "扫视",
+		sliders: [
+			{ key: "saccadeScale", label: "扫视间隔倍率", min: 0.3, max: 2, step: 0.05 },
+			{ key: "microSaccadeAmp", label: "微扫视幅度", min: 0, max: 0.1, step: 0.005 },
+		],
+	},
+	{
+		group: "头与身",
+		sliders: [
+			{ key: "nodEverySec", label: "点头间隔", min: 0, max: 30, step: 1, unit: "s" },
+			{ key: "headTiltProb", label: "歪头概率", min: 0, max: 1, step: 0.05 },
+			{ key: "bodySwayPeriodMs", label: "重心微摆周期", min: 2000, max: 10000, step: 200, unit: "ms" },
+			{ key: "aversionTurnDeg", label: "回避转头幅度", min: 0, max: 10, step: 0.5, unit: "°" },
+		],
+	},
+];
+
+/** Compact display for behavior slider values. */
+function formatBehaviorValue(key: keyof BehaviorTuning, value: number): string {
+	if (key === "nodEverySec") return `${Math.round(value)}s`;
+	if (key === "aversionTurnDeg") return `${value}°`;
+	if (key === "speakLookRatio" || key === "listenLookRatio" || key === "thinkAversionRatio" || key === "headTiltProb" || key === "liveliness" || key === "saccadeScale") {
+		return String(Math.round(value * 100) / 100);
+	}
+	return String(Math.round(value));
+}
+
+/** True when any lively behavior is on (the master switch state). */
+const livelyOn = (p: HudProps): boolean => p.gazeMode === "natural" || p.idleGaze;
+
 export function Hud(props: HudProps) {
 	const micOn = props.micState === "listening" || props.micState === "requesting";
 	const [logCopied, setLogCopied] = useState(false);
 	/** Detailed look sliders fold (collapsed by default; presets cover 99%). */
 	const [lookAdvanced, setLookAdvanced] = useState(false);
+	/** Behavior experiment sliders fold (collapsed by default). */
+	const [behaviorAdvanced, setBehaviorAdvanced] = useState(false);
+	/** Motion debug fold (collapsed by default; model-specific list). */
+	const [motionDebugOpen, setMotionDebugOpen] = useState(false);
 
 	const handleCopyLogs = async () => {
 		try {
@@ -264,46 +343,115 @@ export function Hud(props: HudProps) {
 					</div>
 
 					<div className="lv-pop-body">
-						{/* 角色模型快切（按分类分组） */}
+						{/* 角色模型：二级下拉（分类 → 模型） */}
 						{props.models.length > 1 && (
 							<>
 								<h4>角色模型</h4>
-								<div className="lv-langs">
-									{(() => {
-										const groups: { label: string; items: (typeof props.models)[number][] }[] = [];
-										for (const model of props.models) {
-											const key = model.groupLabel ?? model.group ?? "";
-											let g = groups.find((x) => x.label === key);
-											if (!g) {
-												g = { label: key, items: [] };
-												groups.push(g);
-											}
-											g.items.push(model);
+								{(() => {
+									const groups: { label: string; id: string; items: (typeof props.models)[number][] }[] = [];
+									for (const model of props.models) {
+										const id = model.group ?? "";
+										const label = model.groupLabel ?? model.group ?? "";
+										let g = groups.find((x) => x.id === id);
+										if (!g) {
+											g = { id, label, items: [] };
+											groups.push(g);
 										}
-										return groups.map((g) => (
-											<div key={g.label || "misc"} style={{ marginBottom: "6px" }}>
-												{g.label && (
-													<div style={{ fontSize: "11px", fontWeight: 600, opacity: 0.6, margin: "4px 0 4px 2px" }}>
+										g.items.push(model);
+									}
+									const availableGroups = groups.filter((g) => g.id !== "");
+									const currentGroupId = (() => {
+										const hit = props.models.find((m) => m.name === props.currentModel);
+										return hit?.group ?? "";
+									})();
+									const filteredModels = props.models.filter((m) => (m.group ?? "") === currentGroupId);
+									return (
+										<>
+											<div className="lv-langs">
+												<button
+													type="button"
+													className={`lv-lang${currentGroupId === "" ? " lv-current" : ""}`}
+													onClick={() => props.onPickModelGroup("")}
+													title="未分类"
+												>
+													未分类
+												</button>
+												{availableGroups.map((g) => (
+													<button
+														key={g.id}
+														type="button"
+														className={`lv-lang${currentGroupId === g.id ? " lv-current" : ""}`}
+														onClick={() => props.onPickModelGroup(g.id)}
+													>
 														{g.label}
-													</div>
-												)}
-												{/* 保持同一分组内按钮成行 */}
-												<div style={{ display: "flex", gap: "4px", flexWrap: "wrap" }}>
-													{g.items.map((model) => (
-														<button
-															key={model.name}
-															type="button"
-															className={`lv-lang${model.name === props.currentModel ? " lv-current" : ""}`}
-															title={model.name}
-															onClick={() => props.onPickModel(model.name)}
-														>
-															{model.label ?? model.name}{model.kind === "moc2" ? "（旧版）" : ""}
-														</button>
-													))}
-												</div>
+													</button>
+												))}
 											</div>
-										));
-									})()}
+											<div className="lv-langs" style={{ marginTop: "4px" }}>
+												{filteredModels.map((model) => (
+													<button
+														key={model.name}
+														type="button"
+														className={`lv-lang${model.name === props.currentModel ? " lv-current" : ""}`}
+														title={model.name}
+														onClick={() => props.onPickModel(model.name)}
+													>
+														{model.label ?? model.name}{model.kind === "moc2" ? "（旧版）" : ""}
+													</button>
+												))}
+											</div>
+										</>
+									);
+								})()}
+
+								{/* 动作调试：默认收起，展开后展示当前模型全部动作按钮。 */}
+								<div className="lv-look-params">
+									<button
+										type="button"
+										className="lv-look-fold"
+										aria-expanded={motionDebugOpen}
+										onClick={() => setMotionDebugOpen((open) => !open)}
+									>
+										<span className={`lv-look-caret${motionDebugOpen ? " lv-open" : ""}`}>▸</span>
+										动作调试 ({props.motions.length})
+									</button>
+									{motionDebugOpen && (
+										<div className="lv-langs" style={{ marginTop: "6px" }}>
+											{props.motions.length === 0 ? (
+												<div className="lv-look-hint">当前模型未提供动作文件</div>
+											) : (
+												props.motions.map((m) => (
+													<button
+														key={`${m.group}_${m.index}_${m.name}`}
+														type="button"
+														className="lv-lang"
+														title={`group=${m.group || "(default)"} index=${m.index}`}
+														onClick={() => props.onPlayMotion(m)}
+													>
+														{m.name}
+													</button>
+												))
+											)}
+										</div>
+									)}
+								</div>
+
+								{/* Idle 间隔调节 */}
+								<div className="lv-look-params">
+									<div className="lv-look-header">
+										<span className="lv-look-title">待机动作间隔</span>
+										<span className="lv-look-hint">
+											{props.idleInterval <= 0 ? "关闭（仅呼吸+眨眼）" : `${props.idleInterval}s`}
+										</span>
+									</div>
+									<input
+										type="range"
+										min={0}
+										max={120}
+										step={5}
+										value={props.idleInterval}
+										onChange={(e) => props.onChangeIdleInterval(Number(e.target.value))}
+									/>
 								</div>
 							</>
 						)}
@@ -382,19 +530,38 @@ export function Hud(props: HudProps) {
 							/>
 						)}
 
-						{/* 音色快切 */}
+						{/* 音色快切：二级下拉（语言 → 音色） */}
 						<h4>角色音色</h4>
 						<div className="lv-langs">
-							{props.presets.map((preset) => (
+							{props.voiceLanguages.map((lang) => (
 								<button
-									key={preset.id}
+									key={lang.id}
 									type="button"
-									className={`lv-lang${preset.voiceId === props.currentVoiceId ? " lv-current" : ""}`}
-									onClick={() => props.onPickVoice(preset)}
+									className={`lv-lang${props.currentVoiceLang === lang.id ? " lv-current" : ""}`}
+									onClick={() => props.onPickVoiceLang(lang.id)}
 								>
-									{preset.label}
+									{lang.label}
 								</button>
 							))}
+						</div>
+						<div className="lv-langs" style={{ marginTop: "4px" }}>
+							{props.presets
+								.filter((preset) => {
+									if (props.currentVoiceLang === "all") return true;
+									const lang = (preset as VoicePreset & { lang?: string }).lang;
+									if (!lang) return props.currentVoiceLang === "zh";
+									return lang === props.currentVoiceLang;
+								})
+								.map((preset) => (
+									<button
+										key={preset.id}
+										type="button"
+										className={`lv-lang${preset.voiceId === props.currentVoiceId ? " lv-current" : ""}`}
+										onClick={() => props.onPickVoice(preset)}
+									>
+										{preset.label}
+									</button>
+								))}
 						</div>
 
 						{/* 识别语言快切 */}
@@ -439,6 +606,97 @@ export function Hud(props: HudProps) {
 							</button>
 						</div>
 
+						{/* 自然行为总开关：一键关闭全部新行为（互视/回避/头身微动），回到旧行为 */}
+						<div className="lv-switch-row" style={{ marginTop: "6px" }}>
+							<span>
+								<b>自然行为</b>
+								<small style={{ display: "block", opacity: 0.6, fontWeight: 400 }}>互视节奏 · 头身微动 · 待机眼神</small>
+							</span>
+							<button
+								type="button"
+								role="switch"
+								aria-checked={livelyOn(props)}
+								className={`lv-switch${livelyOn(props) ? " lv-on" : ""}`}
+								onClick={props.onToggleLivelyGaze}
+							>
+								<span className="lv-switch-knob" />
+							</button>
+						</div>
+						<div className="lv-switch-row">
+							<span>视线模式：{props.gazeMode === "natural" ? "自然（活眼神）" : "跟随（紧盯）"}</span>
+							<button
+								type="button"
+								role="switch"
+								aria-checked={props.gazeMode === "natural"}
+								className={`lv-switch${props.gazeMode === "natural" ? " lv-on" : ""}`}
+								onClick={props.onToggleGazeMode}
+							>
+								<span className="lv-switch-knob" />
+							</button>
+						</div>
+						<div className="lv-switch-row">
+							<span>待机眼神微动（无摄像头时）</span>
+							<button
+								type="button"
+								role="switch"
+								aria-checked={props.idleGaze}
+								className={`lv-switch${props.idleGaze ? " lv-on" : ""}`}
+								onClick={props.onToggleIdleGaze}
+							>
+								<span className="lv-switch-knob" />
+							</button>
+						</div>
+
+						{/* 活泼度 + 实验参数（行为层全部旋钮，见 behavior.ts 调参说明） */}
+						{livelyOn(props) && (
+							<div className="lv-look-params" style={{ marginTop: "8px" }}>
+								<label className="lv-slider-row">
+									<span className="lv-slider-label">活泼度（总乘子）</span>
+									<input
+										type="range"
+										min={0.5}
+										max={1.5}
+										step={0.05}
+										value={props.behaviorTuning.liveliness}
+										onChange={(event) => props.onBehaviorTuningChange({ liveliness: Number(event.target.value) })}
+									/>
+									<span className="lv-slider-value">{formatBehaviorValue("liveliness", props.behaviorTuning.liveliness)}</span>
+								</label>
+								<button
+									type="button"
+									className="lv-look-fold"
+									aria-expanded={behaviorAdvanced}
+									onClick={() => setBehaviorAdvanced((open) => !open)}
+								>
+									<span className={`lv-look-caret${behaviorAdvanced ? " lv-open" : ""}`}>▸</span>
+									实验参数
+								</button>
+								{behaviorAdvanced &&
+									BEHAVIOR_SLIDER_GROUPS.map((group) => (
+										<div key={group.group} className="lv-slider-group">
+											<div className="lv-slider-group-title">{group.group}</div>
+											{group.sliders.map((slider) => (
+												<label key={slider.key} className="lv-slider-row">
+													<span className="lv-slider-label">{slider.label}</span>
+													<input
+														type="range"
+														min={slider.min}
+														max={slider.max}
+														step={slider.step}
+														value={props.behaviorTuning[slider.key]}
+														onChange={(event) => props.onBehaviorTuningChange({ [slider.key]: Number(event.target.value) })}
+													/>
+													<span className="lv-slider-value">
+														{formatBehaviorValue(slider.key, props.behaviorTuning[slider.key])}
+														{slider.unit ?? ""}
+													</span>
+												</label>
+											))}
+										</div>
+									))}
+							</div>
+						)}
+
 						{/* 视向灵敏度：预设 + 折叠详细参数 */}
 						<div className="lv-look-params">
 							<div className="lv-look-header">
@@ -472,24 +730,38 @@ export function Hud(props: HudProps) {
 								LOOK_SLIDER_GROUPS.map((group) => (
 									<div key={group.group} className="lv-slider-group">
 										<div className="lv-slider-group-title">{group.group}</div>
-										{group.sliders.map((slider) => (
-											<label key={slider.key} className="lv-slider-row">
-												<span className="lv-slider-label">{slider.label}</span>
-												<input
-													type="range"
-													min={slider.min}
-													max={slider.max}
-													step={slider.step}
-													value={props.lookParams[slider.key]}
-													onChange={(event) =>
-														props.onLookParamsChange({ [slider.key]: Number(event.target.value) })
-													}
-												/>
-												<span className="lv-slider-value">
-													{formatLookValue(slider.key, props.lookParams[slider.key])}
-												</span>
-											</label>
-										))}
+																				{group.sliders.map((slider) => {
+											// Third-person stage: characters face each other and camera/gyro only
+											// drive position parallax, so the angle gains are forced to 0 — disable
+											// the sliders instead of showing values that silently do nothing.
+											const angleGainOff =
+												props.thirdPerson &&
+												Boolean(props.currentPlayerModel) &&
+												(slider.key === "camAngleGain" || slider.key === "gyroAngleGain");
+											return (
+												<label key={slider.key} className="lv-slider-row">
+													<span className="lv-slider-label">
+														{slider.label}
+														{angleGainOff ? "（对视停用）" : ""}
+													</span>
+													<input
+														type="range"
+														min={slider.min}
+														max={slider.max}
+														step={slider.step}
+														value={props.lookParams[slider.key]}
+														disabled={angleGainOff}
+														title={angleGainOff ? "第三人称对视模式下转头增益固定为 0（视线输入只做位置视差）" : undefined}
+														onChange={(event) =>
+															props.onLookParamsChange({ [slider.key]: Number(event.target.value) })
+														}
+													/>
+													<span className="lv-slider-value">
+														{formatLookValue(slider.key, props.lookParams[slider.key])}
+													</span>
+												</label>
+											);
+										})}
 									</div>
 								))}
 						</div>

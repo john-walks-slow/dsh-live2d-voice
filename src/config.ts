@@ -9,41 +9,48 @@
  */
 
 import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, statSync } from "node:fs";
-import { join } from "node:path";
+import { join, basename } from "node:path";
 import { homedir } from "node:os";
 
 /** Recommended Fish Audio voice presets (same table as the fish-audio skill). */
 export const VOICE_PRESETS = [
-	{ id: "rem", label: "温柔女仆 · 雷姆", voiceId: "0c7771ca5910484e8a4933068017fcee" },
-	{ id: "maid", label: "元气女仆", voiceId: "abf4fa2e25634b41aadc4e0ef9ddaea5" },
-	{ id: "frieren", label: "知性女声 · 芙莉莲", voiceId: "c174516c799a42e7be88b96c86cfbd3e" },
-	{ id: "furina", label: "娇俏女声 · 芙宁娜", voiceId: "3fd70bbcdb6342df8c0c4143b958944b" },
-	{ id: "cute", label: "甜美少女音", voiceId: "0c54c26032024142bf6339dc4d4aca1b" },
+	{ id: "rem", label: "温柔女仆 · 雷姆", voiceId: "0c7771ca5910484e8a4933068017fcee", lang: "ja" },
+	{ id: "maid", label: "元气女仆", voiceId: "abf4fa2e25634b41aadc4e0ef9ddaea5", lang: "ja" },
+	{ id: "frieren", label: "知性女声 · 芙莉莲", voiceId: "c174516c799a42e7be88b96c86cfbd3e", lang: "ja" },
+	{ id: "furina", label: "娇俏女声 · 芙宁娜", voiceId: "3fd70bbcdb6342df8c0c4143b958944b", lang: "ja" },
+	{ id: "cute", label: "甜美少女音", voiceId: "0c54c26032024142bf6339dc4d4aca1b", lang: "ja" },
 	// ── 2026-09-24 第二批：Fish Audio 公共音色库实测收录（20 个，均合成验证通过）──
 	// 动漫角色 / 二次元声线
-	{ id: "anime-girl", label: "标准动漫少女音", voiceId: "73647cd4ff7c477cb787d5fd8068f3e8" },
-	{ id: "ram", label: "傲娇女声 · 拉姆", voiceId: "deb7b4e20b7048b19f96b646bfaa4549" },
-	{ id: "teio", label: "元气少女 · 东海帝王", voiceId: "44b6e5eeab214296bcfd73e767225229" },
-	{ id: "alya", label: "清冷美少女 · 艾莉雅", voiceId: "15b8bae03d344eafaa53f174fb13cf32" },
-	{ id: "teto", label: "电音歌姬 · 重音 Teto", voiceId: "852c5b1d1cd24657bf2865152e67bb3e" },
-	{ id: "misuzu", label: "治愈女声 · 神尾观铃", voiceId: "20967b3d497045b78e992924f2f05488" },
-	{ id: "fubuki", label: "狐耳娘 · 白上吹雪", voiceId: "5e6675f7a3984e30b2413f81deb677f6" },
-	{ id: "hatsuki", label: "软萌幼女 · 岛田叶月", voiceId: "e9377327f5fb4690842604f8455048f5" },
-	{ id: "rino", label: "机械妹音 · 机器人里诺", voiceId: "91e378d7b6574841ad5c4f915afdc8b9" },
+	{ id: "anime-girl", label: "标准动漫少女音", voiceId: "73647cd4ff7c477cb787d5fd8068f3e8", lang: "ja" },
+	{ id: "ram", label: "傲娇女声 · 拉姆", voiceId: "deb7b4e20b7048b19f96b646bfaa4549", lang: "ja" },
+	{ id: "teio", label: "元气少女 · 东海帝王", voiceId: "44b6e5eeab214296bcfd73e767225229", lang: "ja" },
+	{ id: "alya", label: "清冷美少女 · 艾莉雅", voiceId: "15b8bae03d344eafaa53f174fb13cf32", lang: "ja" },
+	{ id: "teto", label: "电音歌姬 · 重音 Teto", voiceId: "852c5b1d1cd24657bf2865152e67bb3e", lang: "ja" },
+	{ id: "misuzu", label: "治愈女声 · 神尾观铃", voiceId: "20967b3d497045b78e992924f2f05488", lang: "ja" },
+	{ id: "fubuki", label: "狐耳娘 · 白上吹雪", voiceId: "5e6675f7a3984e30b2413f81deb677f6", lang: "ja" },
+	{ id: "hatsuki", label: "软萌幼女 · 岛田叶月", voiceId: "e9377327f5fb4690842604f8455048f5", lang: "ja" },
+	{ id: "rino", label: "机械妹音 · 机器人里诺", voiceId: "91e378d7b6574841ad5c4f915afdc8b9", lang: "ja" },
 	// 通用声线类型
-	{ id: "genki-woman", label: "元气女声（通用）", voiceId: "5161d41404314212af1254556477c17d" },
-	{ id: "calm-woman", label: "沉稳女声（通用）", voiceId: "0089dce5fefb4c6ba9b9f2f0debe1ddc" },
-	{ id: "narration-woman", label: "知性旁白女声", voiceId: "825c9e9870494118ad93b6853a22d5e7" },
-	{ id: "genki-maid", label: "萌系女仆音", voiceId: "6c777b9c8eee4cd7862e1b073f6c42ec" },
-	{ id: "tsundere-girl", label: "傲娇少女音（通用）", voiceId: "4c415bf6872a4700adbda9a2d8b02fbb" },
-	{ id: "genki-boy", label: "元气少年音", voiceId: "ed3a1c523b524870a85a5a76cb1e0c3d" },
+	{ id: "genki-woman", label: "元气女声（通用）", voiceId: "5161d41404314212af1254556477c17d", lang: "zh" },
+	{ id: "calm-woman", label: "沉稳女声（通用）", voiceId: "0089dce5fefb4c6ba9b9f2f0debe1ddc", lang: "zh" },
+	{ id: "narration-woman", label: "知性旁白女声", voiceId: "825c9e9870494118ad93b6853a22d5e7", lang: "zh" },
+	{ id: "genki-maid", label: "萌系女仆音", voiceId: "6c777b9c8eee4cd7862e1b073f6c42ec", lang: "zh" },
+	{ id: "tsundere-girl", label: "傲娇少女音（通用）", voiceId: "4c415bf6872a4700adbda9a2d8b02fbb", lang: "ja" },
+	{ id: "genki-boy", label: "元气少年音", voiceId: "ed3a1c523b524870a85a5a76cb1e0c3d", lang: "zh" },
 	// 中文音色
-	{ id: "paimon", label: "小飞毯 · 派蒙（原神）", voiceId: "efc1ce3726a64bbc947d53a1465204aa" },
-	{ id: "klee", label: "萝莉音 · 可莉（原神）", voiceId: "0b8449eb752c4f888f463fc5d2c0db65" },
-	{ id: "loli-zh", label: "萝莉音（中文通用）", voiceId: "f82e3885ac22468eb6c773b96f2c5752" },
+	{ id: "paimon", label: "小飞毯 · 派蒙（原神）", voiceId: "efc1ce3726a64bbc947d53a1465204aa", lang: "zh" },
+	{ id: "klee", label: "萝莉音 · 可莉（原神）", voiceId: "0b8449eb752c4f888f463fc5d2c0db65", lang: "zh" },
+	{ id: "loli-zh", label: "萝莉音（中文通用）", voiceId: "f82e3885ac22468eb6c773b96f2c5752", lang: "zh" },
 	// 英语 / VTuber
-	{ id: "filian", label: "英语 VTuber · Filian", voiceId: "39d029582e9743e29f7c9e31fc3149e7" },
-	{ id: "neuro-sama", label: "AI 声 · Neuro-sama", voiceId: "b2b2d0fa88ee44d789da28ebbd97421e" },
+	{ id: "filian", label: "英语 VTuber · Filian", voiceId: "39d029582e9743e29f7c9e31fc3149e7", lang: "en" },
+	{ id: "neuro-sama", label: "AI 声 · Neuro-sama", voiceId: "b2b2d0fa88ee44d789da28ebbd97421e", lang: "en" },
+] as const;
+
+export const VOICE_LANGUAGES = [
+	{ id: "all", label: "全部语言" },
+	{ id: "zh", label: "中文" },
+	{ id: "ja", label: "日本語" },
+	{ id: "en", label: "English" },
 ] as const;
 
 export interface PluginConfig {
@@ -127,11 +134,30 @@ export interface PluginConfig {
 	 */
 	eyeTracking: boolean;
 	/**
+	 * Gaze behavior mode when eyeTracking is on:
+	 * "follow"  — legacy rigid tracking (stare at the user's face continuously);
+	 * "natural" — lifelike behavior: mutual-eye-contact bursts (0.5–3s) with
+	 * periodic aversion, turn-taking signals, thinking aversions, saccades and
+	 * head/body micro-motion (see client behavior.ts).
+	 */
+	gazeMode: "follow" | "natural";
+	/**
+	 * Idle liveliness without the camera: even when eyeTracking is off, the
+	 * character keeps natural micro motion (idle saccades, head sway, body
+	 * sway). Off → the character stands still like before.
+	 */
+	idleGaze: boolean;
+	/**
 	 * Experimental: gyroscope parallax — phone tilt drives head/body angles
 	 * and a position offset (the "character behind the screen glass"
 	 * illusion). Calibrates the neutral pose on enable.
 	 */
 	gyroParallax: boolean;
+	/**
+	 * Live2D idle motion trigger interval in seconds (default 20s).
+	 * 0 or negative disables automatic random idle motions (keeps breath/blink only).
+	 */
+	idleInterval: number;
 	/** Emotion tag → model expression name/index map. */
 	emotionMap: Record<string, number | string>;
 	/**
@@ -228,7 +254,10 @@ export const DEFAULT_CONFIG: PluginConfig = {
 	subtitleLanguage: "zh",
 	sentenceSubtitles: true,
 	speechPrompt: "",
+	idleInterval: 20,
 	eyeTracking: false,
+	gazeMode: "natural",
+	idleGaze: true,
 	gyroParallax: false,
 	emotionMap: { ...DEFAULT_EMOTION_MAP },
 	thirdPerson: false,
@@ -256,6 +285,9 @@ export function loadConfig(): PluginConfig {
 			...raw,
 			emotionMap: { ...DEFAULT_EMOTION_MAP, ...(raw.emotionMap ?? {}) },
 			playerEmotionMap: { ...DEFAULT_EMOTION_MAP, ...(raw.playerEmotionMap ?? {}) },
+			idleInterval: typeof raw.idleInterval === "number" ? raw.idleInterval : DEFAULT_CONFIG.idleInterval,
+			gazeMode: raw.gazeMode === "follow" ? "follow" : "natural",
+			idleGaze: typeof raw.idleGaze === "boolean" ? raw.idleGaze : true,
 			workspaces: raw.workspaces ?? {},
 			apiKeys: Array.isArray(raw.apiKeys) ? raw.apiKeys.filter((k) => typeof k === "string" && k) : [],
 		};
@@ -498,7 +530,47 @@ export function resolveModelSelection(config: PluginConfig, catalog: ModelEntry[
 	return catalog.find((model) => model.name === config.modelSelection) ?? catalog[0];
 }
 
-// ---------- per-workspace resolution ----------
+// ---------- model motions extraction ----------
+
+export interface ModelMotion {
+	name: string;
+	group: string;
+	index: number;
+}
+
+/**
+ * Extract all motion definitions from a model settings file (.model3.json or .model.json).
+ * Preserves original motion/file names so users and models can reference them directly.
+ */
+export function extractModelMotions(filePath: string): ModelMotion[] {
+	try {
+		if (!existsSync(filePath)) return [];
+		const raw = JSON.parse(readFileSync(filePath, "utf-8"));
+		const motions: ModelMotion[] = [];
+		const seen = new Set<string>();
+		const motionSection = raw?.FileReferences?.Motions || raw?.motions || {};
+		for (const [group, list] of Object.entries(motionSection)) {
+			if (!Array.isArray(list)) continue;
+			list.forEach((item: { File?: string; file?: string }, index: number) => {
+				const file = item?.File || item?.file || "";
+				let base = file ? basename(file).replace(/\.(motion3|exp3|mtn)\.json$|\.mtn$/, "") : "";
+				if (!base) {
+					base = group ? `${group}_${index}` : `motion_${index}`;
+				}
+				let name = base;
+				if (seen.has(name)) {
+					name = `${base}_${index}`;
+				}
+				seen.add(name);
+				motions.push({ name, group, index });
+			});
+		}
+		return motions;
+	} catch {
+		return [];
+	}
+}
+
 
 /** Minimal host shape so config.ts stays independent of the agent types. */
 interface AgentsLike {

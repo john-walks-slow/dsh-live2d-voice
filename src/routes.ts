@@ -38,7 +38,7 @@ import type {} from "@deepseek-ai/dsh-api-session-controller";
 import { WebSocketServer } from "ws";
 import { createUserMessage, type ContentBlock } from "@deepseek-ai/dsh-llm";
 import type { SessionId } from "@deepseek-ai/dsh-session";
-import { LANGUAGE_OPTIONS, VOICE_PRESETS, resolveModelCatalog, resolveModelSelection, resolveSessionConfig, GROUP_LABELS, type ModelEntry, type PluginConfig } from "./config.js";
+import { LANGUAGE_OPTIONS, VOICE_PRESETS, VOICE_LANGUAGES, resolveModelCatalog, resolveModelSelection, resolveSessionConfig, GROUP_LABELS, extractModelMotions, type ModelMotion, type ModelEntry, type PluginConfig } from "./config.js";
 import type { SseHub } from "./events.js";
 import { loadVolcCredentials, recognizeUtterance, StreamingAsrSession } from "./asr.js";
 
@@ -294,6 +294,7 @@ export function installRoutes(ctx: Context, deps: RouteDeps): (() => void) | und
 				writeJson(res, 200, {
 					config: publicConfig(config, deps.resolveKeys(global).length),
 					presets: VOICE_PRESETS,
+					voiceLanguages: VOICE_LANGUAGES,
 					languages: LANGUAGE_OPTIONS,
 				});
 				return;
@@ -309,7 +310,10 @@ export function installRoutes(ctx: Context, deps: RouteDeps): (() => void) | und
 						if (typeof body[key] === "string") patch[key] = body[key] as string;
 					}
 					if (typeof body.eyeTracking === "boolean") patch.eyeTracking = body.eyeTracking;
+					if (body.gazeMode === "follow" || body.gazeMode === "natural") patch.gazeMode = body.gazeMode;
+					if (typeof body.idleGaze === "boolean") patch.idleGaze = body.idleGaze;
 					if (typeof body.gyroParallax === "boolean") patch.gyroParallax = body.gyroParallax;
+					if (typeof body.idleInterval === "number") patch.idleInterval = body.idleInterval;
 					if (typeof body.sentenceSubtitles === "boolean") patch.sentenceSubtitles = body.sentenceSubtitles;
 					if (typeof body.thirdPerson === "boolean") patch.thirdPerson = body.thirdPerson;
 					if (typeof body.playerPolish === "boolean") patch.playerPolish = body.playerPolish;
@@ -476,13 +480,15 @@ export function installRoutes(ctx: Context, deps: RouteDeps): (() => void) | und
 			// Third-person: the player avatar (another catalog entry, if selected).
 			const playerEntry = config.playerModelSelection ? catalog.find((model) => model.name === config.playerModelSelection) : undefined;
 			const thirdPerson = config.thirdPerson === true;
+			const playerMotions = (thirdPerson && playerEntry) ? extractModelMotions(join(config.modelPath, playerEntry.relative)) : [];
 			const player = thirdPerson && playerEntry
-				? { name: playerEntry.name, label: playerEntry.label, kind: playerEntry.kind, url: modelUrl(playerEntry) }
+				? { name: playerEntry.name, label: playerEntry.label, kind: playerEntry.kind, url: modelUrl(playerEntry), motions: playerMotions }
 				: undefined;
 			if (entry === undefined) {
 				writeJson(res, 200, { configured: Boolean(config.modelPath), url: undefined, thirdPerson, player });
 				return;
 			}
+			const motions = extractModelMotions(join(config.modelPath, entry.relative));
 			writeJson(res, 200, {
 				configured: true,
 				url: modelUrl(entry),
@@ -492,6 +498,7 @@ export function installRoutes(ctx: Context, deps: RouteDeps): (() => void) | und
 				group: entry.group,
 				groupLabel: entry.group ? (GROUP_LABELS[entry.group] ?? entry.group) : undefined,
 				current: entry.name,
+				motions,
 				models: catalog.map((model) => ({
 					name: model.name,
 					label: model.label,

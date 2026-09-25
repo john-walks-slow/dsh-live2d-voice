@@ -26,7 +26,7 @@ import { randomUUID } from "node:crypto";
 import type { Context } from "@deepseek-ai/cordis";
 import { createUserMessage, type ContentBlock } from "@deepseek-ai/dsh-llm";
 import type { SessionId } from "@deepseek-ai/dsh-session";
-import { extractEmotionTags } from "./sentence.js";
+import { extractEmotionTags, extractMotionTags } from "./sentence.js";
 import { PCM_SAMPLE_RATE, synthesize } from "./tts.js";
 import { languageLabel, type PluginConfig } from "./config.js";
 import type { SseHub } from "./events.js";
@@ -202,6 +202,10 @@ export class PlayerPipeline {
 		this.deps.hub.emit(sessionId, "audio-start", { utteranceId, sampleRate: PCM_SAMPLE_RATE, speaker: "player" });
 		if (emotion !== undefined && expression !== undefined) {
 			this.deps.hub.emit(sessionId, "expression", { utteranceId, emotion, expression, speaker: "player" });
+		}
+		const { motions } = extractMotionTags(text);
+		for (const motion of motions) {
+			this.deps.hub.emit(sessionId, "motion", { utteranceId, motion, speaker: "player" });
 		}
 		if (apiKeys.length === 0) {
 			this.emitSubtitle(sessionId, utteranceId, text);
