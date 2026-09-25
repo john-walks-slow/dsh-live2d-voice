@@ -169,7 +169,10 @@ try {
 
   // ---- D: UX spot checks ----
   console.log('=== D ux ===');
-  await ev(() => document.querySelector('.lv-hud [title="语音设置"]')?.click());
+  // The gear's title carries a parenthetical suffix ("快捷调整（音色与角色）")
+  // — match the stable prefix, as the other verify-* scripts do.
+  const openPopover = () => ev(() => document.querySelector('.lv-hud [title*="快捷调整"]')?.click());
+  await openPopover();
   await sleep(400);
   const hadPanel = !!(await ev(() => document.querySelector('.lv-pop')));
   const closed = await ev(() => {
@@ -188,21 +191,28 @@ try {
   check('D3', fs1 === true && fs2 === false, `fullscreen toggle (${fs1} → ${fs2})`);
   // ---- T: gyroscope parallax (experimental) ----
   console.log('=== T gyro parallax ===');
-  await ev(() => document.querySelector('.lv-hud [title="语音设置"]')?.click());
-  await sleep(400);
-  const tiltRow = await ev(() => {
-    const rows = [...document.querySelectorAll('.lv-switch-row')];
-    const row = rows.find((r) => r.textContent?.includes('陀螺仪视差'));
+  // Row lookup: match the stable prefix of the HUD label ("陀螺仪 3D 视差") on
+  // the row's own label span — a wording tweak must not silently break this.
+  const tiltRowState = () => ev(() => {
+    const row = [...document.querySelectorAll('.lv-switch-row')]
+      .find((r) => r.querySelector(':scope > span')?.textContent?.includes('陀螺仪'));
     if (!row) return { found: false };
-    const btn = row.querySelector('button[role="switch"]');
-    return { found: true, on: btn?.getAttribute('aria-checked') };
+    return {
+      found: true,
+      label: row.querySelector(':scope > span')?.textContent?.trim(),
+      on: row.querySelector('button[role="switch"]')?.getAttribute('aria-checked'),
+    };
   });
-  check('T1', tiltRow.found, `gyro switch row present (aria=${tiltRow.on})`);
-  await ev(() => {
-    const rows = [...document.querySelectorAll('.lv-switch-row')];
-    const row = rows.find((r) => r.textContent?.includes('陀螺仪视差'));
+  const clickTiltRow = () => ev(() => {
+    const row = [...document.querySelectorAll('.lv-switch-row')]
+      .find((r) => r.querySelector(':scope > span')?.textContent?.includes('陀螺仪'));
     (row?.querySelector('button[role="switch"]'))?.click();
   });
+    await openPopover();
+  await sleep(400);
+  const tiltRow = await tiltRowState();
+  check('T1', tiltRow.found, `gyro switch row present (${tiltRow.label ?? 'missing'}, aria=${tiltRow.on})`);
+  await clickTiltRow();
   await sleep(800);
   const tiltOn = await ev(async () => {
     const r = await fetch('/live2d-voice/config', { headers: { accept: 'application/json' } });
@@ -221,11 +231,7 @@ try {
   check('T3', stillAlive, 'synthetic orientation events consumed without crash');
   await page.screenshot({ path: '/tmp/lvv11-tilt.png' }).catch(() => {});
   // toggle off
-  await ev(() => {
-    const rows = [...document.querySelectorAll('.lv-switch-row')];
-    const row = rows.find((r) => r.textContent?.includes('陀螺仪视差'));
-    (row?.querySelector('button[role="switch"]'))?.click();
-  });
+  await clickTiltRow();
   await sleep(600);
   const tiltOff = await ev(async () => {
     const r = await fetch('/live2d-voice/config', { headers: { accept: 'application/json' } });
