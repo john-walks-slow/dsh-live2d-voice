@@ -360,10 +360,18 @@ export async function mountModel(
 		const value = getMouth();
 		const applied = value > 0.002 ? value : 0;
 		for (const id of lipSyncIds) setParam(id, applied);
-		// A full-body motion (idle/gesture) owns the head/body pose — the
-		// natural driver yields while one plays so it doesn't fight the
-		// motion's own animation (mouth lip-sync keeps running).
-		const motionPlaying = internal.motionManager.queueManager?.isFinished?.() === false;
+		// A full-body motion owns the head/body pose — the natural driver
+		// yields the angle writes while one plays so it doesn't fight the
+		// motion's own animation. Only non-idle motions deserve the yield:
+		// idle motions are low-information background sway, and handing the
+		// angles over would freeze the gaze response for their whole play
+		// time (mouth lip-sync keeps running regardless).
+		const qm = internal.motionManager.queueManager as
+			| { isFinished?: () => boolean; currentGroup?: string }
+			| undefined;
+		const motionPlaying = qm?.isFinished?.() === false;
+		const motionGroup = qm?.currentGroup;
+		const yieldAngles = motionPlaying && motionGroup !== undefined && motionGroup !== "Idle" && motionGroup !== "";
 		if (legacyFollow) {
 			// Legacy camera/gyro follower (master switch OFF): the exact
 			// pre-lively-gaze driver — full-gain angles, no lag chain, no
@@ -392,10 +400,10 @@ export async function mountModel(
 			}
 			return;
 		}
-		// Natural driver: while a motion plays, yield only the angle writes;
-		// smoothing and the parallax pan keep running so camera/gyro feel
-		// stays responsive during idle motions.
-		if (motionPlaying) {
+		// Natural driver: while a non-idle motion plays, yield only the
+		// angle writes; smoothing and the parallax pan keep running so
+		// camera/gyro feel stays responsive.
+		if (yieldAngles) {
 			smoothLook();
 			applyTransform();
 			return;
