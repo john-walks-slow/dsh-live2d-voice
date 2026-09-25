@@ -340,7 +340,17 @@ export async function mountModel(
 		applyTransform();
 	};
 	fit();
-	const observer = new ResizeObserver(fit);
+	const observer = new ResizeObserver(() => {
+		// 容器尺寸变化（半全屏 fixed 切换、视口旋转、宿主布局变化）时，
+		// Pixi 的 resizeTo 只在 window resize 时机可靠触发，跟不住元素级
+		// 尺寸变化 —— 旧 buffer 会被 CSS 100% 硬拉到新尺寸（非等比拉伸）。
+		// 规范做法：按容器实际 clientWidth/clientHeight 显式 resize
+		// renderer，buffer 与 CSS 永远同源等比，再重算模型布局。
+		const w = container.clientWidth;
+		const h = container.clientHeight;
+		if (w > 0 && h > 0) app.renderer.resize(w, h);
+		fit();
+	});
 	observer.observe(container);
 
 	// The bundled d.ts lost its @pixi/utils import (dts-bundle-generator), so
@@ -765,7 +775,11 @@ export async function mountModel(
 			} catch {}
 			unregisterMount(model);
 				try {
-					model.destroy();
+					(model as unknown as { destroy: (options?: unknown) => void }).destroy({
+						children: true,
+						texture: true,
+						baseTexture: true,
+					});
 				} catch (err) {
 				logger.warn("Live2DModel.destroy threw error, safely suppressed", err);
 			}
@@ -776,7 +790,7 @@ export async function mountModel(
 				if (ext) ext.loseContext();
 			} catch {}
 			try {
-				app.destroy(true, { children: true });
+				app.destroy(true, { children: true, texture: true, baseTexture: true });
 			} catch (err) {
 				logger.warn("Pixi Application.destroy threw error, safely suppressed", err);
 			}

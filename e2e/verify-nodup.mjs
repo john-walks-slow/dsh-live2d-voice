@@ -1,14 +1,23 @@
 #!/usr/bin/env node
 /**
- * Duplicate-submit regression e2e (bug: every voice utterance landed twice).
+ * Duplicate-submit / duplicate-echo regression e2e.
  *
- * Two Live2D view instances watch the SAME session (GUI Live2D tab + the
- * standalone /app page). Voice is only spoken into the GUI tab; the
- * standalone page must NOT submit the same asr-final again. Asserts:
- *   - exactly one user subtitle with the transcript (no immediate dup),
- *   - and no second identical user message within 15s (the old symptom —
- *     a kept-alive second view re-submitted and the followup queued behind
- *     the running turn, landing ~10-12s later).
+ * Three historical duplicate bugs, all in one flow (GUI Live2D tab + the
+ * standalone /app page watching the SAME session):
+ *
+ *   R1 (old): a kept-alive second view instance heard the same asr-final and
+ *      re-submitted the utterance — the `up` upload-id guard fixed it.
+ *   R2 (260925): in stream mode the buffered `onSegment` path ran BESIDE the
+ *      live upload, so every spoken line was submitted twice into history
+ *      (asr-final submit + /asr/recognize submit). Stream mode must issue
+ *      ZERO /asr/recognize calls.
+ *   R3 (260925): the standalone page submits via POST /message, whose route
+ *      echoes the user line over SSE — the view's local push displayed it a
+ *      second time (two identical user cards, one history entry).
+ *
+ * User-card counting is element-identity based (dataset marker): the same
+ * text landing twice creates two card elements and must count 2 — deduping
+ * by text (the old check) hid exactly this bug.
  */
 import pw from '/root/projects/camoufox-mcp/node_modules/playwright-core/index.js';
 const { chromium } = pw;
@@ -23,18 +32,32 @@ const INIT = `
 (() => {
   window.__lvPatched = 'nodup';
   const PCM = { zh: ${JSON.stringify(zhB64)} };
-  const log = [];
-  const state = { gumCalls: 0, messages: [], feeds: [] };
-  window.__lvState = () => JSON.stringify({ log, state });
+  const state = { gumCalls: 0, messages: 0, recognizes: 0, feeds: [] };
+  window.__lvState = () => JSON.stringify({ state });
   const of = window.fetch;
   window.fetch = function () {
     const u = typeof arguments[0] === 'string' ? arguments[0] : (arguments[0] && arguments[0].url) || '';
     if (String(u).includes('/live2d-voice/message')) {
-      const e = { t: Date.now(), status: null };
-      state.messages.push(e);
-      return of.apply(this, arguments).then((r) => { e.status = r.status; return r; });
+      state.messages++;
+      const body = typeof arguments[1] === 'object' && arguments[1] ? String(arguments[1].body ?? '') : '';
+      state.lastMessageBody = body.slice(0, 120);
+      return of.apply(this, arguments).then((r) => { state.lastMessageStatus = r.status; return r; });
     }
+    if (String(u).includes('/live2d-voice/asr/recognize')) state.recognizes++;
     return of.apply(this, arguments);
+  };
+  // Count user-card ELEMENTS matching a needle — element identity, so the
+  // same text rendered twice counts twice (unlike a text Set). Totals are
+  // tracked PER NEEDLE (a global accumulator bleeds counts across checks).
+  window.__lvUserCards = (needle) => {
+    let added = 0;
+    for (const el of document.querySelectorAll('.lv-sub-card, .lv-sub-old')) {
+      if (el.dataset.lvSeen) continue;
+      el.dataset.lvSeen = '1';
+      if (el.classList.contains('lv-sub-user') && (el.textContent ?? '').includes(needle)) added++;
+    }
+    const totals = (window.__lvUserTotals ??= {});
+    return (totals[needle] = (totals[needle] ?? 0) + added);
   };
   const md = navigator.mediaDevices;
   const og = md.getUserMedia.bind(md);
@@ -99,7 +122,11 @@ page.on('websocket', (ws) => {
 });
 const ev = (fn, ...args) => page.evaluate(fn, ...args);
 const sleep = (ms) => page.waitForTimeout(ms);
-const subs = () => ev(() => JSON.stringify([...document.querySelectorAll('.lv-sub-card, .lv-sub-old')].map((el) => ({ user: el.classList.contains('lv-sub-user'), text: el.textContent }))));
+const st = async () => JSON.parse(await ev(() => (window.__lvState ? window.__lvState() : '{}'))).state ?? {};
+const postConfig = (page_, patch) => page_.evaluate((p) => fetch('/live2d-voice/config', {
+  method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(p),
+}).then((r) => r.status), patch);
+let originalMode = null;
 
 try {
   console.log('=== boot ===');
@@ -111,6 +138,12 @@ try {
   await sleep(20000);
   const sid = [...followSessionIds][[...followSessionIds].length - 1];
   check('D0a', !!sid, `session captured (${sid?.slice(0, 18)}…)`);
+
+  // Pin stream mode BEFORE the Live view mounts (asrMode is read at mount),
+  // remembering the original value to restore in finally.
+  originalMode = await ev(() => fetch('/live2d-voice/config').then((r) => r.json()).then((d) => d.config?.asrMode ?? 'stream'));
+  await postConfig(page, { asrMode: 'stream' });
+  console.log(`asrMode: ${originalMode} → stream`);
 
   await ev(() => {
     const matches = [...document.querySelectorAll('*')].filter((el) => el.children.length === 0 && el.textContent?.trim() === 'Live2D');
@@ -125,46 +158,56 @@ try {
   const page2 = await ctx.newPage();
   await page2.goto(`http://127.0.0.1:4188/live2d-voice/app?session=${encodeURIComponent(sid)}`, { waitUntil: 'domcontentloaded', timeout: 30000 });
   await sleep(5000);
-  const st2 = await page2.evaluate(() => JSON.stringify({ root: !!document.querySelector('.lv-root') }));
-  check('D1a', JSON.parse(st2).root === true, `standalone second view up (${st2})`);
+  check('D0c', await page2.evaluate(() => !!document.querySelector('.lv-root')), 'standalone second view up');
 
-  // speak into the GUI tab
+  // ---- R2: speak into the GUI tab in STREAM mode ----
   await ev(() => document.querySelector('.lv-hud .lv-mic')?.click());
   await sleep(2500);
   await ev(() => window.__lvFeed());
-  console.log('=== spoken; waiting for submit ===');
+  console.log('=== spoken (stream mode); waiting for submit ===');
+  for (let i = 0; i < 40 && (await ev(() => window.__lvUserCards('公园'))) === 0; i++) await sleep(500);
+  const r2cards = async () => (await ev(() => window.__lvUserCards('公园')));
+  for (let i = 0; i < 20 && (await r2cards()) < 1; i++) await sleep(500);
+  // keep watching: the historical duplicate landed 10-12s after the first
+  for (let i = 0; i < 20; i++) { await sleep(500); await r2cards(); }
+  const cards1 = await r2cards();
+  const s1 = await st();
+  check('D1a', cards1 === 1, `stream mode: exactly one transcript card (${cards1})`);
+  check('D1b', s1.recognizes === 0, `stream mode: zero buffered /asr/recognize calls (${s1.recognizes})`);
+  check('D1c', s1.messages <= 1, `GUI tab /message POSTs = ${s1.messages} (expected 0 — viaClient path)`);
+  // The GUI tab submits via the host session API (viaClient) — that path has
+  // NO SSE user echo, so the standalone view must show the transcript ZERO
+  // times (if it ever shows one, a stray echo route appeared).
+  const st2cards = async () => (await page2.evaluate(() => window.__lvUserCards('公园')));
+  for (let i = 0; i < 6; i++) { await sleep(500); await st2cards(); }
+  check('D1d', (await st2cards()) === 0, `standalone shows the viaClient transcript 0 times (${await st2cards()})`);
 
-  // watch for user subtitles with the transcript
-  const findUser = async () => {
-    const lines = JSON.parse(await subs());
-    return lines.filter((l) => l.user && l.text.includes('公园'));
-  };
-  let userLines = [];
-  for (let i = 0; i < 40 && userLines.length === 0; i++) {
-    userLines = await findUser();
-    if (userLines.length === 0) await sleep(500);
-  }
-  check('D2a', userLines.length === 1, `exactly one user subtitle (${userLines.length}) ${userLines[0] ? `"${userLines[0].text.slice(0, 30)}"` : ''}`);
-  const msgCount = async () => (JSON.parse(await ev(() => (window.__lvState ? window.__lvState() : '{}'))).state?.messages ?? []).length;
-  console.log('message POSTs at submit:', await msgCount());
+  // ---- R3: type on the standalone page — the /message route's SSE echo is
+  // the ONLY user card it must show (local push doubled it before) ----
+  // NB: the HUD button's title is 打字输入 while closed (收起键盘输入 once open).
+  await page2.evaluate(() => document.querySelector('.lv-hud [title*="打字"]')?.click());
+  await sleep(400);
+  await page2.keyboard.type('独立页双发回归测试', { delay: 12 });
+  await page2.keyboard.press('Enter');
+  const TYPED = '独立页双发回归测试';
+  for (let i = 0; i < 10 && (await page2.evaluate(() => window.__lvUserCards('独立页双发回归测试'))) === 0; i++) await sleep(500);
+  for (let i = 0; i < 16; i++) { await sleep(500); await page2.evaluate(() => window.__lvUserCards('独立页双发回归测试')); }
+  const p2cards = await page2.evaluate(() => window.__lvUserCards('独立页双发回归测试'));
+  const p2msgs = await page2.evaluate(() => JSON.parse(window.__lvState()).state);
+  console.log('R3 diag page2:', JSON.stringify(p2msgs), 'cards:', p2cards);
+  console.log('R3 diag page2 DOM:', await page2.evaluate(() => JSON.stringify([...document.querySelectorAll('.lv-sub-card, .lv-sub-old')].map((el) => ({ cls: el.className, text: (el.textContent ?? '').slice(0, 30) })))));
+  console.log('R3 diag page1 DOM:', await ev(() => JSON.stringify([...document.querySelectorAll('.lv-sub-card, .lv-sub-old')].map((el) => ({ cls: el.className, text: (el.textContent ?? '').slice(0, 30) })))));
+  check('D2a', p2cards === 1, `standalone typed line shows exactly once (${p2cards})`);
+  check('D2b', p2msgs === 1, `standalone submitted exactly one /message (${p2msgs})`);
+  // the GUI tab sees the same line once over SSE (it did not submit it)
+  for (let i = 0; i < 10; i++) { await sleep(500); await ev(() => window.__lvUserCards('独立页双发回归测试')); }
+  check('D2c', (await ev(() => window.__lvUserCards('独立页双发回归测试'))) === 1, 'GUI tab shows the standalone line once (SSE echo)');
 
-  // the old bug: a second identical submit lands ~10-12s later
-  let totalUserSeen = 0;
-  const seen = new Set();
-  for (let i = 0; i < 30; i++) {
-    for (const l of await findUser()) {
-      if (!seen.has(l.text)) { seen.add(l.text); totalUserSeen++; }
-    }
-    await sleep(500);
-  }
-  check('D3a', totalUserSeen === 1, `no delayed duplicate within 15s (${totalUserSeen} distinct user lines seen)`);
-  const msgs = JSON.parse(await ev(() => window.__lvState ? window.__lvState() : '{}')).state?.messages ?? [];
-  console.log('messages:', JSON.stringify(msgs));
-  check('D3b', msgs.length <= 1, `/message POSTs = ${msgs.length} (expected ≤1)`);
-
+  await postConfig(page, { asrMode: originalMode }).catch(() => undefined);
   const failed = results.filter((r) => !r.ok);
   console.log(`\n${results.length - failed.length}/${results.length} passed`);
   process.exit(failed.length ? 1 : 0);
 } finally {
+  if (originalMode !== null) await postConfig(page, { asrMode: originalMode }).catch(() => undefined);
   await browser.close();
 }

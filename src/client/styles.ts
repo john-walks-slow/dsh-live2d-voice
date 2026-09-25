@@ -202,6 +202,12 @@ body[data-live2d-active="true"] [class*="taskBoard"] {
 /* ==========================================================================
    4. Status Chip & LevelMeter (Replacing Crude Red Dot)
    ========================================================================== */
+/* TEMP-TRIAL (260925): 用户要求先试隐藏麦克风状态条——录音中/AI 回复中/
+   请求权限中一律不显示。组件代码保留，删掉下面这条规则即恢复显示。 */
+.lv-micbar {
+	display: none !important;
+}
+
 .lv-micbar {
 	position: absolute;
 	bottom: calc(var(--lv-chrome-bottom) + 64px);
@@ -305,6 +311,11 @@ body[data-live2d-active="true"] [class*="taskBoard"] {
 .lv-btn.lv-on {
 	color: var(--lv-accent);
 	background: color-mix(in srgb, var(--lv-accent) 12%, transparent);
+}
+
+.lv-btn.lv-btn-exit:hover {
+	color: #ef4444;
+	background: color-mix(in srgb, #ef4444 14%, transparent);
 }
 
 /* Mic pulse halo — only plays while the user is actually speaking (level
@@ -762,7 +773,9 @@ body[data-live2d-active="true"] [class*="taskBoard"] {
    ========================================================================== */
 .lv-input {
 	position: absolute;
-	bottom: calc(var(--lv-chrome-bottom) + 64px);
+	/* 260925 用户要求：输入框与 HUD 操作栏之间加一点 margin（HUD 顶约
+	   chrome+58px，64px 时几乎贴死 → 76px 留 ~18px 间隙） */
+	bottom: calc(var(--lv-chrome-bottom) + 76px);
 	left: 50%;
 	transform: translateX(-50%);
 	width: min(76%, 660px);
@@ -829,7 +842,7 @@ body[data-live2d-active="true"] [class*="taskBoard"] {
 }
 
 .lv-root.lv-keyboard-open .lv-input {
-	bottom: calc(max(var(--lv-chrome-bottom) + 64px, var(--lv-ime-height, 0px) + 16px));
+	bottom: calc(max(var(--lv-chrome-bottom) + 76px, var(--lv-ime-height, 0px) + 16px));
 }
 
 .lv-root.lv-keyboard-open .lv-micbar {
@@ -955,27 +968,27 @@ body[data-live2d-active="true"] [class*="taskBoard"] {
 /* ==========================================================================
    9. Fullscreen (Immersive Web-App Mode)
    --------------------------------------------------------------------------
-   Web-level immersion: fixed to cover the entire browser layout viewport,
-   hiding host DSH shell/headers/panels with high z-index without requesting
-   native browser fullscreen.
+   Web-level immersion: fixed 铺满可视区域盖住 DSH 宿主界面，不调起
+   浏览器原生全屏。
+
+   三个关键约束（260925 全屏不可用事故的教训）：
+   1. 只用 inset: 0 定尺寸 —— fixed + inset:0 铺满的是 *可视区域*，
+      移动端自动避开地址栏；绝不用 width/height: 100vw/100vh（那是
+      "最大视口"，会把底部 HUD 推到地址栏后面 → 全屏后无法退出）。
+   2. z-index 用近最大值 —— 必须压过宿主 DSH 所有 overlay
+      （header/侧栏/弹层），否则 HUD 与字幕被宿主 UI 盖住"显示不全"。
+   3. 不做任何 canvas CSS 拉伸 —— stage 依旧 absolute inset:0 跟随
+      root；Pixi 的 resizeTo(container) 在容器尺寸变化后按容器实际
+      clientWidth/clientHeight 调 renderer.resize()，autoDensity 同步
+      canvas CSS 尺寸，buffer 与显示永远同源等比。
    ========================================================================== */
 .lv-root.lv-fullscreen,
 .lv-root:fullscreen {
 	position: fixed;
 	inset: 0;
-	width: 100vw;
-	height: 100vh;
-	z-index: 50;
+	z-index: 2147483000;
 	background: var(--lv-base);
 	--lv-chrome-bottom: 20px;
-}
-
-.lv-root.lv-fullscreen .lv-stage,
-.lv-root:fullscreen .lv-stage {
-	position: absolute;
-	inset: 0;
-	width: 100%;
-	height: 100%;
 }
 
 .lv-root.lv-fullscreen .lv-ambient,

@@ -28,7 +28,9 @@ const sessionId = params.get("session")?.trim() ?? "";
 const submitPrompt: SubmitPrompt = (sid, text, mode) => {
 	if (sid !== sessionId) return undefined;
 	return postMessage(sid, text, mode)
-		.then(() => ({ ok: true as const }))
+		// remoteEcho: the /message route emits the user subtitle over the
+		// session SSE — the view must not also push it locally (double card).
+		.then(() => ({ ok: true as const, remoteEcho: true }))
 		.catch((error: unknown) => ({ ok: false as const, error: String((error as Error)?.message ?? error) }));
 };
 

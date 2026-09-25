@@ -137,6 +137,7 @@ export class MicCapture {
 	private inSpeech = false;
 	private releaseTimer = 0;
 	private running = false;
+	private paused = false;
 	/** Rolling idle audio (attack-window pre-roll). */
 	private preRoll: Int16Array[] = [];
 	private preRollSamples = 0;
@@ -175,13 +176,19 @@ export class MicCapture {
 				URL.revokeObjectURL(url);
 			}
 			// Mobile browsers suspend AudioContexts while the page is hidden —
-		// without an auto-resume the VAD would die silently after the user
-		// switches away and back (the "phone left on this page" scenario).
-		this.context.onstatechange = () => {
-			if (this.running && this.context?.state === "suspended") {
-				void this.context.resume().catch(() => undefined);
-			}
-		};
+			// only auto-resume when running, unpaused, AND the page is visible.
+			// NEVER force resume in the background (causes background eavesdropping).
+			this.context.onstatechange = () => {
+				if (
+					this.running &&
+					!this.paused &&
+					typeof document !== "undefined" &&
+					!document.hidden &&
+					this.context?.state === "suspended"
+				) {
+					void this.context.resume().catch(() => undefined);
+				}
+			};
 		this.node = new AudioWorkletNode(this.context, "lv-capture", {
 			processorOptions: { gain: this.gain },
 		});
@@ -200,17 +207,55 @@ export class MicCapture {
 		}
 	}
 
-	stop(): void {
-		this.running = false;
-		if (this.releaseTimer) window.clearTimeout(this.releaseTimer);
-		// The utterance in progress is still worth recognizing.
+	get isPaused(): boolean {
+		return this.paused;
+	}
+
+	pause(): void {
+		if (!this.running || this.paused) return;
+		this.paused = true;
+		if (this.releaseTimer) {
+			window.clearTimeout(this.releaseTimer);
+			this.releaseTimer = 0;
+		}
 		if (this.inSpeech) {
 			this.inSpeech = false;
 			this.speakingSince = 0;
-			const kind = this.segmentSamples < MIN_SEGMENT_SAMPLES ? "blip" : "release";
-			this.emitSegment();
-			this.events.onSpeechEnd?.(kind);
+			this.events.onSpeechEnd?.("blip");
 		}
+		this.segment = [];
+		this.segmentSamples = 0;
+		this.preRoll = [];
+		this.preRollSamples = 0;
+		if (this.context && this.context.state === "running") {
+			void this.context.suspend().catch(() => undefined);
+		}
+	}
+
+	resume(): void {
+		if (!this.running || !this.paused) return;
+		this.paused = false;
+		if (this.context && this.context.state === "suspended") {
+			void this.context.resume().catch(() => undefined);
+		}
+	}
+
+	stop(): void {
+		this.running = false;
+		this.paused = false;
+		if (this.releaseTimer) {
+			window.clearTimeout(this.releaseTimer);
+			this.releaseTimer = 0;
+		}
+		// Explicit stop / unload: discard any in-progress speech immediately.
+		// NEVER emit unfinished segment to ASR or AI on stop/unload.
+		if (this.inSpeech) {
+			this.inSpeech = false;
+			this.speakingSince = 0;
+			this.events.onSpeechEnd?.("blip");
+		}
+		this.segment = [];
+		this.segmentSamples = 0;
 		this.node?.port.close();
 		this.node?.disconnect();
 		this.node = null;
@@ -228,7 +273,7 @@ export class MicCapture {
 	}
 
 	private handleFrame(pcm: Int16Array): void {
-		if (!this.running) return;
+		if (!this.running || this.paused) return;
 		if (this.inSpeech) {
 			this.segment.push(pcm);
 			this.segmentSamples += pcm.length;
@@ -268,7 +313,7 @@ export class MicCapture {
 	}
 
 	private handleLevel(level: number): void {
-		if (!this.running) return;
+		if (!this.running || this.paused) return;
 		this.events.onLevel?.(Math.min(1, level * 6));
 		const now = performance.now();
 		if (level >= OPEN_THRESHOLD) this.lastSpeechAt = now;

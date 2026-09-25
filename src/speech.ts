@@ -21,7 +21,7 @@
 import { randomUUID } from "node:crypto";
 import type { Context } from "@deepseek-ai/cordis";
 import { createUserMessage, type StreamChunk } from "@deepseek-ai/dsh-llm";
-import { SentenceBuffer, extractEmotionTags, extractMotionTags } from "./sentence.js";
+import { SentenceBuffer, extractEmotionTags, extractMotionTags, splitByWeight } from "./sentence.js";
 import { PCM_SAMPLE_RATE, synthesize } from "./tts.js";
 import { languageLabel, type PluginConfig } from "./config.js";
 import type { SseHub } from "./events.js";
@@ -46,6 +46,9 @@ interface SessionModel {
 	provider: string;
 	model: string;
 }
+
+/** Cap for one whole-utterance translation call (queue-fairness guard). */
+const TRANSLATE_TIMEOUT_MS = 20_000;
 
 /**
  * Serial translation queue with a small backlog cap: subtitles are timely —
@@ -104,6 +107,12 @@ export function applySpeechTap(ctx: Context, deps: SpeechDeps): (sessionId: stri
 		signal: AbortSignal,
 	): Promise<string> => {
 		if (signal.aborted || !deps.hub.has(sessionId)) return "";
+		// A hung call must never stall the per-session queue (and every
+		// later utterance's translation behind it) — cap it.
+		const capped = new AbortController();
+		const capTimer = setTimeout(() => capped.abort(), TRANSLATE_TIMEOUT_MS);
+		const forwardAbort = () => capped.abort();
+		signal.addEventListener("abort", forwardAbort, { once: true });
 		let translated = "";
 		try {
 			const stream = ctx.llm.stream({
@@ -111,14 +120,17 @@ export function applySpeechTap(ctx: Context, deps: SpeechDeps): (sessionId: stri
 				model: model.model,
 				messages: [createUserMessage({ content: [{ type: "text", text }], source: { kind: "user" } })],
 				system: `You translate speech subtitles. Translate the user's text into ${languageLabel(targetLanguage)}. Reply with ONLY the translation — no notes, no quotes, no original text. If the text is already in the target language, reply with it unchanged. Keep it natural and concise.`,
-				signal,
+				signal: capped.signal,
 			});
 			for await (const chunk of stream) {
-				if (signal.aborted) return "";
+				if (capped.signal.aborted) return "";
 				if (chunk.type === "text-delta" && chunk.text) translated += chunk.text;
 			}
 		} catch {
 			return ""; // translation is best-effort; the original line stands
+		} finally {
+			clearTimeout(capTimer);
+			signal.removeEventListener("abort", forwardAbort);
 		}
 		const trimmed = translated.trim();
 		return trimmed !== text ? trimmed : "";
@@ -194,6 +206,10 @@ async function* speak(
 	const buffer = new SentenceBuffer();
 	// Whole-utterance source lines, fed to one-shot translation once the
 	// stream ends (translation starts in parallel with the TTS drain).
+	// Collected at STREAM time (handleSentence) — NOT at TTS time — so the
+	// end-of-stream snapshot below always covers every line: speakSentence
+	// runs on the serial TTS queue, and anything still backlogged there
+	// would otherwise be missing from the translation input.
 	const lines: Array<{ lineId: string; text: string }> = [];
 	let seq = 0;
 	let lineSeq = 0;
@@ -202,7 +218,7 @@ async function* speak(
 	// sentenceSubtitles: per-sentence TTS + subtitle (default, subtitles stay
 	// voice-synced). Off → sentences batch into paragraph chunks: one TTS
 	// call + one subtitle line per chunk (smoother speech, chunk-level
-	// subtitles). Emotion tags still fire per sentence in both modes.
+	// subtitles). Expression/motion tags fire per sentence in both modes.
 	const sentenceMode = config.sentenceSubtitles !== false;
 	const BLOCK_SENTENCES = 3;
 	const BLOCK_CHARS = 140;
@@ -210,26 +226,24 @@ async function* speak(
 	let blockLines: string[] = [];
 	const enqueueUnit = (lineId: string, text: string): void => {
 		queue = queue.then(() =>
-			speakSentence(deps, sessionId, utteranceId, lineId, text, config, apiKeys, controller.signal, () => seq++, lines)
+			speakSentence(deps, sessionId, utteranceId, lineId, text, config, apiKeys, controller.signal, () => seq++)
 		);
 	};
 	const flushBlock = (): void => {
 		if (blockLines.length === 0) return;
-		enqueueUnit(`${utteranceId}-${++lineSeq}`, blockLines.join(""));
+		const text = blockLines.join("");
 		blockLines = [];
+		const lineId = `${utteranceId}-${++lineSeq}`;
+		lines.push({ lineId, text });
+		enqueueUnit(lineId, text);
 	};
 	const handleSentence = (raw: string): void => {
-		if (sentenceMode) {
-			const { clean, motions } = extractMotionTags(raw);
-			for (const motion of motions) {
-				deps.hub.emit(sessionId, "motion", { utteranceId, motion, speaker: "assistant" });
-			}
-			const cleaned = extractMotionTags(raw).clean;
-			enqueueUnit(`${utteranceId}-${++lineSeq}`, cleaned);
-			return;
-		}
+		// Full tag extraction here, at stream time (emotion + motion), so the
+		// line reaches `lines` synchronously with the same clean text the
+		// subtitle will show. Block mode always worked this way; sentence
+		// mode used to defer emotion extraction to TTS time.
 		const { clean: cleanEmotion, emotions } = extractEmotionTags(raw, vocabulary);
-		const { clean: cleanMotion, motions } = extractMotionTags(cleanEmotion);
+		const { clean, motions } = extractMotionTags(cleanEmotion);
 		const emotion = emotions.at(-1);
 		if (emotion !== undefined) {
 			deps.hub.emit(sessionId, "expression", { utteranceId, emotion, expression: config.emotionMap[emotion] });
@@ -237,8 +251,14 @@ async function* speak(
 		for (const motion of motions) {
 			deps.hub.emit(sessionId, "motion", { utteranceId, motion, speaker: "assistant" });
 		}
-		const text = cleanMotion.trim();
+		const text = clean.trim();
 		if (!text) return;
+		if (sentenceMode) {
+			const lineId = `${utteranceId}-${++lineSeq}`;
+			lines.push({ lineId, text });
+			enqueueUnit(lineId, text);
+			return;
+		}
 		blockLines.push(text);
 		const chars = blockLines.reduce((n, line) => n + line.length, 0);
 		if (blockLines.length >= BLOCK_SENTENCES || chars >= BLOCK_CHARS) flushBlock();
@@ -299,40 +319,25 @@ async function* speak(
 }
 
 /**
- * Speak one sentence: expression → TTS (streaming PCM). The subtitle is
- * emitted with the first PCM chunk's audioSeq so the client shows it when
- * that chunk actually starts playing (host synthesis runs ahead of browser
- * playback — a naive emit would let subtitles race ahead of the voice);
- * when no TTS runs (no keys / failure) audioSeq stays undefined and the
- * client shows it immediately. The clean sentence is also collected into
- * `lines` — the whole utterance is translated once (see translateWhole),
- * never per sentence. Never rejects.
+ * Speak one pre-cleaned sentence (tags were extracted and emitted at stream
+ * time by the caller): TTS (streaming PCM). The subtitle is emitted with the
+ * first PCM chunk's audioSeq so the client shows it when that chunk actually
+ * starts playing (host synthesis runs ahead of browser playback — a naive
+ * emit would let subtitles race ahead of the voice); when no TTS runs (no
+ * keys / failure) audioSeq stays undefined and the client shows it
+ * immediately. Never rejects.
  */
 async function speakSentence(
 	deps: SpeechDeps,
 	sessionId: string,
 	utteranceId: string,
 	lineId: string,
-	raw: string,
+	text: string,
 	config: PluginConfig,
 	apiKeys: string[],
 	signal: AbortSignal,
 	nextSeq: () => number,
-	lines: Array<{ lineId: string; text: string }>,
 ): Promise<void> {
-	const vocabulary = new Set(Object.keys(config.emotionMap));
-	const { clean: cleanEmotion, emotions } = extractEmotionTags(raw, vocabulary);
-	const { clean, motions } = extractMotionTags(cleanEmotion);
-	const emotion = emotions.at(-1);
-	if (emotion !== undefined) {
-		deps.hub.emit(sessionId, "expression", { utteranceId, emotion, expression: config.emotionMap[emotion] });
-	}
-	for (const motion of motions) {
-		deps.hub.emit(sessionId, "motion", { utteranceId, motion, speaker: "assistant" });
-	}
-	const text = clean.trim();
-	if (!text) return;
-	lines.push({ lineId, text });
 	let subtitled = false;
 	const emitSubtitle = (audioSeq?: number): void => {
 		if (subtitled) return;
@@ -360,10 +365,11 @@ async function speakSentence(
 
 /**
  * Translate a whole utterance with one llm call, then split the translated
- * text back onto the original subtitle lines. Sentence boundaries may shift
- * in translation — attach by index; surplus translated sentences merge into
- * the last line, missing ones leave their line without a translation.
- * Best-effort: never throws.
+ * text back onto the original subtitle lines proportionally to each line's
+ * share of the original text (sentence boundaries shift and merge in
+ * translation — the old sentence-index mapping stranded every line past the
+ * translated sentence count without a translation and piled the whole result
+ * onto the first line). Best-effort: never throws.
  */
 async function translateWhole(
 	deps: SpeechDeps,
@@ -377,20 +383,7 @@ async function translateWhole(
 	const whole = lines.map((line) => line.text).join("");
 	const translated = await translate(sessionId, model, whole, targetLanguage, signal);
 	if (!translated) return;
-	const buffer = new SentenceBuffer();
-	const sentences = buffer.push(translated);
-	sentences.push(...buffer.flush());
-	const perLine: string[] = new Array(lines.length).fill("");
-	let idx = 0;
-	for (const sentence of sentences) {
-		if (idx < lines.length) {
-			perLine[idx] = sentence;
-			idx += 1;
-		} else {
-			// Surplus translated sentences keep flowing into the final line.
-			perLine[perLine.length - 1] += sentence;
-		}
-	}
+	const perLine = splitByWeight(translated, lines.map((line) => line.text.length));
 	for (let i = 0; i < lines.length; i++) {
 		if (perLine[i]) {
 			deps.hub.emit(sessionId, "subtitle-translation", { lineId: lines[i].lineId, text: perLine[i] });

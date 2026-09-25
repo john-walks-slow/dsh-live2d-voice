@@ -32,11 +32,18 @@ interface SentinelLike {
 
 const HUD_IDLE_FADE_MS = 2500;
 
+/**
+ * Submit one user line through the host. The resolved result may carry
+ * `remoteEcho: true` — the submit path itself echoes the line back over the
+ * session SSE (the standalone page POSTs /live2d-voice/message, whose route
+ * emits the user subtitle), so the view must not also push it locally or
+ * the line displays twice.
+ */
 export type SubmitPrompt = (
 	sessionId: string,
 	text: string,
 	mode?: "queue" | "steer",
-) => Promise<{ ok: boolean; error?: string }> | undefined;
+) => Promise<{ ok: boolean; error?: string; remoteEcho?: boolean }> | undefined;
 
 type ViewProps = ConvViewProps & { submitPrompt?: SubmitPrompt; standalone?: boolean };
 
@@ -57,6 +64,7 @@ function loadLookParams(): LookParams {
 export function Live2DView(props: ViewProps) {
 	const sessionId = String(props.sessionId);
 	const rootRef = useRef<HTMLDivElement>(null);
+	const nativeFsRef = useRef(false); // 当前是否处于 root 的浏览器原生全屏（standalone 模式）
 	const stageRef = useRef<HTMLDivElement>(null);
 	/**
 	 * The stage's single Pixi application — one canvas, one WebGL context,
@@ -401,7 +409,12 @@ export function Live2DView(props: ViewProps) {
 		return () => {
 			sharedStageRef.current = null;
 			try {
-				stage.app.destroy(true, { children: true });
+				const gl = (stage.app.renderer as unknown as { gl?: WebGLRenderingContext })?.gl;
+				const ext = gl?.getExtension?.("WEBGL_lose_context");
+				if (ext) ext.loseContext();
+			} catch {}
+			try {
+				stage.app.destroy(true, { children: true, texture: true, baseTexture: true });
 			} catch {
 				/* best-effort */
 			}
@@ -922,14 +935,28 @@ export function Live2DView(props: ViewProps) {
 
 	// Fullscreen (Immersive Web-App Mode) & Wake Lock
 	const toggleFullscreen = () => {
+		if (props.standalone) {
+			// 独立 URL：浏览器原生全屏（隐藏系统 UI）。退出走 exitFullscreen；
+			// 不支持元素全屏的平台（iPhone Safari 等）fallback 到网页半全屏。
+			const root = rootRef.current;
+			if (document.fullscreenElement === root) {
+				void document.exitFullscreen().catch(() => undefined);
+				return;
+			}
+			if (root?.requestFullscreen) {
+				void root.requestFullscreen().catch(() => setFullscreen((prev) => !prev));
+				return;
+			}
+		}
+		// DSH 内：网页半全屏（fixed 铺满视口盖住宿主，不调起原生全屏）
 		setFullscreen((prev) => !prev);
 	};
 
-	// Escape key exits fullscreen
+	// Escape key exits fullscreen（原生全屏交给浏览器自带 Esc + fullscreenchange 同步）
 	useEffect(() => {
 		if (!fullscreen) return undefined;
 		const onKeyDown = (e: KeyboardEvent) => {
-			if (e.key === "Escape") {
+			if (e.key === "Escape" && document.fullscreenElement === null) {
 				setFullscreen(false);
 			}
 		};
@@ -938,10 +965,14 @@ export function Live2DView(props: ViewProps) {
 	}, [fullscreen]);
 
 	useEffect(() => {
+		// 原生全屏（standalone 模式）进出同步：只在 root 自己的全屏态之间
+		// 转换——宿主页面进/出它自己的全屏不得误伤本视图的 semi 全屏 state。
 		const syncFullscreen = () => {
 			if (document.fullscreenElement === rootRef.current) {
+				nativeFsRef.current = true;
 				setFullscreen(true);
-			} else if (document.fullscreenElement === null && !rootRef.current?.classList.contains("lv-fullscreen")) {
+			} else if (nativeFsRef.current && document.fullscreenElement === null) {
+				nativeFsRef.current = false;
 				setFullscreen(false);
 			}
 		};
@@ -1319,7 +1350,10 @@ export function Live2DView(props: ViewProps) {
 				if (viaClient) {
 					const result = await viaClient;
 					if (!result.ok) throw new Error(result.error ?? "session/prompt rejected");
-					pushSubtitle("user", text);
+					// The standalone submitPrompt POSTs /message, whose route
+					// echoes the user line over SSE — skip the local push or
+					// the line would display twice.
+					if (!result.remoteEcho) pushSubtitle("user", text);
 				} else {
 					await postMessage(sessionId, text, mode);
 				}
@@ -1350,7 +1384,7 @@ export function Live2DView(props: ViewProps) {
 		}
 	};
 
-	const stopListening = () => {
+	const stopListening = useCallback(() => {
 		micRef.current?.stop();
 		micRef.current = null;
 		asrUploadRef.current?.abort();
@@ -1360,9 +1394,65 @@ export function Live2DView(props: ViewProps) {
 		setMicState("idle");
 		setMicLevel(0);
 		setInterimText("");
-	};
+	}, []);
 
-	useEffect(() => stopListening, [sessionId]);
+	// Unmount / session-change cleanup: ensure mic and uploads are strictly stopped
+	useEffect(() => {
+		return () => {
+			stopListening();
+		};
+	}, [stopListening, sessionId]);
+
+	// Page visibility management:
+	// When switching to another browser tab, phone home screen, or locking screen,
+	// pause microphone capture and stop speech playback immediately to prevent
+	// background eavesdropping and unsolicited AI conversation.
+	useEffect(() => {
+		const handleVisibilityChange = () => {
+			if (document.hidden) {
+				logger.info("Page hidden: pausing microphone and speech playback");
+				micRef.current?.pause();
+				engineRef.current?.stop();
+			} else {
+				logger.info("Page visible: checking microphone state");
+				if (micState === "listening" && micRef.current?.isPaused) {
+					micRef.current.resume();
+				}
+			}
+		};
+		document.addEventListener("visibilitychange", handleVisibilityChange);
+		return () => {
+			document.removeEventListener("visibilitychange", handleVisibilityChange);
+		};
+	}, [micState]);
+
+	// Exit Live mode: stop all active media and return to default Chat tab
+	const exitLiveMode = useCallback(() => {
+		stopListening();
+		engineRef.current?.stop();
+		if (fullscreen) {
+			if (document.fullscreenElement) {
+				void document.exitFullscreen().catch(() => undefined);
+			}
+			setFullscreen(false);
+		}
+		if (props.standalone) {
+			if (window.history.length > 1) {
+				window.history.back();
+			} else {
+				showToast("已停止语音与监听");
+			}
+			return;
+		}
+		const tabs = document.querySelectorAll<HTMLElement>('[role="tab"]');
+		for (const tab of Array.from(tabs)) {
+			const text = tab.textContent?.trim() ?? "";
+			if (text && text !== "Live2D" && text !== "Live") {
+				tab.click();
+				return;
+			}
+		}
+	}, [fullscreen, props.standalone, stopListening]);
 
 	const looksLikeEcho = (text: string): boolean => {
 		const recent = `${assistantEchoRef.current}\n${playerEchoRef.current}`;
@@ -1460,8 +1550,12 @@ export function Live2DView(props: ViewProps) {
 				}
 			},
 			// Buffered path (nostream): the whole VAD-closed segment is
-			// recognized in one request.
+			// recognized in one request. Stream mode must NOT run this —
+			// the same utterance is already flowing through the live upload,
+			// and recognizing the closed segment here too would submit every
+			// spoken line twice (once via asr-final, once via this path).
 			onSegment: (pcm) => {
+				if (asrModeRef.current === "stream") return;
 				segmentWhileSpeakingRef.current = engineRef.current?.speaking() === true;
 				asrPendingCount.current += 1;
 				setAsrPending(true);
@@ -1673,6 +1767,7 @@ export function Live2DView(props: ViewProps) {
 				onPickVoice={(preset) => void pickVoice(preset)}
 				onPickSttLanguage={(id) => void pickSttLanguage(id)}
 				onSavePrompt={(text) => void savePrompt(text)}
+				onExitLive={exitLiveMode}
 				onOpenGlobalSettings={() => {
 					// 导航至系统设置
 					const btn = document.querySelector('button[title*="Settings"], button[title*="设置"]') as HTMLElement | null;
@@ -1692,7 +1787,7 @@ export function makeLive2DView(submitPrompt: SubmitPrompt): FC<ConvViewProps> {
 				fallbackTitle="Live2D 角色视图渲染异常"
 				onReset={() => setRemountKey((k) => k + 1)}
 			>
-				<Live2DView {...props} submitPrompt={submitPrompt} />
+				<Live2DView key={String(props.sessionId)} {...props} submitPrompt={submitPrompt} />
 			</ErrorBoundary>
 		);
 	};

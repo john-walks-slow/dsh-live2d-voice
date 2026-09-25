@@ -89,3 +89,60 @@ export class SentenceBuffer {
 		return sentence;
 	}
 }
+
+// ---------- whole-utterance translation split ----------
+
+/** Characters that make an acceptable cut point for a subtitle chunk. */
+const CUT_BOUNDARIES = "。！？!?．.，、,;；：: …— ";
+
+/**
+ * Cut a whole-utterance translation back onto the original subtitle lines,
+ * proportionally to each line's share of the original text (its weight).
+ * Sentence boundaries shift and merge in translation, so an index-based
+ * sentence mapping strands lines without a translation; proportional cuts
+ * with punctuation snapping keep every line covered. Pieces are trimmed;
+ * a line only receives an empty piece when the translation is too short to
+ * divide (fewer characters than lines).
+ */
+export function splitByWeight(translated: string, weights: number[]): string[] {
+	const n = weights.length;
+	if (n === 0) return [];
+	const total = weights.reduce((a, b) => a + b, 0);
+	if (total === 0 || translated.length === 0) {
+		const whole = new Array<string>(n).fill("");
+		whole[0] = translated;
+		return whole;
+	}
+	// Raw proportional cut points, kept strictly increasing (clamped) so no
+	// two cuts collide while the translation is long enough to divide.
+	const cuts: number[] = [0];
+	for (let i = 1; i < n; i++) {
+		const cumulative = weights.slice(0, i).reduce((a, b) => a + b, 0);
+		const raw = Math.round((translated.length * cumulative) / total);
+		cuts.push(Math.min(translated.length, Math.max(cuts[i - 1] + 1, raw)));
+	}
+	cuts.push(translated.length);
+	// Snap interior cuts to nearby punctuation (never crossing a neighbor).
+	// bestDist starts at Infinity — the raw proportional cut only survives
+	// when no boundary lies inside the window.
+	const snapped = cuts.slice();
+	for (let i = 1; i < n; i++) {
+		let best = snapped[i];
+		let bestDist = Infinity;
+		const lo = Math.max(snapped[i - 1] + 1, cuts[i] - 12);
+		const hi = Math.min(snapped[i + 1] - 1, cuts[i] + 12);
+		for (let pos = lo; pos <= hi; pos++) {
+			if (CUT_BOUNDARIES.includes(translated[pos - 1] ?? "")) {
+				const dist = Math.abs(pos - cuts[i]);
+				if (dist < bestDist) {
+					best = pos;
+					bestDist = dist;
+				}
+			}
+		}
+		snapped[i] = best;
+	}
+	const pieces: string[] = [];
+	for (let i = 0; i < n; i++) pieces.push(translated.slice(snapped[i], snapped[i + 1]).trim());
+	return pieces;
+}
