@@ -139,33 +139,101 @@ try {
 
   // ---- T2c-e: gestures on the shared stage (regression: 14bd6e4 gated
   // listener attach on !shared — every mount went shared, so pan/zoom died
-  // in BOTH single and dual mode). dataset.lvTransform is "panX,panY,scale".
+  // in BOTH single and dual mode). Per-model transform keys
+  // (lvAiTransform/lvPlayerTransform) are the stable observation — the
+  // shared lvTransform is last-writer-wins on the dual stage.
+  //
+  // Gestures are dispatched directly to .lv-stage because the host's
+  // anti-addiction overlay (#dsh-anti-addiction-overlay, z-index 2147483647,
+  // pointer-events: all) covers the viewport and intercepts page.mouse
+  // events. DispatchEvent bypasses that overlay and reaches the actual
+  // gesture handlers attached on .lv-stage.
   console.log('=== T2 gestures (dual stage) ===');
   {
     const readTransform = () => ev(() => {
-      const [x = 0, y = 0, s = 0] = (document.querySelector('.lv-stage')?.dataset.lvTransform ?? '').split(',').map(Number);
-      return { x, y, s };
+      const parse = (k) => {
+        const [x = 0, y = 0, s = 0] = (document.querySelector('.lv-stage')?.dataset[k] ?? '').split(',').map(Number);
+        return { x, y, s };
+      };
+      return { ai: parse('lvAiTransform'), pl: parse('lvPlayerTransform') };
     });
-    const box = await page.locator('.lv-stage').boundingBox();
-    const cx = box.x + box.width * 0.5;
-    const cy = box.y + box.height * 0.45;
+    const dispatchDrag = (fx, fy, dx, dy, button = 0) => ev(([fx, fy, dx, dy, button]) => {
+      const stage = document.querySelector('.lv-stage');
+      const r = stage.getBoundingClientRect();
+      const x0 = r.left + r.width * fx;
+      const y0 = r.top + r.height * fy;
+      const init = { bubbles: true, cancelable: true, pointerType: 'mouse', button, pointerId: 1, isPrimary: true };
+      stage.dispatchEvent(new PointerEvent('pointerdown', { ...init, clientX: x0, clientY: y0 }));
+      for (let i = 1; i <= 8; i++) {
+        stage.dispatchEvent(new PointerEvent('pointermove', { ...init, clientX: x0 + (dx * i) / 8, clientY: y0 + (dy * i) / 8 }));
+      }
+      stage.dispatchEvent(new PointerEvent('pointerup', { ...init, clientX: x0 + dx, clientY: y0 + dy }));
+    }, [fx, fy, dx, dy, button]);
+    const dispatchDblClick = (fx, fy) => ev(([fx, fy]) => {
+      const stage = document.querySelector('.lv-stage');
+      const r = stage.getBoundingClientRect();
+      const x = r.left + r.width * fx;
+      const y = r.top + r.height * fy;
+      stage.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, cancelable: true, clientX: x, clientY: y, button: 0 }));
+    }, [fx, fy]);
+    const dispatchWheel = (fx, fy, deltas) => ev(([fx, fy, deltas]) => {
+      const stage = document.querySelector('.lv-stage');
+      const r = stage.getBoundingClientRect();
+      const x = r.left + r.width * fx;
+      const y = r.top + r.height * fy;
+      for (const dy of deltas) {
+        stage.dispatchEvent(new WheelEvent('wheel', { bubbles: true, cancelable: true, clientX: x, clientY: y, deltaY: dy }));
+      }
+    }, [fx, fy, deltas]);
+
     const g0 = await readTransform();
-    await page.mouse.move(cx, cy);
-    await page.mouse.down();
-    for (let i = 1; i <= 8; i++) await page.mouse.move(cx + 20 * i, cy - 4 * i);
-    await page.mouse.up();
+    // T2c: drag empty space at the center → whole camera pans (both avatars).
+    await dispatchDrag(0.5, 0.52, 160, -32, 0);
     await sleep(400);
     const g1 = await readTransform();
-    check('T2c', Math.abs(g1.x - g0.x) >= 80, `single-pointer drag pans (${g0.x} → ${g1.x})`);
+    check('T2c', Math.abs(g1.ai.x - g0.ai.x) >= 80 || Math.abs(g1.pl.x - g0.pl.x) >= 80,
+      `drag pans a stage avatar (ai ${g0.ai.x}→${g1.ai.x}, pl ${g0.pl.x}→${g1.pl.x})`);
+
+    // Reset; per-avatar drag at baseY (0.52h).
+    await dispatchDblClick(0.5, 0.52);
+    await sleep(400);
+    const p0 = await readTransform();
+    await dispatchDrag(0.28, 0.52, 144, -24, 0);
+    await sleep(400);
+    const p1 = await readTransform();
+    check('T2c-p', Math.abs(p1.pl.x - p0.pl.x) >= 100 && Math.abs(p1.ai.x - p0.ai.x) <= 10,
+      `drag player avatar moves player only (pl ${p0.pl.x}→${p1.pl.x}, ai ${p0.ai.x}→${p1.ai.x})`);
+
+    await dispatchDblClick(0.5, 0.52);
+    await sleep(400);
+    const a0 = await readTransform();
+    await dispatchDrag(0.72, 0.52, -144, -24, 0);
+    await sleep(400);
+    const a1 = await readTransform();
+    check('T2c-a', Math.abs(a1.ai.x - a0.ai.x) >= 100 && Math.abs(a1.pl.x - a0.pl.x) <= 10,
+      `drag AI avatar moves AI only (ai ${a0.ai.x}→${a1.ai.x}, pl ${a0.pl.x}→${a1.pl.x})`);
+
+    // Middle button drag: whole camera pans regardless of avatar hit.
+    await dispatchDblClick(0.5, 0.52);
+    await sleep(400);
+    const m0 = await readTransform();
+    await dispatchDrag(0.72, 0.52, 120, 0, 1);
+    await sleep(400);
+    const m1 = await readTransform();
+    check('T2c-mid', Math.abs(m1.ai.x - m0.ai.x) >= 80 && Math.abs(m1.pl.x - m0.pl.x) >= 80,
+      `middle-click drag pans whole stage (ai ${m0.ai.x}→${m1.ai.x}, pl ${m0.pl.x}→${m1.pl.x})`);
+
     const g2a = await readTransform();
-    for (let i = 0; i < 5; i++) await page.mouse.wheel(0, -240);
+    await dispatchWheel(0.5, 0.52, [-240, -240, -240, -240, -240]);
     await sleep(400);
     const g2 = await readTransform();
-    check('T2d', g2.s >= g2a.s + 0.15, `wheel zooms in (${g2a.s.toFixed(2)} → ${g2.s.toFixed(2)})`);
-    await page.mouse.dblclick(cx, cy);
+    check('T2d', g2.ai.s >= g2a.ai.s + 0.15 && g2.pl.s >= g2a.pl.s + 0.15,
+      `wheel zooms both avatars (ai ${g2a.ai.s.toFixed(2)}→${g2.ai.s.toFixed(2)}, pl ${g2a.pl.s.toFixed(2)}→${g2.pl.s.toFixed(2)})`);
+    await dispatchDblClick(0.5, 0.52);
     await sleep(400);
     const g3 = await readTransform();
-    check('T2e', Math.abs(g3.x) <= 5 && Math.abs(g3.s - 1) <= 0.05, `double-click resets (pan ${g3.x}, scale ${g3.s.toFixed(2)})`);
+    check('T2e', Math.abs(g3.ai.x) <= 5 && Math.abs(g3.ai.s - 1) <= 0.05 && Math.abs(g3.pl.x) <= 5 && Math.abs(g3.pl.s - 1) <= 0.05,
+      `double-click resets both (ai ${g3.ai.x},${g3.ai.s.toFixed(2)} · pl ${g3.pl.x},${g3.pl.s.toFixed(2)})`);
     await shot('02-gestures-dual');
   }
 
@@ -341,20 +409,26 @@ try {
   // regression hit single-model mode as much as dual). Close the ⚙ popover
   // first — it overlays the stage center and (correctly) eats pointer
   // events, being a sibling of .lv-stage rather than a child.
+  // Dispatch path bypasses the host anti-addiction overlay too.
   {
     await ev(() => { document.querySelector('.lv-pop-close')?.click(); return true; });
     await sleep(400);
-    const box = await page.locator('.lv-stage').boundingBox();
-    const cx = box.x + box.width * 0.5;
-    const cy = box.y + box.height * 0.45;
     const s0 = await ev(() => {
       const [x = 0, y = 0, s = 0] = (document.querySelector('.lv-stage')?.dataset.lvTransform ?? '').split(',').map(Number);
       return { x, y, s };
     });
-    await page.mouse.move(cx, cy);
-    await page.mouse.down();
-    for (let i = 1; i <= 8; i++) await page.mouse.move(cx - 20 * i, cy + 3 * i);
-    await page.mouse.up();
+    await ev(() => {
+      const stage = document.querySelector('.lv-stage');
+      const r = stage.getBoundingClientRect();
+      const x0 = r.left + r.width * 0.5;
+      const y0 = r.top + r.height * 0.45;
+      const init = { bubbles: true, cancelable: true, pointerType: 'mouse', button: 0, pointerId: 1, isPrimary: true };
+      stage.dispatchEvent(new PointerEvent('pointerdown', { ...init, clientX: x0, clientY: y0 }));
+      for (let i = 1; i <= 8; i++) {
+        stage.dispatchEvent(new PointerEvent('pointermove', { ...init, clientX: x0 - 20 * i, clientY: y0 + 3 * i }));
+      }
+      stage.dispatchEvent(new PointerEvent('pointerup', { ...init, clientX: x0 - 160, clientY: y0 + 24 }));
+    });
     await sleep(400);
     const s1 = await ev(() => {
       const [x = 0, y = 0, s = 0] = (document.querySelector('.lv-stage')?.dataset.lvTransform ?? '').split(',').map(Number);

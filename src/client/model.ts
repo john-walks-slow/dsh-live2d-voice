@@ -129,6 +129,27 @@ export function isCubismCoreLoaded(): boolean {
 export interface SharedStage {
 	app: Application;
 	canvas: HTMLCanvasElement;
+	/** Cross-model gesture state: hit-testing and drag ownership. */
+	gestures: GestureRegistry;
+}
+
+/**
+ * Per-stage gesture state shared by every model on the same stage.
+ * Each mountModel instance registers into the SAME list, so a pointer-down
+ * hit-test can tell which avatar the finger actually landed on; `dragOwner`
+ * pins the owning model for the duration of the drag (null = whole-camera
+ * pan on empty space / middle / right button). Without the shared list each
+ * handler only knows its own bounds and treats "not me" as "empty space",
+ * so dragging one avatar dragged BOTH.
+ */
+export interface GestureRegistry {
+	mounts: Array<{ model: GestureTarget }>;
+	dragOwner: GestureTarget | null;
+}
+
+/** The minimal surface a model must expose for hit-testing. */
+export interface GestureTarget {
+	getBounds(skipUpdate?: boolean): { x: number; y: number; width: number; height: number };
 }
 
 export function createLive2DStage(container: HTMLElement): SharedStage {
@@ -142,7 +163,7 @@ export function createLive2DStage(container: HTMLElement): SharedStage {
 	});
 	const canvas = app.view as unknown as HTMLCanvasElement;
 	container.appendChild(canvas);
-	return { app, canvas };
+	return { app, canvas, gestures: { mounts: [], dragOwner: null } };
 }
 
 export async function mountModel(
@@ -152,6 +173,7 @@ export async function mountModel(
 	onContextLost?: () => void,
 	layout?: Partial<StageLayout>,
 	shared?: SharedStage,
+	tag?: string,
 ): Promise<Live2DHandle> {
 	// Owner mode creates (and later destroys) its own application; shared
 	// mode reuses one — the model is just added to that stage and its
@@ -311,11 +333,17 @@ export async function mountModel(
 			? lastNormalHeight
 			: (container.clientHeight || 1);
 		model.position.set(baseX + userPanX - lookX * lookParams.panRange * w, baseY + userPanY - lookY * lookParams.panRange * h);
-		// Gesture/zoom state as a DOM observable — the e2e suite asserts
-		// against it (same convention as dataset.lvPlayer).
-		// e2e assertion contract; skip the DOM write when unchanged — dual
-		// mode keeps lookSettling() true, so applyTransform runs every frame.
+		// Gesture/zoom state as DOM observables — the e2e suite asserts
+		// against them (same convention as dataset.lvPlayer).
 		const next = `${Math.round(userPanX)},${Math.round(userPanY)},${userScale.toFixed(3)}`;
+		// Per-model key first: on the dual stage two models write the shared
+		// lvTransform every frame (last-writer-wins), so per-avatar keys are
+		// the stable contract for "which model moved". The shared
+		// lvTransform stays for single-model mode / legacy assertions.
+		if (tag) {
+			const key = `lv${tag}Transform`;
+			if (container.dataset[key] !== next) container.dataset[key] = next;
+		}
 		if (container.dataset.lvTransform !== next) container.dataset.lvTransform = next;
 	};
 
@@ -481,26 +509,25 @@ export async function mountModel(
 	// - Wheel: zoom around cursor
 	// - Double click/tap: reset zoom & pan
 	const stage = container;
-	// Gesture hit-test registry: every mounted model registers itself
-	// so that a pointer-down can decide which avatar the finger landed on.
-	const mounts: { model: AnyLive2D }[] = [];
+	// Cross-model gesture registry: every mounted model on the same (shared)
+	// stage registers into one list so a pointer-down can decide which avatar
+	// the finger landed on. In third-person mode a single-finger drag moves
+	// only the avatar the finger actually landed on; tapping empty space pans
+	// the whole camera (both avatars). Two-finger pinch, wheel and
+	// double-click always act on the whole stage regardless.
+	const gestures: GestureRegistry = shared?.gestures ?? { mounts: [], dragOwner: null };
 	const registerMount = (m: AnyLive2D) => {
-		if (!mounts.find((e) => e.model === m)) mounts.push({ model: m });
+		if (!gestures.mounts.find((e) => e.model === m)) gestures.mounts.push({ model: m });
 	};
 	const unregisterMount = (m: AnyLive2D) => {
-		const i = mounts.findIndex((e) => e.model === m);
-		if (i >= 0) mounts.splice(i, 1);
+		const i = gestures.mounts.findIndex((e) => e.model === m);
+		if (i >= 0) gestures.mounts.splice(i, 1);
 	};
-	// In third-person mode a single-finger drag moves only the avatar
-	// the finger actually landed on; tapping empty space pans the whole
-	// camera (both avatars).  Two-finger pinch, wheel and double-click
-	// always act on the whole stage regardless.
-	let globalDragOwner: AnyLive2D | null = null;
-	const hitAvatar = (event: PointerEvent): AnyLive2D | null => {
+	const hitAvatar = (event: PointerEvent): GestureTarget | null => {
 		const rect = stage.getBoundingClientRect();
 		const gx = event.clientX - rect.left;
 		const gy = event.clientY - rect.top;
-		for (const { model: m } of mounts) {
+		for (const { model: m } of gestures.mounts) {
 			const b = m.getBounds();
 			if (gx >= b.x && gx <= b.x + b.width && gy >= b.y && gy <= b.y + b.height) return m;
 		}
@@ -530,7 +557,7 @@ export async function mountModel(
 			if (activeTouches.size === 1) {
 				lastSingleTouchX = event.clientX;
 				lastSingleTouchY = event.clientY;
-				globalDragOwner = hitAvatar(event);
+				gestures.dragOwner = hitAvatar(event);
 			} else if (activeTouches.size === 2) {
 				const points = [...activeTouches.values()];
 				lastPinchDist = Math.hypot(points[0].x - points[1].x, points[0].y - points[1].y);
@@ -543,7 +570,7 @@ export async function mountModel(
 			isMousePanning = true;
 			lastMouseX = event.clientX;
 			lastMouseY = event.clientY;
-			globalDragOwner = event.button === 0 ? hitAvatar(event) : null;
+			gestures.dragOwner = event.button === 0 ? hitAvatar(event) : null;
 			try {
 				stage.setPointerCapture(event.pointerId);
 			} catch {}
@@ -562,7 +589,7 @@ export async function mountModel(
 				// landed on (empty space pans the whole camera).
 				const deltaX = event.clientX - lastSingleTouchX;
 				const deltaY = event.clientY - lastSingleTouchY;
-				if (globalDragOwner === null || globalDragOwner === model) {
+				if (gestures.dragOwner === null || gestures.dragOwner === model) {
 					userPanX += deltaX;
 					userPanY += deltaY;
 					lastSingleTouchX = event.clientX;
@@ -594,6 +621,10 @@ export async function mountModel(
 		}
 
 		if (isMousePanning) {
+			// Middle/right drag (owner null) and empty-space hits pan the
+			// whole camera; a left-drag owned by a sibling avatar must NOT
+			// move this one — that is the per-avatar drag in third-person.
+			if (gestures.dragOwner !== null && gestures.dragOwner !== model) return;
 			userPanX += event.clientX - lastMouseX;
 			userPanY += event.clientY - lastMouseY;
 			lastMouseX = event.clientX;
@@ -628,7 +659,7 @@ export async function mountModel(
 		} else {
 			isMousePanning = false;
 		}
-		globalDragOwner = null;
+		gestures.dragOwner = null;
 	};
 
 	const onWheel = (event: WheelEvent) => {
@@ -774,8 +805,10 @@ export async function mountModel(
 				}
 			} catch {}
 			unregisterMount(model);
-				try {
-					(model as unknown as { destroy: (options?: unknown) => void }).destroy({
+			if (gestures.dragOwner === model) gestures.dragOwner = null;
+			if (tag) delete container.dataset[`lv${tag}Transform`];
+			try {
+				(model as unknown as { destroy: (options?: unknown) => void }).destroy({
 						children: true,
 						texture: true,
 						baseTexture: true,

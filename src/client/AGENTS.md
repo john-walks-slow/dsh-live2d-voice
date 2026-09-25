@@ -23,8 +23,8 @@
 ## Pitfalls
 
 - **Cubism SDK 的 WebGLManager 是全局单例**，持最后一次 init 的 gl 指针。**绝不能开第二个 WebGL context 装模型**（双 Pixi Application / 双 canvas 叠放都会触发）：后挂载的 context 抢占单例，先挂载的模型每帧 bindTexture 全部 INVALID_OPERATION、渲染空白且无报错日志。多模型必须共享同一 Application（见 model.ts SharedStage）。
-- **手势监听（pan/pinch/wheel/dblclick）必须挂在每个 mountModel 实例上，shared 模式也不例外**（14bd6e4 曾用 `if (!shared)` 跳过挂载，而 view.tsx 所有模型都传 shared → 手势全灭的回归）。双模型下两套监听各自持状态、lockstep 响应，语义=手势操作整个舞台；新增模型挂载路径时检查 destroy 的对称移除。
-- **`dataset.lvTransform`（.lv-stage 上，"panX,panY,scale"）是 e2e 手势断言契约**，与字幕 DOM 类名同级：改 applyTransform/手势结构时同步更新 `e2e/verify-*.mjs` 断言；e2e 里拖动前先点 `.lv-pop-close` 关设置弹窗（弹窗是 stage 兄弟节点，会拦截指针）。
+- **手势监听（pan/pinch/wheel/dblclick）必须挂在每个 mountModel 实例上，shared 模式也不例外**（14bd6e4 曾用 `if (!shared)` 跳过挂载，而 view.tsx 所有模型都传 shared → 手势全灭的回归）。跨模型共享 state 走 `SharedStage.gestures`（GestureRegistry: mounts + dragOwner）：全部模型注册进同一份 mounts，pointer-down 打点判定「手指落在哪个化身」；单指/左键拖动只移动命中的那个模型，空白（或中/右键）拖动 = 全局相机平移（两模型同动），pinch/wheel/dblclick 恒为全局（260925 修复：非共享注册表时每实例 hit-test 只认自己 bounds，拖任一化身两个都动，"单独拖动"形同虚设）。任意模型 destroy 必须把自己从 registry 移除；新增模型挂载路径时检查 destroy 的对称移除。
+- **`dataset.lvTransform`（.lv-stage 上，"panX,panY,scale"）是 e2e 手势断言契约**：单模型模式由唯一写者写入、稳定可靠；双模型（第三人称）下两个模型每帧都写（last-writer-wins 竞态），区分「哪个模型动了」必须读 per-model 键 `dataset.lvAiTransform` / `dataset.lvPlayerTransform`（mountModel 第 7 参 tag 指定，view.tsx 传 "Ai"/"Player"），不可读共享 lvTransform。与字幕 DOM 类名同级：改 applyTransform/手势结构时同步更新 `e2e/verify-*.mjs` 断言；e2e 里拖动前先点 `.lv-pop-close` 关设置弹窗（弹窗是 stage 兄弟节点，会拦截指针）。
 - **视觉/参数断言的方法论**（260925 排查"angle 不渲染"半天的教训，实际是 VLM 误判）：
   - framework `getParameterValueById` 对不存在的 id 走侧字典（`_notExistParameterId`）照样返回值——readback ≠ 参数存在；判存在用 `coreModel._model.parameters.ids` 或 `strings xxx.moc3`。
   - 写参数时序：`beforeModelUpdate` → `model.update()`（raw 消费参数重算 drawables）→ `loadParameters()`（恢复 motion 态）；draw 只读 drawables。绝对写入放 `beforeModelUpdate` 是正确位置（唇形同步/视线同款路径）。
