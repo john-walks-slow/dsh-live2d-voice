@@ -210,7 +210,26 @@ export function Live2DView(props: ViewProps) {
 	/** The upload id of the utterance this view is currently speaking into. */
 	const currentUploadRef = useRef<string | null>(null);
 
+	/**
+	 * Translation race guard: whole-utterance translation can land BEFORE the
+	 * later sentences' `subtitle` events (the TTS queue is serial and slower
+	 * than one translate call), so their lineIds match nothing yet and the
+	 * event would be dropped on the floor — exactly the "only the first
+	 * sentence gets translated" symptom. Park early translations by lineId;
+	 * the text is merged the moment the line is created. TTL + size caps keep
+	 * superseded lines' leftovers from piling up.
+	 */
+	const lateTrRef = useRef<Map<string, { text: string; at: number }>>(new Map());
+	const takeLateTr = (lineId: string | undefined): string | undefined => {
+		if (!lineId) return undefined;
+		const hit = lateTrRef.current.get(lineId);
+		if (hit === undefined) return undefined;
+		lateTrRef.current.delete(lineId);
+		return hit.text;
+	};
+
 	const showSubtitle = (role: SubtitleLine["role"], text: string, lineId: string | undefined, at: number, translation?: string, speaker?: Speaker) => {
+		const merged = translation ?? takeLateTr(lineId);
 		if (role === "assistant") {
 			assistantEchoRef.current = `${assistantEchoRef.current}\n${text}`.split("\n").slice(-3).join("\n");
 		} else if (role === "user" && speaker === "player") {
@@ -219,15 +238,17 @@ export function Live2DView(props: ViewProps) {
 		// A real line arrived — the third-person "酝酿中…" placeholder retires.
 		setSubtitles((prev) => [
 			...prev.slice(-5).filter((line) => !line.pending),
-			{ id: nextLineId.current++, role, text, lineId, at, ...(translation ? { translation } : {}), ...(speaker ? { speaker } : {}) },
+			{ id: nextLineId.current++, role, text, lineId, at, ...(merged ? { translation: merged } : {}), ...(speaker ? { speaker } : {}) },
 		]);
 	};
 
 	const pushSubtitle = (role: SubtitleLine["role"], text: string, lineId?: string, audioSeq?: number, utteranceId?: string, speaker?: Speaker) => {
 		if (typeof audioSeq === "number") {
 			// Voice-synced line (assistant or third-person player): hold
-			// until that speaker's audio chunk starts playing.
-			pendingSubsRef.current.push({ role, text, lineId, utteranceId, audioSeq, at: Date.now(), ...(speaker ? { speaker } : {}) });
+			// until that speaker's audio chunk starts playing. A translation
+			// that raced ahead of this subtitle event is merged in here.
+			const parked = takeLateTr(lineId);
+			pendingSubsRef.current.push({ role, text, lineId, utteranceId, audioSeq, at: Date.now(), ...(parked ? { translation: parked } : {}), ...(speaker ? { speaker } : {}) });
 			pendingSubsRef.current.sort((a, b) => a.audioSeq - b.audioSeq);
 			return;
 		}
@@ -247,6 +268,16 @@ export function Live2DView(props: ViewProps) {
 	};
 
 	const attachTranslation = (lineId: string, text: string) => {
+		// Race guard: park by lineId FIRST — if the line's subtitle event has
+		// not arrived yet (translation beat the serial TTS queue), the map
+		// merges below find nothing and the take-site in pushSubtitle /
+		// showSubtitle applies it when the line is created. Lines already
+		// held (pendingSubsRef) or shown (state) are updated in place as
+		// before.
+		const now = Date.now();
+		lateTrRef.current.set(lineId, { text, at: now });
+		for (const [key, entry] of lateTrRef.current) if (now - entry.at > 60_000) lateTrRef.current.delete(key);
+		while (lateTrRef.current.size > 64) lateTrRef.current.delete(lateTrRef.current.keys().next().value as string);
 		// The line may still be held (not yet shown) — tag it so it appears translated.
 		pendingSubsRef.current = pendingSubsRef.current.map((line) => (line.lineId === lineId ? { ...line, translation: text } : line));
 		setSubtitles((prev) => prev.map((line) => (line.lineId === lineId ? { ...line, translation: text } : line)));
@@ -454,6 +485,7 @@ export function Live2DView(props: ViewProps) {
 			},
 			dual ? { xFraction: 0.72, scaleGain: 0.8, faceBiasX: AI_FACE_BIAS } : undefined,
 			sharedStageRef.current ?? undefined,
+			"Ai",
 		);
 
 		mountPromise
@@ -536,6 +568,7 @@ export function Live2DView(props: ViewProps) {
 			},
 			{ xFraction: 0.28, scaleGain: 0.8, faceBiasX: PLAYER_FACE_BIAS },
 			stage,
+			"Player",
 		);
 		mountPromise
 			.then((mounted) => {

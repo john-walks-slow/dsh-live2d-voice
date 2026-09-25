@@ -176,6 +176,19 @@ body[data-live2d-active="true"] [class*="taskBoard"] {
 	transition: opacity 0.25s ease, transform 0.25s ease;
 }
 
+/* Older cards keep their translation (dimmed) so a whole translated turn
+   stays readable — not just the line that happens to be current when the
+   translation lands. */
+.lv-sub-tr-old {
+	display: block;
+	margin-top: 1px;
+	font-size: 11px;
+	line-height: 1.4;
+	font-weight: 400;
+	color: var(--lv-fg-2);
+	word-break: break-word;
+}
+
 .lv-sub-user {
 	border-color: color-mix(in srgb, var(--lv-accent) 25%, transparent);
 }

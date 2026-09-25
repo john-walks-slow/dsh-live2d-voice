@@ -227,8 +227,11 @@ export function openStream(sessionId: string, handlers: StreamHandlers): () => v
 	const wire = <T>(event: string, handler?: (payload: T) => void) => {
 		if (!handler) return;
 		source.addEventListener(event, (raw) => {
+			const data = (raw as MessageEvent).data;
+			// Native network/reconnect errors fire on the EventSource with no .data
+			if (data === undefined || data === null || data === "") return;
 			try {
-				handler(JSON.parse((raw as MessageEvent).data) as T);
+				handler(JSON.parse(data) as T);
 			} catch (error) {
 				logger.error(`bad ${event} payload`, error);
 			}

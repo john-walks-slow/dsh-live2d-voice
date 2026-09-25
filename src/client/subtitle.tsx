@@ -36,6 +36,7 @@ export function SubtitleOverlay(props: { lines: SubtitleLine[]; visible: boolean
 				<div key={line.id} className={`lv-sub-old${line.pending ? " lv-sub-pending" : ""}`}>
 					{line.speaker === "player" && <span className="lv-sub-speaker">你</span>}
 					{line.text}
+					{line.translation && <span className="lv-sub-tr-old">{line.translation}</span>}
 				</div>
 			))}
 			{current && (
