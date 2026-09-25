@@ -743,6 +743,8 @@ export function Live2DView(props: ViewProps) {
 				(gazeModeRef.current === "natural" || idleGazeRef.current) &&
 				modelRef.current != null;
 			if (behaviorOn) {
+				modelRef.current?.setLegacyFollow(false);
+				playerModelRef.current?.setLegacyFollow(false);
 				const out = controller.update(
 					{
 						face: camLookRef.current ? { x: (camLookRef.current.dx + 1) / 2, y: (camLookRef.current.dy + 1) / 2 } : null,
@@ -771,7 +773,11 @@ export function Live2DView(props: ViewProps) {
 			} else {
 				// Legacy path — always dispatch so the model glides home even
 				// when NO source is active (otherwise the last behavior pose
-				// sticks forever after the master switch is turned off).
+				// sticks forever after the master switch is turned off). The
+				// driver runs in legacy-follow mode: full-gain camera/gyro
+				// tracking, no lag chain, no motion yield.
+				modelRef.current?.setLegacyFollow(true);
+				playerModelRef.current?.setLegacyFollow(true);
 				modelRef.current?.setLook(
 					gazeRef.current?.active ? camLookRef.current : null,
 					tiltRef.current?.active ? gyroLookRef.current : null,

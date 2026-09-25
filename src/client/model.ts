@@ -82,6 +82,13 @@ export interface Live2DHandle {
 	 * to keep the legacy camera/gyro-only path.
 	 */
 	setLook(camera: { dx: number; dy: number } | null, gyro: { dx: number; dy: number } | null, pose?: BehaviorPose | null): void;
+	/**
+	 * Switch the look driver between the legacy camera/gyro follower (full
+	 * gain, no lag chain, no motion yield — the pre-lively-gaze behavior)
+	 * and the natural behavior driver. The master switch in the HUD flips
+	 * this on every frame.
+	 */
+	setLegacyFollow(on: boolean): void;
 	setLookParams(params: Partial<LookParams>): void;
 	/**
 	 * Update the stage layout (third-person mode shifts the two avatars
@@ -223,6 +230,9 @@ export async function mountModel(
 	let bodySm = { dx: 0, dy: 0 };
 	let poseInput: { nod: number; tilt: number; turn: number; bodySway: number } | null = null;
 	let poseSm = { nod: 0, tilt: 0, turn: 0, bodySway: 0 };
+	// Master-switch OFF: drive exactly like the pre-lively-gaze follower
+	// (full-gain angles, no lag chain, no amplitude split, no motion yield).
+	let legacyFollow = false;
 	let breathPhase = Math.random() * Math.PI * 2;
 	const SACCADE_LERP = 0.5, SETTLE_LERP = 0.12;
 	const HEAD_LERP = 0.09, POSE_LERP = 0.14;
@@ -351,9 +361,45 @@ export async function mountModel(
 		const applied = value > 0.002 ? value : 0;
 		for (const id of lipSyncIds) setParam(id, applied);
 		// A full-body motion (idle/gesture) owns the head/body pose — the
-		// look/pose driver yields while one plays so it doesn't fight the
+		// natural driver yields while one plays so it doesn't fight the
 		// motion's own animation (mouth lip-sync keeps running).
-		if (internal.motionManager.queueManager?.isFinished?.() === false) return;
+		const motionPlaying = internal.motionManager.queueManager?.isFinished?.() === false;
+		if (legacyFollow) {
+			// Legacy camera/gyro follower (master switch OFF): the exact
+			// pre-lively-gaze driver — full-gain angles, no lag chain, no
+			// amplitude split, no pose channels, no motion yield. The
+			// parallax pan updates every frame, motions or not.
+			if (lookSettling()) {
+				smoothLook();
+				const camA = camInput !== null ? lookParams.camAngleGain : 0;
+				const gyroA = gyroInput !== null ? lookParams.gyroAngleGain : 0;
+				const total = camA + gyroA || 1;
+				const lx = (camSm.dx * camA + gyroSm.dx * gyroA) / total;
+				const ly = (camSm.dy * camA + gyroSm.dy * gyroA) / total;
+				const ar = lookParams.angleRange;
+				const rr = lookParams.rollRange;
+				const angles: Array<[string, number]> = [
+					[LOOK_IDS.angleX, lx * ar],
+					[LOOK_IDS.angleY, ly * ar],
+					[LOOK_IDS.angleZ, lx * rr],
+					[LOOK_IDS.bodyX, lx * ar * 0.5],
+					[LOOK_IDS.bodyY, ly * ar * 0.5],
+					[LOOK_IDS.eyeX, lx],
+					[LOOK_IDS.eyeY, ly],
+				];
+				for (const [id, v] of angles) setParam(id, v);
+				applyTransform();
+			}
+			return;
+		}
+		// Natural driver: while a motion plays, yield only the angle writes;
+		// smoothing and the parallax pan keep running so camera/gyro feel
+		// stays responsive during idle motions.
+		if (motionPlaying) {
+			smoothLook();
+			applyTransform();
+			return;
+		}
 		// Unified look: camera + gyro both contribute to head/body/eye angles.
 		// Runs while any source is live AND while the smoothed vectors ease
 		// back to zero after both stop, so tracking loss glides home.
@@ -634,6 +680,9 @@ export async function mountModel(
 			poseInput = pose ?? null;
 			// When both stop, lookSettling() keeps easing the smoothed
 			// vectors home — no instant snap here.
+		},
+		setLegacyFollow(on) {
+			legacyFollow = on;
 		},
 		setLookParams(params) {
 			lookParams = { ...lookParams, ...params };
