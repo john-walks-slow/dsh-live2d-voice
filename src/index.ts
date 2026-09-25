@@ -17,10 +17,11 @@
  */
 
 import type { Context } from "@deepseek-ai/cordis";
-import { loadConfig, resolveApiKeys, resolveSessionConfig, saveConfig } from "./config.js";
+import { loadConfig, resolveApiKeys, saveConfig } from "./config.js";
 import { SseHub } from "./events.js";
 import { applySpeechTap } from "./speech.js";
 import { SpeechModes, applySpeechInjection } from "./system-prompt.js";
+import { applyContextSlim, resolveSessionConfig } from "./context-slim.js";
 import { installRoutes } from "./routes.js";
 import { applyCameraTool, CameraBridge } from "./camera-tool.js";
 import { PlayerPipeline } from "./player.js";
@@ -47,6 +48,11 @@ export function apply(ctx: Context): () => void {
 		getConfig,
 		resolveSession: (sessionId) => resolveSessionConfig(ctx.agents, getConfig(), sessionId),
 	});
+	const disposeSlim = applyContextSlim(ctx, {
+		hub,
+		getConfig,
+		resolveSession: (sessionId) => resolveSessionConfig(ctx.agents, getConfig(), sessionId),
+	});
 	const playerPipeline = new PlayerPipeline(ctx, {
 		hub,
 		getConfig,
@@ -64,5 +70,6 @@ export function apply(ctx: Context): () => void {
 		disposeCameraTool();
 		playerPipeline.dispose();
 		disposePrompt?.();
+		disposeSlim();
 	};
 }
