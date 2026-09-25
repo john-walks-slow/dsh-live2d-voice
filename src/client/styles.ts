@@ -741,6 +741,16 @@ body[data-live2d-active="true"] [class*="taskBoard"] {
 	box-shadow: 0 1px 4px rgba(0, 0, 0, 0.25);
 }
 
+/* Signed gains (转头/旋转/位移): a notch at the middle marks 0 so the
+   negative half of the track reads as "mirrored", not "broken". */
+.lv-slider-row input[type="range"].lv-signed::-webkit-slider-runnable-track {
+	background: linear-gradient(90deg, var(--lv-border) 0%, var(--lv-border) 49%, var(--lv-fg-3) 49%, var(--lv-fg-3) 51%, var(--lv-border) 51%, var(--lv-border) 100%);
+}
+
+.lv-slider-row input[type="range"].lv-signed::-moz-range-track {
+	background: linear-gradient(90deg, var(--lv-border) 0%, var(--lv-border) 49%, var(--lv-fg-3) 49%, var(--lv-fg-3) 51%, var(--lv-border) 51%, var(--lv-border) 100%);
+}
+
 .lv-slider-value {
 	text-align: right;
 	font-variant-numeric: tabular-nums;

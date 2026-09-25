@@ -424,11 +424,11 @@ export function Live2DView(props: ViewProps) {
 	const AI_FACE_BIAS = -0.6;
 	const PLAYER_FACE_BIAS = 0.6;
 	// In third-person the avatars must not turn toward the user: zero the
-	// head/body angle gains and keep only the positional parallax so
+	// head/body angle and roll gains and keep only the positional parallax so
 	// camera/gyro still add depth. Single-model keeps the user's params.
 	const stageLookParams = (): LookParams =>
 		modelInfo?.thirdPerson === true && Boolean(modelInfo?.player?.url)
-			? { ...lookParamsRef.current, camAngleGain: 0, gyroAngleGain: 0 }
+			? { ...lookParamsRef.current, camAngleGain: 0, gyroAngleGain: 0, camRollGain: 0, gyroRollGain: 0 }
 			: lookParamsRef.current;
 
 	// The stage's shared Pixi application — created once per view (both

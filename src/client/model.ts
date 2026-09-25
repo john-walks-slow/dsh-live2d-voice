@@ -20,12 +20,16 @@ import { Application } from "pixi.js";
 import { Live2DModel as Live2DModelCubism4 } from "pixi-live2d-display-lipsyncpatch/cubism4";
 import { Live2DModel as Live2DModelCubism2 } from "pixi-live2d-display-lipsyncpatch/cubism2";
 import { logger } from "./logger.js";
+import { mixLookChannel, type LookVector } from "./look-math.js";
 
 export interface LookParams {
 	camPanGain: number;
 	camAngleGain: number;
+	/** Head roll (ParamAngleZ, the 3D tilt) gain from the camera. Signed: negative mirrors the tilt. */
+	camRollGain: number;
 	gyroPanGain: number;
 	gyroAngleGain: number;
+	gyroRollGain: number;
 	panRange: number;
 	angleRange: number;
 	rollRange: number;
@@ -34,8 +38,10 @@ export interface LookParams {
 export const DEFAULT_LOOK_PARAMS: LookParams = {
 	camPanGain: 0.20,
 	camAngleGain: 1.0,
+	camRollGain: 1.0,
 	gyroPanGain: 0.45,
 	gyroAngleGain: 0.55,
+	gyroRollGain: 1.0,
 	panRange: 0.10,
 	angleRange: 22,
 	rollRange: 6,
@@ -46,13 +52,13 @@ export const LOOK_PRESETS: ReadonlyArray<{ id: string; label: string; params: Lo
 	{
 		id: "subtle",
 		label: "柔和",
-		params: { camPanGain: 0.12, camAngleGain: 0.6, gyroPanGain: 0.25, gyroAngleGain: 0.35, panRange: 0.06, angleRange: 14, rollRange: 4 },
+		params: { camPanGain: 0.12, camAngleGain: 0.6, camRollGain: 0.6, gyroPanGain: 0.25, gyroAngleGain: 0.35, gyroRollGain: 0.6, panRange: 0.06, angleRange: 14, rollRange: 4 },
 	},
 	{ id: "standard", label: "标准", params: { ...DEFAULT_LOOK_PARAMS } },
 	{
 		id: "vivid",
 		label: "灵敏",
-		params: { camPanGain: 0.3, camAngleGain: 1.4, gyroPanGain: 0.6, gyroAngleGain: 0.8, panRange: 0.16, angleRange: 30, rollRange: 10 },
+		params: { camPanGain: 0.3, camAngleGain: 1.4, camRollGain: 1.4, gyroPanGain: 0.6, gyroAngleGain: 0.8, gyroRollGain: 1.4, panRange: 0.16, angleRange: 30, rollRange: 10 },
 	},
 ];
 
@@ -277,6 +283,15 @@ export async function mountModel(
 	};
 	const clamp01 = (v: number) => Math.max(0, Math.min(1, v));
 
+	/**
+	 * Blend one channel of two source vectors by their gain weights. Gains
+	 * are signed (a negative gain mirrors that source) while the weight stays
+	 * absolute — see look-math.ts. The follower chain has no gyro twin, so the
+	 * gyro side is always its raw vector; `cam` carries the lagged channel.
+	 */
+	const mixSigned = (camGain: number, gyroGain: number, cam: LookVector, channel: "dx" | "dy"): number =>
+		mixLookChannel(camGain, gyroGain, cam, gyroSm, channel, camInput !== null, gyroInput !== null);
+
 	/** Advance the smoothed vectors one frame toward their targets. */
 	const smoothLook = () => {
 		const tx = camInput ?? { dx: 0, dy: 0 };
@@ -431,17 +446,18 @@ export async function mountModel(
 			// parallax pan updates every frame, motions or not.
 			if (lookSettling()) {
 				smoothLook();
-				const camA = camInput !== null ? lookParams.camAngleGain : 0;
-				const gyroA = gyroInput !== null ? lookParams.gyroAngleGain : 0;
-				const total = camA + gyroA || 1;
-				const lx = (camSm.dx * camA + gyroSm.dx * gyroA) / total;
-				const ly = (camSm.dy * camA + gyroSm.dy * gyroA) / total;
+				const lx = mixSigned(lookParams.camAngleGain, lookParams.gyroAngleGain, camSm, "dx");
+				const ly = mixSigned(lookParams.camAngleGain, lookParams.gyroAngleGain, camSm, "dy");
+				// Roll is its own gain pair: the head tilt no longer has to
+				// follow the turn vector, it can be softened, doubled or
+				// mirrored (negative) independently.
+				const lz = mixSigned(lookParams.camRollGain, lookParams.gyroRollGain, camSm, "dx");
 				const ar = lookParams.angleRange;
 				const rr = lookParams.rollRange;
 				const angles: Array<[string, number]> = [
 					[LOOK_IDS.angleX, lx * ar],
 					[LOOK_IDS.angleY, ly * ar],
-					[LOOK_IDS.angleZ, lx * rr],
+					[LOOK_IDS.angleZ, lz * rr],
 					[LOOK_IDS.bodyX, lx * ar * 0.5],
 					[LOOK_IDS.bodyY, ly * ar * 0.5],
 					[LOOK_IDS.eyeX, lx],
@@ -465,17 +481,17 @@ export async function mountModel(
 		// back to zero after both stop, so tracking loss glides home.
 		if (lookSettling()) {
 			smoothLook();
-			const camA = camInput !== null ? lookParams.camAngleGain : 0;
-			const gyroA = gyroInput !== null ? lookParams.gyroAngleGain : 0;
-			const total = camA + gyroA || 1;
-			const parallaxX = (camSm.dx * camA + gyroSm.dx * gyroA) / total;
-			const parallaxY = (camSm.dy * camA + gyroSm.dy * gyroA) / total;
+			const parallaxX = mixSigned(lookParams.camAngleGain, lookParams.gyroAngleGain, camSm, "dx");
+			const parallaxY = mixSigned(lookParams.camAngleGain, lookParams.gyroAngleGain, camSm, "dy");
 			// Eyes lead, head follows, body trails: the head/body angles are
 			// driven by the lagged headSm/bodySm channels, not the eye vector.
-			const headX = (headSm.dx * camA + gyroSm.dx * gyroA) / total;
-			const headY = (headSm.dy * camA + gyroSm.dy * gyroA) / total;
-			const bodyX = (bodySm.dx * camA + gyroSm.dx * gyroA) / total;
-			const bodyY = (bodySm.dy * camA + gyroSm.dy * gyroA) / total;
+			const headX = mixSigned(lookParams.camAngleGain, lookParams.gyroAngleGain, headSm, "dx");
+			const headY = mixSigned(lookParams.camAngleGain, lookParams.gyroAngleGain, headSm, "dy");
+			const bodyX = mixSigned(lookParams.camAngleGain, lookParams.gyroAngleGain, bodySm, "dx");
+			const bodyY = mixSigned(lookParams.camAngleGain, lookParams.gyroAngleGain, bodySm, "dy");
+			// Roll (the 3D head tilt) rides its own signed gains: 0 disables
+			// the tilt entirely, a negative gain leans the other way.
+			const rollX = mixSigned(lookParams.camRollGain, lookParams.gyroRollGain, camSm, "dx");
 			// Amplitude split (eyes lead, head follows, body only on big
 			// shifts): small offsets move only the eyeballs; the head joins
 			// with headRatio as the shift grows; the body trails behind.
@@ -492,7 +508,7 @@ export async function mountModel(
 			const angles: Array<[string, number]> = [
 				[LOOK_IDS.angleX, (bias + headX * headGain * HEAD_RATIO) * ar + poseSm.turn * TURN_DEG + breath],
 				[LOOK_IDS.angleY, headY * headGain * HEAD_RATIO * ar - poseSm.nod * NOD_DEG + breath * 0.5],
-				[LOOK_IDS.angleZ, parallaxX * rr + poseSm.tilt * TILT_DEG],
+				[LOOK_IDS.angleZ, rollX * rr + poseSm.tilt * TILT_DEG],
 				[LOOK_IDS.bodyX, (bias + bodyX * headGain * BODY_RATIO) * ar + poseSm.bodySway * BODY_SWAY_DEG],
 				[LOOK_IDS.bodyY, bodyY * headGain * BODY_RATIO * ar],
 				[LOOK_IDS.eyeX, clamp01((bias + parallaxX + pinkNext() * EYE_JITTER) * 0.5 + 0.5) * 2 - 1],

@@ -9,6 +9,7 @@
 - `view.tsx` — 视图主组件：SSE 事件分发（按 speaker 分流 assistant/player）、双模型挂载与布局、字幕/输入/回声参照
 - `engine.ts` — SpeechEngine：AudioContext 播放队列、RMS 包络、说话人感知（speakerSpans / currentSpeaker / mouthValue(speaker)）
 - `model.ts` — Live2D 模型挂载：createLive2DStage（共享 Pixi Application）、mountModel(shared?)、setLayout
+- `look-math.ts` — 视线/陀螺仪混合的纯函数（`mixLookChannel`，带符号增益），可被 node 直接跑测试
 - `hud.tsx` — HUD 按钮与 ⚙ 快捷面板（音色/模型/语言/第三人称等）
 - `settings-section.tsx` — 系统设置里的插件设置卡
 - `subtitle.tsx` / `styles.ts` — 字幕渲染与全部样式
@@ -33,4 +34,5 @@
 - **运行时注入的 `<style>` 必须打 `data-plugin="dsh-live2d-voice"` 标**（styles.ts `injectLiveStyles` 已做）：宿主在 materialize 时机用 `claimStyles` 把未打标 style 认领给下一个 materialize 的插件，该插件 HMR 重载时会 `removeOwnedStyles` 连带删除——任何插件连续两次 rebuild 就能让本插件全部样式消失（260925 Live 按钮失样式 bug，回归 `e2e/verify-style-claim.mjs`）。新增任何 DOM 注入样式的路径时同样处理。
 - 字幕 DOM 类名（`.lv-sub-card` / `.lv-sub-old` / `.lv-sub-pending`）是 e2e 脚本的断言契约，改名或重构字幕结构时同步更新 `e2e/verify-*.mjs` 选择器。
 - audioSeq 字幕 hold 的 seq 空间**按 speaker 隔离**：assistant 与 player 的 seq 计数器各自每轮从 0 起，engine 的 `currentSeq(speaker)` 按 speaker 过滤——跨 speaker 比较 seq 会击穿 hold（字幕提前或立即释放）。
-- **第三人称对视世界观**：双模型是"舞台剧"，两角色基准朝向对方（faceBiasX ±0.6 → ±13.2°（angleRange 默认 22））、仿佛不知道玩家存在；视线/陀螺仪输入在 dual 下只做 panRange 位置视差（camAngleGain/gyroAngleGain 归零），不驱动转头看用户；单模型模式保持"角色看你"不变。改 look 管线时保住这个分界。
+- **第三人称对视世界观**：双模型是"舞台剧"，两角色基准朝向对方（faceBiasX ±0.6 → ±13.2°（angleRange 默认 22））、仿佛不知道玩家存在；视线/陀螺仪输入在 dual 下只做 panRange 位置视差（camAngleGain/gyroAngleGain/camRollGain/gyroRollGain 归零，HUD 对应滑条禁用并标注"对视停用"），不驱动转头看用户；单模型模式保持"角色看你"不变。改 look 管线时保住这个分界。
+- **look 增益全部可正负**：`LookParams` 的六个增益（cam/gyro × 转头/旋转/位移）都是**带符号**的：负值 = 该通道与输入反向（反向转头、反向侧倾、反向视差），0 = 该源不参与；幅度由非负的 `angleRange`/`rollRange`/`panRange` 三个上限决定。混合时权重取**绝对值**、符号只进分子（`look-math.ts` 的 `mixLookChannel`），否则相反符号会把分母抵消成 0/0 或把另一源整体反向。`camRollGain`/`gyroRollGain` 默认 1 时 rollX ≡ 旧版 parallaxX，ParamAngleZ 不再被迫跟随转头向量。新增 look 通道时同步 `LOOK_SLIDER_GROUPS`（正负范围 + `lv-signed` 类 + tip）、`SIGNED_LOOK_KEYS`、第三人称停用集合，并跑 `e2e/verify-look-math.mjs`（纯数学）与 `e2e/verify-look-sliders.mjs`（面板契约）。

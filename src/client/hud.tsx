@@ -114,31 +114,38 @@ export interface HudProps {
 	onOpenGlobalSettings?: () => void;
 }
 
-/** Look-parameter sliders grouped by source (camera / gyro / range). */
+/**
+ * Look-parameter sliders grouped by source (camera / gyro / range). Every
+ * *gain* is signed: a negative gain mirrors that channel (look away from
+ * the user, lean the other way, parallax against the input), so the sliders
+ * span negative→positive with the center at 0.
+ */
 const LOOK_SLIDER_GROUPS: ReadonlyArray<{
 	group: string;
-	sliders: ReadonlyArray<{ key: keyof LookParams; label: string; min: number; max: number; step: number }>;
+	sliders: ReadonlyArray<{ key: keyof LookParams; label: string; min: number; max: number; step: number; tip?: string }>;
 }> = [
 	{
 		group: "摄像头",
 		sliders: [
-			{ key: "camAngleGain", label: "转头增益", min: 0, max: 2, step: 0.05 },
-			{ key: "camPanGain", label: "位移增益", min: 0, max: 1, step: 0.05 },
+			{ key: "camAngleGain", label: "转头增益", min: -2, max: 2, step: 0.05, tip: "视线偏移在转头中的权重（与陀螺仪按权重混合）：0 = 该源不转头，负值 = 反向转头" },
+			{ key: "camRollGain", label: "旋转增益", min: -2, max: 2, step: 0.05, tip: "视线水平偏移在头部侧倾（ParamAngleZ）中的权重：0 = 不侧倾，负值 = 侧倾反向" },
+			{ key: "camPanGain", label: "位移增益", min: -1, max: 1, step: 0.05, tip: "视线偏移换算成模型整体平移的倍率（直接相乘）：负值 = 视差方向相反" },
 		],
 	},
 	{
 		group: "陀螺仪",
 		sliders: [
-			{ key: "gyroAngleGain", label: "转头增益", min: 0, max: 2, step: 0.05 },
-			{ key: "gyroPanGain", label: "位移增益", min: 0, max: 1, step: 0.05 },
+			{ key: "gyroAngleGain", label: "转头增益", min: -2, max: 2, step: 0.05, tip: "陀螺仪偏移在转头中的权重（与摄像头按权重混合）：0 = 该源不转头，负值 = 反向转头" },
+			{ key: "gyroRollGain", label: "旋转增益", min: -2, max: 2, step: 0.05, tip: "陀螺仪水平偏移在头部侧倾（ParamAngleZ）中的权重：0 = 不侧倾，负值 = 侧倾反向" },
+			{ key: "gyroPanGain", label: "位移增益", min: -1, max: 1, step: 0.05, tip: "陀螺仪偏移换算成模型整体平移的倍率（直接相乘）：负值 = 视差方向相反" },
 		],
 	},
 	{
 		group: "整体幅度",
 		sliders: [
-			{ key: "angleRange", label: "最大转头角度", min: 5, max: 40, step: 1 },
-			{ key: "panRange", label: "最大位移", min: 0.02, max: 0.3, step: 0.01 },
-			{ key: "rollRange", label: "最大侧倾", min: 0, max: 20, step: 1 },
+			{ key: "angleRange", label: "最大转头角度", min: 5, max: 40, step: 1, tip: "转头角度上限（度），与转头增益相乘" },
+			{ key: "panRange", label: "最大位移", min: 0.02, max: 0.3, step: 0.01, tip: "平移占容器宽/高的比例上限，与位移增益相乘" },
+			{ key: "rollRange", label: "最大侧倾", min: 0, max: 20, step: 1, tip: "侧倾角上限（度），与旋转增益相乘" },
 		],
 	},
 ];
@@ -152,10 +159,22 @@ function matchLookPreset(params: LookParams): string | null {
 	return null;
 }
 
-/** Compact display for slider values (0.20 → 0.2, 22 → 22°). */
+/** Signed gain channels — shown with an explicit + so the mirrored half reads as intentional. */
+const SIGNED_LOOK_KEYS: ReadonlySet<keyof LookParams> = new Set([
+	"camAngleGain",
+	"camRollGain",
+	"camPanGain",
+	"gyroAngleGain",
+	"gyroRollGain",
+	"gyroPanGain",
+]);
+
+/** Compact display for slider values (0.20 → 0.2, 22 → 22°, +0.55). */
 function formatLookValue(key: keyof LookParams, value: number): string {
 	if (key === "angleRange" || key === "rollRange") return `${value}°`;
-	return String(Math.round(value * 100) / 100);
+	const rounded = Math.round(value * 100) / 100;
+	if (SIGNED_LOOK_KEYS.has(key)) return rounded > 0 ? `+${rounded}` : String(rounded);
+	return String(rounded);
 }
 
 /** Behavior experiment sliders, grouped (all fields of BehaviorTuning). */
@@ -699,6 +718,7 @@ export function Hud(props: HudProps) {
 							{!props.eyeTracking && !props.gyroParallax && (
 								<div className="lv-look-hint">开启视线追踪或陀螺仪视差后生效</div>
 							)}
+							<div className="lv-look-hint">转头 / 旋转 / 位移增益均可为负：负值 = 与输入方向相反，0 = 该源不参与</div>
 							<div className="lv-look-presets">
 								{LOOK_PRESETS.map((preset) => (
 									<button
@@ -714,7 +734,7 @@ export function Hud(props: HudProps) {
 							<button
 								type="button"
 								className="lv-look-fold"
-								aria-expanded={!lookAdvanced}
+								aria-expanded={lookAdvanced}
 								onClick={() => setLookAdvanced((open) => !open)}
 							>
 								<span className={`lv-look-caret${lookAdvanced ? " lv-open" : ""}`}>▸</span>
@@ -726,26 +746,28 @@ export function Hud(props: HudProps) {
 										<div className="lv-slider-group-title">{group.group}</div>
 																				{group.sliders.map((slider) => {
 											// Third-person stage: characters face each other and camera/gyro only
-											// drive position parallax, so the angle gains are forced to 0 — disable
-											// the sliders instead of showing values that silently do nothing.
-											const angleGainOff =
+											// drive position parallax, so the angle + roll gains are forced to 0 —
+											// disable the sliders instead of showing values that silently do nothing.
+											const stageAngleOff =
 												props.thirdPerson &&
 												Boolean(props.currentPlayerModel) &&
-												(slider.key === "camAngleGain" || slider.key === "gyroAngleGain");
+												(slider.key === "camAngleGain" || slider.key === "gyroAngleGain" || slider.key === "camRollGain" || slider.key === "gyroRollGain");
+											const signed = SIGNED_LOOK_KEYS.has(slider.key);
 											return (
 												<label key={slider.key} className="lv-slider-row">
 													<span className="lv-slider-label">
 														{slider.label}
-														{angleGainOff ? "（对视停用）" : ""}
+														{stageAngleOff ? "（对视停用）" : ""}
 													</span>
 													<input
 														type="range"
+														className={signed ? "lv-signed" : undefined}
 														min={slider.min}
 														max={slider.max}
 														step={slider.step}
 														value={props.lookParams[slider.key]}
-														disabled={angleGainOff}
-														title={angleGainOff ? "第三人称对视模式下转头增益固定为 0（视线输入只做位置视差）" : undefined}
+														disabled={stageAngleOff}
+														title={stageAngleOff ? "第三人称对视模式下转头/旋转增益固定为 0（视线输入只做位置视差）" : slider.tip}
 														onChange={(event) =>
 															props.onLookParamsChange({ [slider.key]: Number(event.target.value) })
 														}
