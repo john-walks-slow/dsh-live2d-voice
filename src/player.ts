@@ -25,6 +25,7 @@
 import { randomUUID } from "node:crypto";
 import type { Context } from "@deepseek-ai/cordis";
 import { createUserMessage, type ContentBlock } from "@deepseek-ai/dsh-llm";
+import { ReasoningEffortId } from "@deepseek-ai/dsh-llm/brand";
 import type { SessionId } from "@deepseek-ai/dsh-session";
 import { extractEmotionTags, extractMotionTags } from "./sentence.js";
 import { PCM_SAMPLE_RATE, synthesize } from "./tts.js";
@@ -48,7 +49,7 @@ export interface PlayerDeps {
 interface AgentLike {
 	steer: (message: unknown) => void;
 	followup: (message: unknown) => void;
-	session?: { requestHeader?: () => { config?: { provider: string; model: string } } | undefined };
+	session?: { requestHeader?: () => { config?: { provider: string; model: string; reasoningEffort?: string } } | undefined };
 }
 
 export class PlayerPipeline {
@@ -143,7 +144,10 @@ export class PlayerPipeline {
 
 	/** One-shot polish call; "" means "fall back to the raw text". */
 	private async polish(sessionId: string, text: string, config: PluginConfig, signal: AbortSignal): Promise<string> {
-		const model = await this.resolveSessionModel(sessionId);
+		const pm = config.polishModel;
+		const model = pm
+			? { provider: pm.provider, model: pm.model, ...(pm.reasoningEffort ? { reasoningEffort: pm.reasoningEffort } : {}) }
+			: await this.resolveSessionModel(sessionId);
 		if (model === undefined || signal.aborted) return "";
 		const vocabulary = Object.keys(config.playerEmotionMap);
 		const lines = [
@@ -171,6 +175,7 @@ export class PlayerPipeline {
 				model: model.model,
 				messages: [createUserMessage({ content: [{ type: "text", text }], source: { kind: "user" } })],
 				system: lines.join("\n"),
+				...(model.reasoningEffort ? { reasoningEffort: ReasoningEffortId(model.reasoningEffort) } : {}),
 				signal: capped.signal,
 			});
 			for await (const chunk of stream) {
@@ -263,11 +268,17 @@ export class PlayerPipeline {
 	}
 
 	/** The session's current conversation model (polish reuses it). */
-	private async resolveSessionModel(sessionId: string): Promise<{ provider: string; model: string } | undefined> {
+	private async resolveSessionModel(sessionId: string): Promise<{ provider: string; model: string; reasoningEffort?: string } | undefined> {
 		try {
 			const agent = (await this.resolveAgent(sessionId)) as AgentLike | undefined;
 			const header = agent?.session?.requestHeader?.();
-			if (header?.config) return { provider: header.config.provider, model: header.config.model };
+			if (header?.config) {
+				return {
+					provider: header.config.provider,
+					model: header.config.model,
+					...(typeof header.config.reasoningEffort === "string" && header.config.reasoningEffort ? { reasoningEffort: header.config.reasoningEffort } : {}),
+				};
+			}
 			const catalog = await (
 				this.ctx as unknown as {
 					sessionController: { modelCatalog(): Promise<{ default?: { provider: string; model: string } }> };

@@ -188,6 +188,20 @@ export interface PluginConfig {
 	 */
 	liveModel?: { provider: string; model: string; reasoningEffort?: string } | null;
 
+	/**
+	 * When set, subtitle translation uses this model instead of the session's
+	 * current model. Null/undefined means "follow the session" (default).
+	 * Lets users pick a fast non-reasoning model for translation so the
+	 * subtitle translation isn't bottlenecked by a slow thinking model.
+	 */
+	translateModel?: { provider: string; model: string; reasoningEffort?: string } | null;
+
+	/**
+	 * When set, third-person player-line polish uses this model instead of
+	 * the session's. Null/undefined means "follow the session" (default).
+	 */
+	polishModel?: { provider: string; model: string; reasoningEffort?: string } | null;
+
 	/** Per-workspace overrides keyed by the workspace root path (cwd). */
 	workspaces: Record<string, Partial<PluginConfig>>;
 }
@@ -269,6 +283,8 @@ export const DEFAULT_CONFIG: PluginConfig = {
 	playerEmotionMap: { ...DEFAULT_EMOTION_MAP },
 	workspaces: {},
 	liveModel: null,
+	translateModel: null,
+	polishModel: null,
 };
 
 export function configFilePath(): string {

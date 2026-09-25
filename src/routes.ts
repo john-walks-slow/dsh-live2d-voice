@@ -335,18 +335,26 @@ export function installRoutes(ctx: Context, deps: RouteDeps): (() => void) | und
 						}
 						patch.playerEmotionMap = playerEmotionMap;
 					}
-					// liveModel: object (provider+model+optional effort) or null to clear.
-					if (body.liveModel === null) {
-						patch.liveModel = null;
-					} else if (typeof body.liveModel === "object" && !Array.isArray(body.liveModel)) {
-						const lm = body.liveModel as Record<string, unknown>;
-						if (typeof lm.provider === "string" && typeof lm.model === "string") {
-							patch.liveModel = {
-								provider: lm.provider,
-								model: lm.model,
-								...(typeof lm.reasoningEffort === "string" && lm.reasoningEffort ? { reasoningEffort: lm.reasoningEffort } : {}),
-							};
+					// liveModel / translateModel / polishModel: object
+					// (provider+model+optional effort) or null to clear.
+					const modelPatchValue = (key: "liveModel" | "translateModel" | "polishModel") => {
+						const v = (body as Record<string, unknown>)[key];
+						if (v === null) return null;
+						if (typeof v === "object" && v !== null && !Array.isArray(v)) {
+							const m = v as Record<string, unknown>;
+							if (typeof m.provider === "string" && typeof m.model === "string") {
+								return {
+									provider: m.provider,
+									model: m.model,
+									...(typeof m.reasoningEffort === "string" && m.reasoningEffort ? { reasoningEffort: m.reasoningEffort } : {}),
+								};
+							}
 						}
+						return undefined;
+					};
+					for (const key of ["liveModel", "translateModel", "polishModel"] as const) {
+						const v = modelPatchValue(key);
+						if (v !== undefined) patch[key] = v;
 					}
 					const saved = deps.saveConfig(patch);
 					writeJson(res, 200, { config: publicConfig(saved, deps.resolveKeys(saved).length) });

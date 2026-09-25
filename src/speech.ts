@@ -21,6 +21,7 @@
 import { randomUUID } from "node:crypto";
 import type { Context } from "@deepseek-ai/cordis";
 import { createUserMessage, type StreamChunk } from "@deepseek-ai/dsh-llm";
+import { ReasoningEffortId } from "@deepseek-ai/dsh-llm/brand";
 import { SentenceBuffer, extractEmotionTags, extractMotionTags, splitByWeight } from "./sentence.js";
 import { PCM_SAMPLE_RATE, synthesize } from "./tts.js";
 import { languageLabel, type PluginConfig } from "./config.js";
@@ -45,6 +46,7 @@ interface ActiveSpeech {
 interface SessionModel {
 	provider: string;
 	model: string;
+	reasoningEffort?: string;
 }
 
 /** Cap for one whole-utterance translation call (queue-fairness guard). */
@@ -120,6 +122,7 @@ export function applySpeechTap(ctx: Context, deps: SpeechDeps): (sessionId: stri
 				model: model.model,
 				messages: [createUserMessage({ content: [{ type: "text", text }], source: { kind: "user" } })],
 				system: `You translate speech subtitles. Translate the user's text into ${languageLabel(targetLanguage)}. Reply with ONLY the translation — no notes, no quotes, no original text. If the text is already in the target language, reply with it unchanged. Keep it natural and concise.`,
+				...(model.reasoningEffort ? { reasoningEffort: ReasoningEffortId(model.reasoningEffort) } : {}),
 				signal: capped.signal,
 			});
 			for await (const chunk of stream) {
@@ -154,8 +157,15 @@ export function applySpeechTap(ctx: Context, deps: SpeechDeps): (sessionId: stri
 				}
 			})();
 		}
-		// The conversation's own model — translation calls reuse it.
-		return speak(deps, active, translations, translateOnce, sessionId, { provider: options.provider, model: options.model }, next());
+		// The conversation's own model — translation reuses it, unless the
+		// user configured a dedicated translateModel (e.g. a fast
+		// non-reasoning model to avoid thinking-model latency on subtitles).
+		const sessionConfig = deps.resolveSession(sessionId);
+		const tm = sessionConfig.translateModel;
+		const model: SessionModel = tm
+			? { provider: tm.provider, model: tm.model, ...(tm.reasoningEffort ? { reasoningEffort: tm.reasoningEffort } : {}) }
+			: { provider: options.provider, model: options.model, ...(typeof options.reasoningEffort === "string" && options.reasoningEffort ? { reasoningEffort: options.reasoningEffort } : {}) };
+		return speak(deps, active, translations, translateOnce, sessionId, model, next());
 	});
 
 	// REC-05: the last SSE listener for a session left — stop synthesizing

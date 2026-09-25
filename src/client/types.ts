@@ -52,6 +52,10 @@ export interface PublicConfig {
 	asrConfigured: boolean;
 	/** When set, the Live view auto-switches to this model on entry. */
 	liveModel?: { provider: string; model: string; reasoningEffort?: string } | null;
+	/** When set, subtitle translation uses this model instead of the session's. */
+	translateModel?: { provider: string; model: string; reasoningEffort?: string } | null;
+	/** When set, third-person player-line polish uses this model instead of the session's. */
+	polishModel?: { provider: string; model: string; reasoningEffort?: string } | null;
 }
 
 export interface VoicePreset {
