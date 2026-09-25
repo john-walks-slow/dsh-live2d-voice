@@ -3,3 +3,4 @@ node_modules/
 .mnemon/
 references/
 generated/
+tests/.behavior.mjs
