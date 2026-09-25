@@ -1426,34 +1426,6 @@ export function Live2DView(props: ViewProps) {
 		};
 	}, [micState]);
 
-	// Exit Live mode: stop all active media and return to default Chat tab
-	const exitLiveMode = useCallback(() => {
-		stopListening();
-		engineRef.current?.stop();
-		if (fullscreen) {
-			if (document.fullscreenElement) {
-				void document.exitFullscreen().catch(() => undefined);
-			}
-			setFullscreen(false);
-		}
-		if (props.standalone) {
-			if (window.history.length > 1) {
-				window.history.back();
-			} else {
-				showToast("已停止语音与监听");
-			}
-			return;
-		}
-		const tabs = document.querySelectorAll<HTMLElement>('[role="tab"]');
-		for (const tab of Array.from(tabs)) {
-			const text = tab.textContent?.trim() ?? "";
-			if (text && text !== "Live2D" && text !== "Live") {
-				tab.click();
-				return;
-			}
-		}
-	}, [fullscreen, props.standalone, stopListening]);
-
 	const looksLikeEcho = (text: string): boolean => {
 		const recent = `${assistantEchoRef.current}\n${playerEchoRef.current}`;
 		if (!recent.trim()) return false;
@@ -1767,7 +1739,6 @@ export function Live2DView(props: ViewProps) {
 				onPickVoice={(preset) => void pickVoice(preset)}
 				onPickSttLanguage={(id) => void pickSttLanguage(id)}
 				onSavePrompt={(text) => void savePrompt(text)}
-				onExitLive={exitLiveMode}
 				onOpenGlobalSettings={() => {
 					// 导航至系统设置
 					const btn = document.querySelector('button[title*="Settings"], button[title*="设置"]') as HTMLElement | null;

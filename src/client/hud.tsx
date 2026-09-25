@@ -24,7 +24,6 @@ import {
 	IconClose,
 	IconExternalLink,
 	IconCopy,
-	IconExitLive,
 } from "./icons.js";
 import { logger } from "./logger.js";
 import { useState } from "react";
@@ -113,8 +112,6 @@ export interface HudProps {
 	onPickModel: (name: string) => void;
 	onSavePrompt: (text: string) => void;
 	onOpenGlobalSettings?: () => void;
-	/** Exit Live mode: switch back to default Chat tab */
-	onExitLive?: () => void;
 }
 
 /** Look-parameter sliders grouped by source (camera / gyro / range). */
@@ -327,18 +324,6 @@ export function Hud(props: HudProps) {
 			>
 				<IconSliders size={18} />
 			</button>
-
-			{/* 7. 退出 Live 模式 (返回常规聊天) */}
-			{props.onExitLive && (
-				<button
-					type="button"
-					className="lv-btn lv-btn-exit"
-					title="退出 Live 模式，返回常规聊天"
-					onClick={props.onExitLive}
-				>
-					<IconExitLive size={18} />
-				</button>
-			)}
 
 			{/* 快捷弹出面板 */}
 			{props.popoverOpen && (

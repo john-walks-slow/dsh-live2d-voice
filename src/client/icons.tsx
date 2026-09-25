@@ -194,12 +194,3 @@ export const IconSend: FC<P> = ({ size, ...rest }) => (
 		<polygon points="22 2 15 22 11 13 2 9 22 2" />
 	</svg>
 );
-
-/** 退出 Live 模式 (返回聊天) */
-export const IconExitLive: FC<P> = ({ size, ...rest }) => (
-	<svg {...base(size)} {...rest}>
-		<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
-		<polyline points="16 17 21 12 16 7" />
-		<line x1="21" y1="12" x2="9" y2="12" />
-	</svg>
-);

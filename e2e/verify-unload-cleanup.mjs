@@ -57,18 +57,14 @@ await page.waitForTimeout(3000);
 const liveState = await page.evaluate(() => {
   const root = document.querySelector('.lv-root');
   const canvas = document.querySelector('.lv-stage canvas');
-  const exitBtn = document.querySelector('.lv-btn-exit');
   return {
     rootMounted: !!root,
     canvasMounted: !!canvas,
-    hasExitButton: !!exitBtn,
-    exitButtonTitle: exitBtn ? exitBtn.getAttribute('title') : null,
   };
 });
 console.log('  Live2D state:', JSON.stringify(liveState));
 check(liveState.rootMounted, 'Live2D view mounted (.lv-root present)');
 check(liveState.canvasMounted, 'Pixi canvas mounted');
-check(liveState.hasExitButton, 'HUD has explicit Exit Live button (.lv-btn-exit)');
 
 console.log('=== STAGE 2: test visibilitychange handling ===');
 const visibilityResult = await page.evaluate(() => {
@@ -83,10 +79,16 @@ const visibilityResult = await page.evaluate(() => {
 });
 check(visibilityResult.handledWithoutError, 'visibilitychange event dispatched and processed safely');
 
-console.log('=== STAGE 3: click Exit Live button ===');
+console.log('=== STAGE 3: switch back to Chat tab ===');
 await page.evaluate(() => {
-  const exitBtn = document.querySelector('.lv-btn-exit');
-  exitBtn?.click();
+  const tabs = document.querySelectorAll('[role="tab"]');
+  for (const tab of Array.from(tabs)) {
+    const text = tab.textContent?.trim() ?? '';
+    if (text && text !== 'Live2D' && text !== 'Live') {
+      tab.click();
+      return;
+    }
+  }
 });
 await page.waitForTimeout(3000);
 

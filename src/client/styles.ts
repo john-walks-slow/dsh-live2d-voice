@@ -313,11 +313,6 @@ body[data-live2d-active="true"] [class*="taskBoard"] {
 	background: color-mix(in srgb, var(--lv-accent) 12%, transparent);
 }
 
-.lv-btn.lv-btn-exit:hover {
-	color: #ef4444;
-	background: color-mix(in srgb, #ef4444 14%, transparent);
-}
-
 /* Mic pulse halo — only plays while the user is actually speaking (level
    above the threshold), so the animation reflects real input instead of
    looping forever even in silence. The base state stays visually quiet. */
