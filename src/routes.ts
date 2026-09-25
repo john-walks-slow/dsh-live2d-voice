@@ -564,21 +564,31 @@ export function installRoutes(ctx: Context, deps: RouteDeps): (() => void) | und
 	// from the plugin's own node_modules, and the face_landmarker model is
 	// downloaded once (through the host's network) and cached — the phone
 	// browser never needs external network access.
-	const mediapipeDir = (() => {
+	//
+	// The runtime dir is resolved lazily and memoized on first success: a
+	// dependency installed (or repaired) after DSH booted must not need a
+	// restart to be picked up, and a failed resolution is NOT cached so the
+	// next request retries.
+	let mediapipeDir = "";
+	const resolveMediapipeDir = (): string => {
+		if (mediapipeDir) return mediapipeDir;
 		try {
 			const require = createRequire(import.meta.url);
 			// The package exports map hides package.json — resolve the entry
 			// and walk up to the directory that owns it.
 			let dir = dirname(require.resolve("@mediapipe/tasks-vision"));
 			for (let i = 0; i < 4; i++) {
-				if (existsSync(join(dir, "wasm")) && existsSync(join(dir, "vision_bundle.mjs"))) return dir;
+				if (existsSync(join(dir, "wasm")) && existsSync(join(dir, "vision_bundle.mjs"))) {
+					mediapipeDir = dir;
+					return dir;
+				}
 				dir = dirname(dir);
 			}
-			return "";
 		} catch {
-			return "";
+			/* not installed (yet) — retried on the next request */
 		}
-	})();
+		return "";
+	};
 	const gazeModelCache = (() => {
 		const dir = join(process.env.DSH_HOME ?? resolve(homedir(), ".dsh"), "live2d-voice-cache");
 		try {
@@ -630,7 +640,7 @@ export function installRoutes(ctx: Context, deps: RouteDeps): (() => void) | und
 					if (!serveFile(res, file, 86_400)) writeJson(res, 502, { code: "model_unavailable" });
 					return;
 				}
-				if (!mediapipeDir) {
+				if (!resolveMediapipeDir()) {
 					writeJson(res, 404, { code: "mediapipe_missing" });
 					return;
 				}

@@ -183,6 +183,36 @@ interface FaceLandmarkerLike {
 const VISION_URL = "/live2d-voice/gaze/vision.mjs";
 const WASM_BASE = "/live2d-voice/gaze/wasm";
 const MODEL_URL = "/live2d-voice/gaze/model";
+
+/**
+ * Load the MediaPipe runtime module. A bare `import()` rejection only says
+ * "failed to fetch dynamically imported module", which tells the user
+ * nothing; probe the route once to turn the server's reason (dependency not
+ * installed, asset missing) into an actionable message.
+ */
+async function loadVisionModule(): Promise<VisionModule> {
+	try {
+		return (await import(VISION_URL)) as unknown as VisionModule;
+	} catch {
+		let reason = "";
+		try {
+			const response = await fetch(VISION_URL, { headers: { accept: "application/json" } });
+			if (!response.ok) {
+				const body = (await response.json()) as { code?: string };
+				reason =
+					body.code === "mediapipe_missing"
+						? "：服务端未安装 @mediapipe/tasks-vision，请在插件目录执行 npm install 后重启 DSH"
+						: body.code === "not_found"
+							? "：服务端缺少 MediaPipe 运行时文件"
+							: `：${body.code ?? response.status}`;
+			}
+		} catch {
+			/* the probe is best-effort — keep the generic message */
+		}
+		throw new Error(`视线追踪资源加载失败${reason}`);
+	}
+}
+
 /** Detection cadence — modest on purpose (old phones). */
 const DETECT_INTERVAL_MS = 80;
 /** Face lost this long → gaze home. */
@@ -305,7 +335,7 @@ export class GazeTracker {
 
 			// Runtime import — the URL is a variable so the bundler leaves
 			// it as a true dynamic import served by the plugin route.
-			const vision = (await import(VISION_URL)) as unknown as VisionModule;
+			const vision = await loadVisionModule();
 			const fileset = await vision.FilesetResolver.forVisionTasks(WASM_BASE);
 			const create = (delegate: "GPU" | "CPU") =>
 				vision.FaceLandmarker.createFromOptions(fileset, {
