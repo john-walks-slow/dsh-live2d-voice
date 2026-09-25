@@ -185,6 +185,7 @@ export async function mountModel(
 		position: { set(x: number, y: number): void };
 		anchor: { set(x: number, y: number): void };
 		parent?: { removeChild(child: never): unknown } | null;
+		getBounds(skipUpdate?: boolean): { x: number; y: number; width: number; height: number };
 		internalModel: {
 			originalWidth: number;
 			originalHeight: number;
@@ -298,13 +299,17 @@ export async function mountModel(
 	let userScale = 1;
 	let userPanX = 0;
 	let userPanY = 0;
+	let lastNormalWidth = 0;
+	let lastNormalHeight = 0;
 
 	const applyTransform = () => {
 		model.scale.set(baseScale * userScale);
 		const lookX = camSm.dx * lookParams.camPanGain + gyroSm.dx * lookParams.gyroPanGain;
 		const lookY = camSm.dy * lookParams.camPanGain + gyroSm.dy * lookParams.gyroPanGain;
 		const w = container.clientWidth || 1;
-		const h = container.clientHeight || 1;
+		const h = (container.closest(".lv-root")?.classList.contains("lv-keyboard-open") && lastNormalHeight > 0)
+			? lastNormalHeight
+			: (container.clientHeight || 1);
 		model.position.set(baseX + userPanX - lookX * lookParams.panRange * w, baseY + userPanY - lookY * lookParams.panRange * h);
 		// Gesture/zoom state as a DOM observable — the e2e suite asserts
 		// against it (same convention as dataset.lvPlayer).
@@ -316,8 +321,17 @@ export async function mountModel(
 
 	const fit = () => {
 		const width = container.clientWidth;
-		const height = container.clientHeight;
+		let height = container.clientHeight;
 		if (width === 0 || height === 0) return;
+		const isKeyboardOpen = container.closest(".lv-root")?.classList.contains("lv-keyboard-open");
+		if (!isKeyboardOpen) {
+			lastNormalWidth = width;
+			lastNormalHeight = height;
+		} else if (lastNormalHeight > 0 && height < lastNormalHeight) {
+			// On mobile, on-screen keyboard shrinks the container: keep the pre-keyboard height
+			// so the avatar scale and center position remain invariant. The keyboard merely covers.
+			height = lastNormalHeight;
+		}
 		const internal = model.internalModel;
 		baseScale = Math.min(width / internal.originalWidth, height / internal.originalHeight) * 0.98 * stageLayout.scaleGain;
 		model.anchor.set(0.5, 0.5);
@@ -457,6 +471,32 @@ export async function mountModel(
 	// - Wheel: zoom around cursor
 	// - Double click/tap: reset zoom & pan
 	const stage = container;
+	// Gesture hit-test registry: every mounted model registers itself
+	// so that a pointer-down can decide which avatar the finger landed on.
+	const mounts: { model: AnyLive2D }[] = [];
+	const registerMount = (m: AnyLive2D) => {
+		if (!mounts.find((e) => e.model === m)) mounts.push({ model: m });
+	};
+	const unregisterMount = (m: AnyLive2D) => {
+		const i = mounts.findIndex((e) => e.model === m);
+		if (i >= 0) mounts.splice(i, 1);
+	};
+	// In third-person mode a single-finger drag moves only the avatar
+	// the finger actually landed on; tapping empty space pans the whole
+	// camera (both avatars).  Two-finger pinch, wheel and double-click
+	// always act on the whole stage regardless.
+	let globalDragOwner: AnyLive2D | null = null;
+	const hitAvatar = (event: PointerEvent): AnyLive2D | null => {
+		const rect = stage.getBoundingClientRect();
+		const gx = event.clientX - rect.left;
+		const gy = event.clientY - rect.top;
+		for (const { model: m } of mounts) {
+			const b = m.getBounds();
+			if (gx >= b.x && gx <= b.x + b.width && gy >= b.y && gy <= b.y + b.height) return m;
+		}
+		return null;
+	};
+	registerMount(model);
 	const activeTouches = new Map<number, { x: number; y: number }>();
 	let lastPinchDist = 0;
 	let lastPinchMidX = 0;
@@ -480,6 +520,7 @@ export async function mountModel(
 			if (activeTouches.size === 1) {
 				lastSingleTouchX = event.clientX;
 				lastSingleTouchY = event.clientY;
+				globalDragOwner = hitAvatar(event);
 			} else if (activeTouches.size === 2) {
 				const points = [...activeTouches.values()];
 				lastPinchDist = Math.hypot(points[0].x - points[1].x, points[0].y - points[1].y);
@@ -487,10 +528,12 @@ export async function mountModel(
 				lastPinchMidY = (points[0].y + points[1].y) / 2;
 			}
 		} else if (event.button === 0 || event.button === 1 || event.button === 2) {
-			// Left click drag, middle click, or right click initiates pan on desktop
+			// Left click drags the avatar under the cursor in third-person
+			// mode; middle/right click always pans the whole camera.
 			isMousePanning = true;
 			lastMouseX = event.clientX;
 			lastMouseY = event.clientY;
+			globalDragOwner = event.button === 0 ? hitAvatar(event) : null;
 			try {
 				stage.setPointerCapture(event.pointerId);
 			} catch {}
@@ -505,14 +548,17 @@ export async function mountModel(
 				activeTouches.set(event.pointerId, { x: event.clientX, y: event.clientY });
 			}
 			if (activeTouches.size === 1) {
-				// Single finger drag = pan
+				// Single finger drag: move only the avatar the finger
+				// landed on (empty space pans the whole camera).
 				const deltaX = event.clientX - lastSingleTouchX;
 				const deltaY = event.clientY - lastSingleTouchY;
-				userPanX += deltaX;
-				userPanY += deltaY;
-				lastSingleTouchX = event.clientX;
-				lastSingleTouchY = event.clientY;
-				applyTransform();
+				if (globalDragOwner === null || globalDragOwner === model) {
+					userPanX += deltaX;
+					userPanY += deltaY;
+					lastSingleTouchX = event.clientX;
+					lastSingleTouchY = event.clientY;
+					applyTransform();
+				}
 				return;
 			} else if (activeTouches.size >= 2) {
 				// Two fingers pinch = zoom & pan
@@ -572,6 +618,7 @@ export async function mountModel(
 		} else {
 			isMousePanning = false;
 		}
+		globalDragOwner = null;
 	};
 
 	const onWheel = (event: WheelEvent) => {
@@ -591,9 +638,10 @@ export async function mountModel(
 	};
 
 	// Every mounted model listens on the stage and keeps its own gesture
-	// state: with a single avatar this is the classic pan/pinch; on a shared
-	// two-avatar stage both models react in lockstep, so a drag or pinch
-	// moves and zooms the whole scene. (Gating this on !shared left NO
+	// state. Third-person rule: a single finger drags only the avatar it
+	// landed on (hit-test at pointer-down); empty-space drag pans the
+	// whole camera. Two-finger pinch, wheel and double-click always act
+	// on the entire stage. (Gating listener attach on !shared left NO
 	// listeners attached once every mount went through the shared stage.)
 	stage.addEventListener("pointerdown", onPointerDown);
 	stage.addEventListener("pointermove", onPointerMove);
@@ -715,9 +763,10 @@ export async function mountModel(
 					model.parent.removeChild(model as never);
 				}
 			} catch {}
-			try {
-				model.destroy();
-			} catch (err) {
+			unregisterMount(model);
+				try {
+					model.destroy();
+				} catch (err) {
 				logger.warn("Live2DModel.destroy threw error, safely suppressed", err);
 			}
 			if (shared) return; // the owner owns the application + canvas

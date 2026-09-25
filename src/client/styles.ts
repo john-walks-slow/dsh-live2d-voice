@@ -810,64 +810,34 @@ body[data-live2d-active="true"] [class*="taskBoard"] {
 /* ==========================================================================
    7b. Keyboard (IME) Open State
    --------------------------------------------------------------------------
-   When the user opens the text-input panel the Live2D stage must NOT shrink
-   when the soft keyboard pops up — the model keeps its full layout-viewport
-   size and the IME is allowed to cover the lower portion. We achieve it by
-   pinning the root to the layout viewport via position: fixed so the model
-   container stops following the shrunken visual viewport.
-
-   lv-input / lv-micbar / lv-toast are pushed up by the IME height
-   (--lv-ime-height, written by the visualViewport handler in view.tsx) so
-   they stay visible just above the on-screen keyboard.
-
-   The HUD operation bar moves from the bottom to the top so it does not
-   collide with the on-screen keyboard; the popover flips down from the HUD.
+   When the user opens the text-input panel:
+   - Root stays inside its normal container (no automatic fullscreen).
+   - The stage height is pinned to its pre-keyboard height (--lv-locked-height)
+     so the avatar size, ratio and center position remain completely invariant
+     when the soft keyboard pops up. The keyboard merely covers the lower stage.
+   - lv-input / lv-micbar / lv-toast are elevated above the on-screen keyboard
+     using --lv-ime-height.
+   - HUD stays quietly at the bottom.
    ========================================================================== */
 .lv-root.lv-keyboard-open {
-	position: fixed;
-	inset: 0;
-	z-index: 50;
-	/* Updated by the visualViewport handler. Defaults to 0 so the rules below
-	   work fine on desktop / when no IME is showing. */
 	--lv-ime-height: 0px;
 }
 
 .lv-root.lv-keyboard-open .lv-stage {
-	/* Position fixed inside an already-fixed root keeps the stage anchored
-	   to the layout viewport. The canvas inside never re-sizes because its
-	   container's box never shrinks — which is the point of the whole block. */
-	position: fixed;
-	inset: 0;
-	width: 100%;
-	height: 100%;
-}
-
-/* HUD moves to top when keyboard panel is open. The existing transform
-   keeps horizontal centering intact. */
-.lv-root.lv-keyboard-open .lv-hud {
-	bottom: auto;
-	top: var(--lv-chrome-top, 16px);
-}
-
-/* Popover (lv-pop) sits above its parent HUD with bottom: 100%. With the
-   HUD at the top of the viewport the popover would fly off-screen — flip
-   it to sit just below the HUD instead. */
-.lv-root.lv-keyboard-open .lv-pop {
-	bottom: auto;
-	top: calc(100% + 12px);
-	transform-origin: top right;
+	height: var(--lv-locked-height, 100%);
+	min-height: 100%;
 }
 
 .lv-root.lv-keyboard-open .lv-input {
-	bottom: calc(var(--lv-ime-height) + 12px);
+	bottom: calc(max(var(--lv-chrome-bottom) + 64px, var(--lv-ime-height, 0px) + 16px));
 }
 
 .lv-root.lv-keyboard-open .lv-micbar {
-	bottom: calc(var(--lv-ime-height) + 64px);
+	bottom: calc(max(var(--lv-chrome-bottom) + 128px, var(--lv-ime-height, 0px) + 72px));
 }
 
 .lv-root.lv-keyboard-open .lv-toast {
-	bottom: calc(var(--lv-ime-height) + 120px);
+	bottom: calc(max(var(--lv-chrome-bottom) + 180px, var(--lv-ime-height, 0px) + 128px));
 }
 
 /* ==========================================================================
@@ -983,15 +953,32 @@ body[data-live2d-active="true"] [class*="taskBoard"] {
 }
 
 /* ==========================================================================
-   9. Fullscreen (Immersive Mode)
+   9. Fullscreen (Immersive Web-App Mode)
+   --------------------------------------------------------------------------
+   Web-level immersion: fixed to cover the entire browser layout viewport,
+   hiding host DSH shell/headers/panels with high z-index without requesting
+   native browser fullscreen.
    ========================================================================== */
+.lv-root.lv-fullscreen,
 .lv-root:fullscreen {
+	position: fixed;
+	inset: 0;
 	width: 100vw;
 	height: 100vh;
+	z-index: 50;
 	background: var(--lv-base);
 	--lv-chrome-bottom: 20px;
 }
 
+.lv-root.lv-fullscreen .lv-stage,
+.lv-root:fullscreen .lv-stage {
+	position: absolute;
+	inset: 0;
+	width: 100%;
+	height: 100%;
+}
+
+.lv-root.lv-fullscreen .lv-ambient,
 .lv-root:fullscreen .lv-ambient {
 	opacity: 1.4;
 }

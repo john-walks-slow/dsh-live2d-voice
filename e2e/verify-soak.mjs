@@ -120,8 +120,8 @@ try {
   // fullscreen (immersive)
   await page.evaluate(() => document.querySelector('.lv-hud [title^="全屏"]')?.click());
   await sleep(800);
-  const fs = await page.evaluate(() => document.fullscreenElement?.className ?? null);
-  check('S1b', fs === 'lv-root', `fullscreen lv-root (${fs})`);
+  const fs = await page.evaluate(() => document.querySelector('.lv-root')?.classList.contains('lv-fullscreen'));
+  check('S1b', fs === true, `fullscreen lv-root (.lv-fullscreen: ${fs})`);
 
   // mic on
   await page.evaluate(() => document.querySelector('.lv-hud .lv-mic')?.click());

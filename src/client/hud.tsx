@@ -359,48 +359,36 @@ export function Hud(props: HudProps) {
 										}
 										g.items.push(model);
 									}
-									const availableGroups = groups.filter((g) => g.id !== "");
 									const currentGroupId = (() => {
 										const hit = props.models.find((m) => m.name === props.currentModel);
 										return hit?.group ?? "";
 									})();
 									const filteredModels = props.models.filter((m) => (m.group ?? "") === currentGroupId);
 									return (
-										<>
-											<div className="lv-langs">
-												<button
-													type="button"
-													className={`lv-lang${currentGroupId === "" ? " lv-current" : ""}`}
-													onClick={() => props.onPickModelGroup("")}
-													title="未分类"
-												>
-													未分类
-												</button>
-												{availableGroups.map((g) => (
-													<button
-														key={g.id}
-														type="button"
-														className={`lv-lang${currentGroupId === g.id ? " lv-current" : ""}`}
-														onClick={() => props.onPickModelGroup(g.id)}
-													>
-														{g.label}
-													</button>
+										<div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+											<select
+												className="lv-model-select"
+												value={currentGroupId}
+												onChange={(e) => props.onPickModelGroup(e.target.value)}
+											>
+												{groups.map((g) => (
+													<option key={g.id || "uncategorized"} value={g.id}>
+														{g.label || "未分类"} ({g.items.length})
+													</option>
 												))}
-											</div>
-											<div className="lv-langs" style={{ marginTop: "4px" }}>
+											</select>
+											<select
+												className="lv-model-select"
+												value={props.currentModel ?? ""}
+												onChange={(e) => props.onPickModel(e.target.value)}
+											>
 												{filteredModels.map((model) => (
-													<button
-														key={model.name}
-														type="button"
-														className={`lv-lang${model.name === props.currentModel ? " lv-current" : ""}`}
-														title={model.name}
-														onClick={() => props.onPickModel(model.name)}
-													>
+													<option key={model.name} value={model.name}>
 														{model.label ?? model.name}{model.kind === "moc2" ? "（旧版）" : ""}
-													</button>
+													</option>
 												))}
-											</div>
-										</>
+											</select>
+										</div>
 									);
 								})()}
 
@@ -475,34 +463,34 @@ export function Hud(props: HudProps) {
 								{props.models.length > 1 && (
 									<>
 										<div className="lv-look-hint">玩家角色</div>
-										<div className="lv-langs">
+										<select
+											className="lv-model-select"
+											value={props.currentPlayerModel ?? ""}
+											onChange={(e) => props.onPickPlayerModel(e.target.value)}
+										>
 											{props.models.map((model) => (
-												<button
-													key={model.name}
-													type="button"
-													className={`lv-lang${model.name === props.currentPlayerModel ? " lv-current" : ""}`}
-													title={model.name}
-													onClick={() => props.onPickPlayerModel(model.name)}
-												>
+												<option key={model.name} value={model.name}>
 													{model.label ?? model.name}{model.kind === "moc2" ? "（旧版）" : ""}
-												</button>
+												</option>
 											))}
-										</div>
+										</select>
 									</>
 								)}
 								<div className="lv-look-hint">玩家音色</div>
-								<div className="lv-langs">
+								<select
+									className="lv-model-select"
+									value={props.currentPlayerVoiceId}
+									onChange={(e) => {
+										const hit = props.presets.find((p) => p.voiceId === e.target.value);
+										if (hit) props.onPickPlayerVoice(hit);
+									}}
+								>
 									{props.presets.map((preset) => (
-										<button
-											key={preset.id}
-											type="button"
-											className={`lv-lang${preset.voiceId === props.currentPlayerVoiceId ? " lv-current" : ""}`}
-											onClick={() => props.onPickPlayerVoice(preset)}
-										>
+										<option key={preset.id} value={preset.voiceId}>
 											{preset.label}
-										</button>
+										</option>
 									))}
-								</div>
+								</select>
 								{props.currentPlayerVoiceId === props.currentVoiceId && (
 									<div className="lv-look-hint">玩家音色与 AI 相同，建议换一个更好分辨</div>
 								)}
@@ -532,37 +520,43 @@ export function Hud(props: HudProps) {
 
 						{/* 音色快切：二级下拉（语言 → 音色） */}
 						<h4>角色音色</h4>
-						<div className="lv-langs">
-							{props.voiceLanguages.map((lang) => (
-								<button
-									key={lang.id}
-									type="button"
-									className={`lv-lang${props.currentVoiceLang === lang.id ? " lv-current" : ""}`}
-									onClick={() => props.onPickVoiceLang(lang.id)}
-								>
-									{lang.label}
-								</button>
-							))}
-						</div>
-						<div className="lv-langs" style={{ marginTop: "4px" }}>
-							{props.presets
-								.filter((preset) => {
-									if (props.currentVoiceLang === "all") return true;
-									const lang = (preset as VoicePreset & { lang?: string }).lang;
-									if (!lang) return props.currentVoiceLang === "zh";
-									return lang === props.currentVoiceLang;
-								})
-								.map((preset) => (
-									<button
-										key={preset.id}
-										type="button"
-										className={`lv-lang${preset.voiceId === props.currentVoiceId ? " lv-current" : ""}`}
-										onClick={() => props.onPickVoice(preset)}
+						{(() => {
+							const filteredPresets = props.presets.filter((preset) => {
+								if (props.currentVoiceLang === "all") return true;
+								const lang = (preset as VoicePreset & { lang?: string }).lang;
+								if (!lang) return props.currentVoiceLang === "zh";
+								return lang === props.currentVoiceLang;
+							});
+							return (
+								<div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+									<select
+										className="lv-model-select"
+										value={props.currentVoiceLang}
+										onChange={(e) => props.onPickVoiceLang(e.target.value)}
 									>
-										{preset.label}
-									</button>
-								))}
-						</div>
+										{props.voiceLanguages.map((lang) => (
+											<option key={lang.id} value={lang.id}>
+												{lang.label}
+											</option>
+										))}
+									</select>
+									<select
+										className="lv-model-select"
+										value={props.currentVoiceId}
+										onChange={(e) => {
+											const hit = props.presets.find((p) => p.voiceId === e.target.value);
+											if (hit) props.onPickVoice(hit);
+										}}
+									>
+										{filteredPresets.map((preset) => (
+											<option key={preset.id} value={preset.voiceId}>
+												{preset.label}
+											</option>
+										))}
+									</select>
+								</div>
+							);
+						})()}
 
 						{/* 识别语言快切 */}
 						<h4>识别语言</h4>

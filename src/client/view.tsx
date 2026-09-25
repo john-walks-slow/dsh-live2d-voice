@@ -920,23 +920,31 @@ export function Live2DView(props: ViewProps) {
 		showToast("点击麦克风开启免键盘对话，滑块可快捷调节角色与音色");
 	}, []);
 
-	// Fullscreen & Wake Lock
+	// Fullscreen (Immersive Web-App Mode) & Wake Lock
 	const toggleFullscreen = () => {
-		const root = rootRef.current;
-		if (root === null) return;
-		if (document.fullscreenElement === root) {
-			void Promise.resolve(document.exitFullscreen?.()).catch(() => undefined);
-			return;
-		}
-		if (typeof root.requestFullscreen !== "function") {
-			showToast("当前浏览器环境不支持全屏");
-			return;
-		}
-		void root.requestFullscreen().catch(() => showToast("进入全屏失败"));
+		setFullscreen((prev) => !prev);
 	};
 
+	// Escape key exits fullscreen
 	useEffect(() => {
-		const syncFullscreen = () => setFullscreen(document.fullscreenElement === rootRef.current);
+		if (!fullscreen) return undefined;
+		const onKeyDown = (e: KeyboardEvent) => {
+			if (e.key === "Escape") {
+				setFullscreen(false);
+			}
+		};
+		window.addEventListener("keydown", onKeyDown);
+		return () => window.removeEventListener("keydown", onKeyDown);
+	}, [fullscreen]);
+
+	useEffect(() => {
+		const syncFullscreen = () => {
+			if (document.fullscreenElement === rootRef.current) {
+				setFullscreen(true);
+			} else if (document.fullscreenElement === null && !rootRef.current?.classList.contains("lv-fullscreen")) {
+				setFullscreen(false);
+			}
+		};
 		document.addEventListener("fullscreenchange", syncFullscreen);
 		return () => document.removeEventListener("fullscreenchange", syncFullscreen);
 	}, []);
@@ -1070,17 +1078,27 @@ export function Live2DView(props: ViewProps) {
 	 */
 	useEffect(() => {
 		if (!inputOpen) return undefined;
-		const vv = typeof window !== "undefined" ? window.visualViewport : null;
-		if (!vv) return undefined;
 		const root = rootRef.current;
-		if (!root) return undefined;
+		const stage = stageRef.current;
+		if (root && stage) {
+			const stableHeight = stage.clientHeight || root.clientHeight;
+			if (stableHeight > 0) {
+				root.style.setProperty("--lv-locked-height", `${stableHeight}px`);
+			}
+		}
+		const vv = typeof window !== "undefined" ? window.visualViewport : null;
 		const apply = () => {
-			const offset = Math.max(0, window.innerHeight - Math.round(vv.height));
+			if (!root) return;
+			const offset = vv ? Math.max(0, window.innerHeight - Math.round(vv.height)) : 0;
 			root.style.setProperty("--lv-ime-height", `${offset}px`);
 		};
 		apply();
-		vv.addEventListener("resize", apply);
-		return () => vv.removeEventListener("resize", apply);
+		if (vv) vv.addEventListener("resize", apply);
+		return () => {
+			if (vv) vv.removeEventListener("resize", apply);
+			root?.style.removeProperty("--lv-ime-height");
+			root?.style.removeProperty("--lv-locked-height");
+		};
 	}, [inputOpen]);
 
 	const toggleMute = () => {
@@ -1480,7 +1498,7 @@ export function Live2DView(props: ViewProps) {
 	};
 
 	return (
-		<div ref={rootRef} className={`lv-root${inputOpen ? " lv-keyboard-open" : ""}`} data-no-gesture>
+		<div ref={rootRef} className={`lv-root${fullscreen ? " lv-fullscreen" : ""}${inputOpen ? " lv-keyboard-open" : ""}`} data-no-gesture>
 			<div className="lv-ambient" />
 			<div ref={stageRef} className="lv-stage" />
 

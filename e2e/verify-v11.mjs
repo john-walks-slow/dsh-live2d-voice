@@ -180,12 +180,12 @@ try {
   const popGone = !(await ev(() => document.querySelector('.lv-pop')));
   check('D2', hadPanel && closed && popGone, 'settings ✕ closes');
   await ev(() => document.querySelector('.lv-hud [title^="全屏"]')?.click());
-  await sleep(800);
-  const fs1 = await ev(() => document.fullscreenElement?.className ?? null);
-  await ev(() => { if (document.fullscreenElement) document.exitFullscreen?.(); });
   await sleep(500);
-  const fs2 = await ev(() => document.fullscreenElement?.className ?? null);
-  check('D3', fs1 === 'lv-root' && fs2 === null, `fullscreen toggle (${fs1} → ${fs2 ?? 'null'})`);
+  const fs1 = await ev(() => document.querySelector('.lv-root')?.classList.contains('lv-fullscreen'));
+  await ev(() => document.querySelector('.lv-hud [title*="退出全屏"]')?.click());
+  await sleep(500);
+  const fs2 = await ev(() => document.querySelector('.lv-root')?.classList.contains('lv-fullscreen'));
+  check('D3', fs1 === true && fs2 === false, `fullscreen toggle (${fs1} → ${fs2})`);
   // ---- T: gyroscope parallax (experimental) ----
   console.log('=== T gyro parallax ===');
   await ev(() => document.querySelector('.lv-hud [title="语音设置"]')?.click());
