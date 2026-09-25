@@ -212,6 +212,102 @@ body[data-ds-dark-theme] .lv-set-textarea {
 }
 `;
 
+/**
+ * Reusable provider → model → reasoning-effort picker card.
+ * Used for the translation / polish dedicated-model options. Mirrors the
+ * Live-model picker's UX (select provider, then model, then optional effort;
+ * Save commits, Clear resets to "follow the session").
+ */
+function ModelPickerCard({
+	title,
+	help,
+	modelCatalog,
+	saved,
+	saving,
+	onSave,
+}: {
+	title: string;
+	help: string;
+	modelCatalog: ModelCatalog | null;
+	saved?: { provider: string; model: string; reasoningEffort?: string } | null;
+	saving: boolean;
+	onSave: (value: { provider: string; model: string; reasoningEffort?: string } | null) => void;
+}) {
+	const [provider, setProvider] = useState(saved?.provider ?? "");
+	const [modelId, setModelId] = useState(saved?.model ?? "");
+	const [effort, setEffort] = useState(saved?.reasoningEffort ?? "");
+	useEffect(() => {
+		setProvider(saved?.provider ?? "");
+		setModelId(saved?.model ?? "");
+		setEffort(saved?.reasoningEffort ?? "");
+	}, [saved]);
+	const group = modelCatalog?.groups.find((g) => g.id === provider) ?? null;
+	const modelObj = group?.models.find((m) => m.id === modelId) ?? null;
+	return (
+		<div className="lv-set-card">
+			<div className="lv-set-card-head">
+				<h3 className="lv-set-card-title">{title}</h3>
+			</div>
+			<div className="lv-set-help" style={{ marginBottom: "12px" }}>{help}</div>
+			{modelCatalog ? (
+				<>
+					<div className="lv-set-field">
+						<label className="lv-set-label">模型供应商</label>
+						<select className="lv-set-select" value={provider} onChange={(e) => {
+							setProvider(e.target.value);
+							const grp = modelCatalog.groups.find((g) => g.id === e.target.value);
+							setModelId(grp?.models[0]?.id ?? "");
+							setEffort(grp?.models[0]?.reasoning?.defaultEffort ?? "");
+						}}>
+							<option value="">— 选择供应商 —</option>
+							{modelCatalog.groups.map((g) => <option key={g.id} value={g.id}>{g.name}</option>)}
+						</select>
+					</div>
+					{group && (
+						<div className="lv-set-field">
+							<label className="lv-set-label">模型</label>
+							<select className="lv-set-select" value={modelId} onChange={(e) => {
+								setModelId(e.target.value);
+								const m = group.models.find((mm) => mm.id === e.target.value);
+								setEffort(m?.reasoning?.defaultEffort ?? "");
+							}}>
+								<option value="">— 选择模型 —</option>
+								{group.models.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
+							</select>
+						</div>
+					)}
+					{modelObj?.reasoning && modelObj.reasoning.efforts.length > 0 && (
+						<div className="lv-set-field">
+							<label className="lv-set-label">思考程度</label>
+							<select className="lv-set-select" value={effort} onChange={(e) => setEffort(e.target.value)}>
+								<option value="">默认</option>
+								{modelObj.reasoning.efforts.map((eff) => <option key={eff.id} value={eff.id}>{eff.name}</option>)}
+							</select>
+						</div>
+					)}
+					<div className="lv-set-row" style={{ marginTop: "8px" }}>
+						<button type="button" className="lv-set-btn lv-set-btn-primary" disabled={saving || !provider || !modelId}
+							onClick={() => onSave({ provider, model: modelId, ...(effort ? { reasoningEffort: effort } : {}) })}>
+							保存
+						</button>
+						<button type="button" className="lv-set-btn" disabled={saving || !saved}
+							onClick={() => { setProvider(""); setModelId(""); setEffort(""); onSave(null); }}>
+							清除（跟随会话）
+						</button>
+						{saved && (
+							<span style={{ fontSize: "12px", color: "var(--dsw-alias-label-secondary, #61666b)" }}>
+								已设置：{saved.provider} / {saved.model}{saved.reasoningEffort ? ` / ${saved.reasoningEffort}` : ""}
+							</span>
+						)}
+					</div>
+				</>
+			) : (
+				<div className="lv-set-help">模型目录加载中或不可用（需 DSH 重启后加载新路由）。</div>
+			)}
+		</div>
+	);
+}
+
 export function Live2DSettingsSection() {
 	const [config, setConfig] = useState<PublicConfig | null>(null);
 	const [presets, setPresets] = useState<VoicePreset[]>([]);
@@ -823,10 +919,27 @@ export function Live2DSettingsSection() {
 					</div>
 				)}
 			</div>
-		{/* 模块 6：找更多模型与音色 */}
+		{/* 模块 6：翻译 / 润色专用模型 */}
+			<ModelPickerCard
+				title="⑥ 翻译专用模型"
+				help="字幕翻译默认复用会话当前模型（若会话用的是思考模型会偏慢）。指定一个快速非思考模型可显著加快翻译出现时机；留空则跟随会话。"
+				modelCatalog={modelCatalog}
+				saved={config?.translateModel}
+				saving={saving}
+				onSave={(v) => handleSave({ translateModel: v })}
+			/>
+			<ModelPickerCard
+				title="⑦ 润色专用模型"
+				help="第三人称模式下玩家台词的润色默认复用会话当前模型。指定专用模型可独立控制润色质量与速度；留空则跟随会话。"
+				modelCatalog={modelCatalog}
+				saved={config?.polishModel}
+				saving={saving}
+				onSave={(v) => handleSave({ polishModel: v })}
+			/>
+		{/* 模块 7：找更多模型与音色 */}
 				<div className="lv-set-card">
 					<div className="lv-set-card-head">
-						<h3 className="lv-set-card-title">⑥ 找更多模型与音色</h3>
+						<h3 className="lv-set-card-title">⑧ 找更多模型与音色</h3>
 					</div>
 					<div className="lv-set-field">
 						<label className="lv-set-label">Live2D 模型来源</label>
@@ -866,7 +979,7 @@ export function Live2DSettingsSection() {
 			{/* 模块 7：第三人称模式 */}
 			<div className="lv-set-card">
 				<div className="lv-set-card-head">
-					<h3 className="lv-set-card-title">⑦ 第三人称模式（玩家化身）</h3>
+					<h3 className="lv-set-card-title">⑨ 第三人称模式（玩家化身）</h3>
 				</div>
 				<div className="lv-set-help" style={{ marginBottom: "12px" }}>
 					开启后，你的输入先润色成你角色的台词（可选），由<b>你的模型与音色</b>先说出来，AI 的角色再开口回应——像一场双人剧。
