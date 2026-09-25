@@ -318,7 +318,7 @@ body[data-live2d-active="true"] [class*="taskBoard"] {
 	border: 1.5px solid color-mix(in srgb, var(--lv-accent) 60%, transparent);
 	pointer-events: none;
 	/* Default: hidden. The keyframes' opacity overrides this while the
-	   animation is running on `.lv-mic-loud`. */
+	   animation is running on .lv-mic-loud. */
 	opacity: 0;
 }
 
