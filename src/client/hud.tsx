@@ -27,6 +27,12 @@ import {
 } from "./icons.js";
 import { logger } from "./logger.js";
 import { useState } from "react";
+import {
+	Live2DModelSelector,
+	VoicePresetSelector,
+	LlmModelSelector,
+	type LlmModelSelectionValue,
+} from "./selectors.js";
 
 export interface HudProps {
 	faded: boolean;
@@ -366,50 +372,12 @@ export function Hud(props: HudProps) {
 						{props.models.length > 1 && (
 							<>
 								<h4>角色模型</h4>
-								{(() => {
-									const groups: { label: string; id: string; items: (typeof props.models)[number][] }[] = [];
-									for (const model of props.models) {
-										const id = model.group ?? "";
-										const label = model.groupLabel ?? model.group ?? "";
-										let g = groups.find((x) => x.id === id);
-										if (!g) {
-											g = { id, label, items: [] };
-											groups.push(g);
-										}
-										g.items.push(model);
-									}
-									const currentGroupId = (() => {
-										const hit = props.models.find((m) => m.name === props.currentModel);
-										return hit?.group ?? "";
-									})();
-									const filteredModels = props.models.filter((m) => (m.group ?? "") === currentGroupId);
-									return (
-										<div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
-											<select
-												className="lv-model-select"
-												value={currentGroupId}
-												onChange={(e) => props.onPickModelGroup(e.target.value)}
-											>
-												{groups.map((g) => (
-													<option key={g.id || "uncategorized"} value={g.id}>
-														{g.label || "未分类"} ({g.items.length})
-													</option>
-												))}
-											</select>
-											<select
-												className="lv-model-select"
-												value={props.currentModel ?? ""}
-												onChange={(e) => props.onPickModel(e.target.value)}
-											>
-												{filteredModels.map((model) => (
-													<option key={model.name} value={model.name}>
-														{model.label ?? model.name}{model.kind === "moc2" ? "（旧版）" : ""}
-													</option>
-												))}
-											</select>
-										</div>
-									);
-								})()}
+								<Live2DModelSelector
+									models={props.models}
+									value={props.currentModel}
+									onChange={props.onPickModel}
+									layout="stack"
+								/>
 
 								{/* 动作调试：默认收起，展开后展示当前模型全部动作按钮。 */}
 								<div className="lv-look-params">
@@ -482,34 +450,26 @@ export function Hud(props: HudProps) {
 								{props.models.length > 1 && (
 									<>
 										<div className="lv-look-hint">玩家角色</div>
-										<select
-											className="lv-model-select"
-											value={props.currentPlayerModel ?? ""}
-											onChange={(e) => props.onPickPlayerModel(e.target.value)}
-										>
-											{props.models.map((model) => (
-												<option key={model.name} value={model.name}>
-													{model.label ?? model.name}{model.kind === "moc2" ? "（旧版）" : ""}
-												</option>
-											))}
-										</select>
+										<Live2DModelSelector
+											models={props.models}
+											value={props.currentPlayerModel}
+											onChange={props.onPickPlayerModel}
+											allowEmpty={true}
+											emptyLabel="— 无独立模型（仅音色）—"
+											layout="stack"
+										/>
 									</>
 								)}
 								<div className="lv-look-hint">玩家音色</div>
-								<select
-									className="lv-model-select"
+								<VoicePresetSelector
+									presets={props.presets}
 									value={props.currentPlayerVoiceId}
-									onChange={(e) => {
-										const hit = props.presets.find((p) => p.voiceId === e.target.value);
-										if (hit) props.onPickPlayerVoice(hit);
+									onChange={(p) => {
+										if (p) props.onPickPlayerVoice(p);
 									}}
-								>
-									{props.presets.map((preset) => (
-										<option key={preset.id} value={preset.voiceId}>
-											{preset.label}
-										</option>
-									))}
-								</select>
+									voiceLanguages={props.voiceLanguages}
+									layout="stack"
+								/>
 								{props.currentPlayerVoiceId === props.currentVoiceId && (
 									<div className="lv-look-hint">玩家音色与 AI 相同，建议换一个更好分辨</div>
 								)}
@@ -539,43 +499,17 @@ export function Hud(props: HudProps) {
 
 						{/* 音色快切：二级下拉（语言 → 音色） */}
 						<h4>角色音色</h4>
-						{(() => {
-							const filteredPresets = props.presets.filter((preset) => {
-								if (props.currentVoiceLang === "all") return true;
-								const lang = (preset as VoicePreset & { lang?: string }).lang;
-								if (!lang) return props.currentVoiceLang === "zh";
-								return lang === props.currentVoiceLang;
-							});
-							return (
-								<div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
-									<select
-										className="lv-model-select"
-										value={props.currentVoiceLang}
-										onChange={(e) => props.onPickVoiceLang(e.target.value)}
-									>
-										{props.voiceLanguages.map((lang) => (
-											<option key={lang.id} value={lang.id}>
-												{lang.label}
-											</option>
-										))}
-									</select>
-									<select
-										className="lv-model-select"
-										value={props.currentVoiceId}
-										onChange={(e) => {
-											const hit = props.presets.find((p) => p.voiceId === e.target.value);
-											if (hit) props.onPickVoice(hit);
-										}}
-									>
-										{filteredPresets.map((preset) => (
-											<option key={preset.id} value={preset.voiceId}>
-												{preset.label}
-											</option>
-										))}
-									</select>
-								</div>
-							);
-						})()}
+						<VoicePresetSelector
+							presets={props.presets}
+							value={props.currentVoiceId}
+							onChange={(p) => {
+								if (p) props.onPickVoice(p);
+							}}
+							voiceLanguages={props.voiceLanguages}
+							currentLang={props.currentVoiceLang}
+							onLangChange={props.onPickVoiceLang}
+							layout="stack"
+						/>
 
 						{/* 识别语言快切 */}
 						<h4>识别语言</h4>
@@ -826,27 +760,14 @@ interface ModelSelectorProps {
 }
 
 function ModelSelector(props: ModelSelectorProps) {
-	const { catalog, current } = props;
+	const { catalog, current, onSelect } = props;
 	const [pending, setPending] = useState(false);
 
-	const currentProvider = current?.provider ?? catalog.default.provider;
-	const currentModel = current?.model ?? catalog.default.model;
-	const currentEffort = current?.reasoningEffort;
-
-	// Find the selected model to check if it supports reasoning efforts.
-	const selectedGroup = catalog.groups.find((g) => g.id === currentProvider);
-	const selectedModel = selectedGroup?.models.find((m) => m.id === currentModel);
-	const efforts = selectedModel?.reasoning?.efforts ?? [];
-	const effectiveEffort = currentEffort ?? selectedModel?.reasoning?.defaultEffort;
-
-	const handleChange = async (value: string, effort?: string) => {
-		const sep = value.indexOf(":");
-		if (sep < 0) return;
-		const provider = value.slice(0, sep);
-		const model = value.slice(sep + 1);
+	const handleChange = async (val: LlmModelSelectionValue | null) => {
+		if (!val) return;
 		setPending(true);
 		try {
-			await props.onSelect(provider, model, effort);
+			await onSelect(val.provider, val.model, val.reasoningEffort);
 		} finally {
 			setPending(false);
 		}
@@ -855,37 +776,13 @@ function ModelSelector(props: ModelSelectorProps) {
 	return (
 		<>
 			<h4>模型 · 思考程度</h4>
-			<select
-				className="lv-model-select"
+			<LlmModelSelector
+				catalog={catalog}
+				value={current}
 				disabled={pending}
-				value={`${currentProvider}:${currentModel}`}
-				onChange={(e) => void handleChange(e.target.value)}
-			>
-				{catalog.groups.map((g) => (
-					<optgroup key={g.id} label={g.name}>
-						{g.models.map((m) => (
-							<option key={m.id} value={`${g.id}:${m.id}`}>
-								{m.name}
-							</option>
-						))}
-					</optgroup>
-				))}
-			</select>
-			{efforts.length > 0 && (
-				<select
-					className="lv-model-select"
-					disabled={pending}
-					value={effectiveEffort ?? ""}
-					onChange={(e) => void handleChange(`${currentProvider}:${currentModel}`, e.target.value || undefined)}
-				>
-					<option value="">默认</option>
-					{efforts.map((eff) => (
-						<option key={eff.id} value={eff.id}>
-							{eff.name}
-						</option>
-					))}
-				</select>
-			)}
+				onChange={(val) => void handleChange(val)}
+				layout="stack"
+			/>
 		</>
 	);
 }
