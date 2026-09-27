@@ -1,15 +1,18 @@
 #!/usr/bin/env node
 /**
  * Third-person mode e2e: the player-avatar speech pipeline, dual-model
- * stage, polish routing, and the off-fallback — against the e2e instance
- * (:4188).
+ * stage, polish routing, and the off-fallback — against the worktree-mode
+ * e2e instance (dsh-e2e run). Entry = standalone /live2d-voice/app (铁律 #3:
+ * session via the plugin route, never a message-for-id; this dsh-web-app
+ * renders draft session tabs icon-only, so a GUI tab hunt is not stable).
  *
- * T1 config surface: /model reports thirdPerson + player entry; settings
- *    ⚙ popover shows the 第三人称 block (model/voice/polish controls).
- * T2 dual stage: two canvases render (AI stage + player overlay).
- *    T2c-e gesture regression: drag/wheel/dblclick still work on the shared
- *    stage (the 14bd6e4 refactor gated listener attach on !shared, leaving
- *    NO model with gestures; dataset.lvTransform must move).
+ * Audio-level checks (T3e/T3g/T5d/T5e) need REAL TTS keys (Fish Audio
+ * apiKeys/apiKeyFile in the e2e home); without them they SKIP with a
+ * notice — the zero-API home runs everything else.
+ *
+ * T1 config surface: /model reports liveMode=third + player entry.
+ * T2 dual stage: shared-canvas dual avatars; full gesture regression
+ *    (per-model dataset.lvAiTransform/lvPlayerTransform assertions).
  * T3 polish-off UI round trip: typed line → pending placeholder
  *    ("酝酿中…") → player subtitle (你 badge, raw text, speaker:player SSE)
  *    → player audio → assistant reply; player chunks strictly precede
@@ -27,7 +30,6 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import { execSync } from 'node:child_process';
 const { chromium } = pw;
 
-const url = process.env.E2E_URL ?? `http://127.0.0.1:${process.env.DSH_E2E_PORT}/?token=${process.env.DSH_E2E_TOKEN || 'e2etest'}`;
 const CFG = process.env.E2E_CFG ?? `${process.env.DSH_E2E_HOME}/live2d-voice.json`;
 const PLAYER_MODEL = 'deepseek-chan';
 const PLAYER_VOICE = 'ed3a1c523b524870a85a5a76cb1e0c3d'; // 元气少年音
@@ -50,16 +52,6 @@ const ctx = await browser.newContext({ viewport: { width: 1280, height: 800 } })
 const page = await ctx.newPage();
 const pageErrors = [];
 page.on('pageerror', (e) => pageErrors.push(e.message));
-const followSessionIds = new Set();
-page.on('websocket', (ws) => {
-  ws.on('framesent', (f) => {
-    const s = String(f.payload);
-    if (s.includes('session/follow')) {
-      const m = s.match(/sessionId":"(session-[a-f0-9-]{30,})"/);
-      if (m) followSessionIds.add(m[1]);
-    }
-  });
-});
 const ev = (fn, ...args) => page.evaluate(fn, ...args);
 const sleep = (ms) => page.waitForTimeout(ms);
 const shot = (n) => page.screenshot({ path: SHOT(n), timeout: 60000 }).catch(() => {});
@@ -89,24 +81,27 @@ try {
   { const cfg = JSON.parse(readFileSync(CFG, 'utf8')); delete cfg.workspaces; writeFileSync(CFG, JSON.stringify(cfg, null, 2) + '\n'); }
 
   console.log('=== boot + session ===');
-  await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
-  await sleep(9000);
-  await ev(() => { const ed = document.querySelector('[contenteditable="true"][aria-label*="Describe"]'); if (!ed) return false; ed.focus(); return true; });
-  await page.keyboard.type('你好，请用一句话自我介绍', { delay: 20 });
-  await page.keyboard.press('Enter');
-  await sleep(12000);
-  const ids = [...followSessionIds];
-  const sessionId = ids[ids.length - 1];
-  check('T0a', !!sessionId, `session captured (${sessionId?.slice(0, 18)}…)`);
-
-  await ev(() => {
-    const matches = [...document.querySelectorAll('*')].filter((el) => el.children.length === 0 && el.textContent?.trim() === 'Live2D');
-    let t = matches[0];
-    while (t && t.tagName !== 'BUTTON' && t.getAttribute('role') !== 'tab') t = t.parentElement;
-    t?.click();
-  });
-  await sleep(4000);
-  check('T0b', !!(await ev(() => document.querySelector('.lv-root'))), 'Live2D view mounted');
+  // 铁律 #3 (docs/references/260927-e2e-testing.md): create an empty session
+  // via the plugin route and open the standalone entry — no message burned,
+  // no GUI tab hunt (draft tabs are icon-only in this dsh-web-app).
+  const created = await fetch(`http://127.0.0.1:${process.env.DSH_E2E_PORT}/live2d-voice/session`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ title: 'third-person-e2e' }),
+  }).then((r) => r.json());
+  const sessionId = created.sessionId;
+  check('T0a', !!sessionId, `session created (${sessionId?.slice(0, 18)}…)`);
+  await page.goto(
+    `http://127.0.0.1:${process.env.DSH_E2E_PORT}/live2d-voice/app?session=${encodeURIComponent(sessionId)}`,
+    { waitUntil: 'domcontentloaded', timeout: 30000 },
+  );
+  let lvRoot = false;
+  for (let i = 0; i < 20; i++) {
+    await sleep(1000);
+    lvRoot = await ev(() => Boolean(document.querySelector('.lv-root')));
+    if (lvRoot) break;
+  }
+  check('T0b', lvRoot, 'Live2D view mounted (standalone entry)');
 
   // ---- T1: config surface ----
   console.log('=== T1 config surface ===');
@@ -259,10 +254,10 @@ try {
 
   // pending placeholder appears immediately after acceptance
   let pendingSeen = false;
-  for (let i = 0; i < 12; i++) {
+  for (let i = 0; i < 20; i++) {
     pendingSeen = await ev(() => Boolean(document.querySelector('.lv-sub-pending')));
     if (pendingSeen) break;
-    await sleep(250);
+    await sleep(500);
   }
   check('T3a', pendingSeen, 'pending placeholder ("酝酿中…") shown after submit');
 
@@ -276,22 +271,37 @@ try {
   }
   check('T3b', !!playerSub, `player subtitle over SSE (${playerSub ? `"${String(playerSub.data.text).slice(0, 20)}…"` : 'none'})`);
   check('T3c', playerSub?.data?.text === RAW_LINE, 'polish off → player speaks the raw line');
-  // placeholder retired, 你 badge rendered
-  let badge = false;
-  for (let i = 0; i < 10; i++) {
-    badge = await ev(() => {
-      if (document.querySelector('.lv-sub-pending')) return false;
-      const cur = document.querySelector('.lv-sub-card .lv-sub-speaker');
-      return Boolean(cur && cur.textContent === '你');
-    });
-    if (badge) break;
-    await sleep(1000);
+  // Player-speech checks (badge in the DOM, speech events, wire ordering)
+  // are voice-synced: the player subtitle line is held in pendingSubsRef
+  // until its audio chunk starts playing — without TTS keys it never
+  // renders. They need REAL TTS keys; the rest runs keyless.
+  const ttsKeyed = (() => {
+    try {
+      const c = JSON.parse(readFileSync(CFG, 'utf8'));
+      return (Array.isArray(c.apiKeys) ? c.apiKeys.length : 0) > 0 || (typeof c.apiKeyFile === 'string' && c.apiKeyFile !== '');
+    } catch { return false; }
+  })();
+  if (ttsKeyed) {
+    // placeholder retired, 你 badge rendered — the player line may already
+    // be demoted from .lv-sub-card to .lv-sub-old by the reply; poll both.
+    let badge = false;
+    for (let i = 0; i < 10; i++) {
+      badge = await ev(() => {
+        if (document.querySelector('.lv-sub-pending')) return false;
+        const cur = document.querySelector('.lv-sub-card .lv-sub-speaker, .lv-sub-old .lv-sub-speaker');
+        return Boolean(cur && cur.textContent === '你');
+      });
+      if (badge) break;
+      await sleep(1000);
+    }
+    check('T3d', badge, 'placeholder replaced + "你" speaker badge rendered');
+  } else {
+    console.log('↷ T3d SKIP speaker badge is voice-synced (needs TTS) — none in this home');
   }
-  check('T3d', badge, 'placeholder replaced + "你" speaker badge rendered');
 
-  // player audio + ordering vs assistant
+  // player audio + ordering vs assistant — same TTS dependency.
   let playerAudio = null, assistantAudio = null, lastPlayerIdx = -1, firstAssistantIdx = -1, asstSub = null, playerStart = null, playerEnd = null;
-  for (let i = 0; i < 120; i++) {
+  for (let i = 0; i < (ttsKeyed ? 120 : 60); i++) {
     await sleep(1000);
     const list = JSON.parse(await ev(() => JSON.stringify(window.__tp)));
     playerStart = list.find((e) => e.name === 'speech-start' && e.data.speaker === 'player') ?? playerStart;
@@ -302,12 +312,21 @@ try {
     firstAssistantIdx = fa >= 0 ? fa : firstAssistantIdx;
     assistantAudio = list.find((e) => e.name === 'audio' && e.data.speaker === undefined && (e.data.b64 ?? '').length > 100) ?? assistantAudio;
     asstSub = list.find((e) => e.name === 'subtitle' && e.data.role === 'assistant' && (e.data.text ?? '').length >= 4) ?? asstSub;
-    if (playerAudio && assistantAudio && asstSub && playerEnd) break;
+    if (ttsKeyed) { if (playerAudio && assistantAudio && asstSub && playerEnd) break; }
+    else if (asstSub) break;
   }
-  check('T3e', !!playerStart && !!playerAudio && !!playerEnd, `player speech events (${playerStart ? 'start' : '-'}${playerAudio ? '+audio' : ''}${playerEnd ? '+end' : ''})`);
+  if (ttsKeyed) {
+    check('T3e', !!playerStart && !!playerAudio && !!playerEnd, `player speech events (${playerStart ? 'start' : '-'}${playerAudio ? '+audio' : ''}${playerEnd ? '+end' : ''})`);
+  } else {
+    console.log('↷ T3e SKIP player speech events need TTS keys — none in this home');
+  }
   check('T3f', !!asstSub, `assistant reply subtitle (${asstSub ? `"${String(asstSub.data.text).slice(0, 20)}…"` : 'none'})`);
-  check('T3g', lastPlayerIdx >= 0 && firstAssistantIdx >= 0 && lastPlayerIdx < firstAssistantIdx,
-    `wire ordering: last player chunk #${lastPlayerIdx} < first assistant chunk #${firstAssistantIdx}`);
+  if (ttsKeyed) {
+    check('T3g', lastPlayerIdx >= 0 && firstAssistantIdx >= 0 && lastPlayerIdx < firstAssistantIdx,
+      `wire ordering: last player chunk #${lastPlayerIdx} < first assistant chunk #${firstAssistantIdx}`);
+  } else {
+    console.log('↷ T3g SKIP wire ordering needs player audio (TTS) — none in this home');
+  }
   await shot('02-player-then-reply');
 
   // ---- T4: session log ----
@@ -319,7 +338,15 @@ try {
 
   // ---- T5: polish on (playerSpeechLanguage=ja) ----
   console.log('=== T5 polish on (zh input → ja line) ===');
-  patchCfg({ playerPolish: true, playerSpeechLanguage: 'ja' });
+  // Pin a low-effort polishModel: the default session model reasons for
+  // ~11s on this gateway — past the anti-hang cap — and polish silently
+  // falls back to the raw line (T5c/T5g would fail on latency, not logic).
+  // This also exercises the dedicated polishModel config path.
+  patchCfg({
+    playerPolish: true,
+    playerSpeechLanguage: 'ja',
+    polishModel: { provider: 'cpa', model: 'medium', reasoningEffort: 'low' },
+  });
   await sleep(800);
   await ev(() => { window.__tp = []; });
   const RAW5 = '我真的累坏了，今天加班到现在，安慰我一下吧';
@@ -333,18 +360,22 @@ try {
   }, [sessionId, RAW5]);
   check('T5a', sent5 === 200, `player-line accepted (${sent5})`);
   let sub5 = null, expr5 = null, audio5 = null;
-  for (let i = 0; i < 120; i++) {
+  for (let i = 0; i < (ttsKeyed ? 120 : 60); i++) {
     await sleep(1000);
     const list = JSON.parse(await ev(() => JSON.stringify(window.__tp)));
     sub5 = list.find((e) => e.name === 'subtitle' && e.data.speaker === 'player' && (e.data.text ?? '').length >= 2) ?? sub5;
     expr5 = list.find((e) => e.name === 'expression' && e.data.speaker === 'player') ?? expr5;
     audio5 = list.find((e) => e.name === 'audio' && e.data.speaker === 'player' && (e.data.b64 ?? '').length > 100) ?? audio5;
-    if (sub5 && audio5) break;
+    if (sub5 && (audio5 || !ttsKeyed)) break;
   }
   check('T5b', !!sub5, `polished player subtitle (${sub5 ? `"${String(sub5.data.text).slice(0, 24)}…"` : 'none'})`);
   check('T5c', !!sub5 && KANA.test(sub5.data.text) && sub5.data.text !== RAW5, 'polish translated the line into Japanese (kana present)');
-  check('T5d', !!expr5, `player expression event (${expr5 ? expr5.data.emotion : 'none'})`);
-  check('T5e', !!audio5, 'player audio chunks after polish');
+  if (ttsKeyed) {
+    check('T5d', !!expr5, `player expression event (${expr5 ? expr5.data.emotion : 'none'})`);
+    check('T5e', !!audio5, 'player audio chunks after polish');
+  } else {
+    console.log('↷ T5d/T5e SKIP player expression/audio need TTS keys — none in this home');
+  }
   let log5 = '';
   for (let i = 0; i < 12; i++) { log5 = sessionLog(); if (sub5 && log5.includes(sub5.data.text)) break; await sleep(1000); }
   check('T5f', !!sub5 && log5.includes(sub5.data.text), 'session log holds the polished line');

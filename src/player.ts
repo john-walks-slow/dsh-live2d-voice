@@ -32,8 +32,13 @@ import { PCM_SAMPLE_RATE, synthesize } from "./tts.js";
 import { languageLabel, type PluginConfig } from "./config.js";
 import type { SseHub } from "./events.js";
 
-/** Polish is a tiny one-shot call — anything past this is a hung stream. */
-const POLISH_TIMEOUT_MS = 10_000;
+/**
+ * Anti-hang cap, not a latency deadline: reasoning-tier models legitimately
+ * take ~11s for a polish round (measured cpa/medium @ medium effort — the
+ * 10s cap silently degraded those to the raw line). Polish failure/timeout
+ * still falls back to speaking the raw text.
+ */
+const POLISH_TIMEOUT_MS = 20_000;
 
 export interface PlayerDeps {
 	hub: SseHub;
