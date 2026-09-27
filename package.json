@@ -25,8 +25,14 @@
 	"scripts": {
 		"build": "node build.mjs",
 		"typecheck": "tsc --noEmit",
-		"e2e:light": "node e2e/run.mjs light",
-		"e2e:heavy": "node e2e/run.mjs heavy"
+		"e2e:boot": "dsh-e2e run e2e/run.mjs boot",
+		"e2e:fullscreen": "dsh-e2e run e2e/run.mjs fullscreen",
+		"e2e:gaze": "dsh-e2e run e2e/run.mjs gaze",
+		"e2e:settings": "dsh-e2e run e2e/run.mjs settings",
+		"e2e:styles": "dsh-e2e run e2e/run.mjs styles",
+		"e2e:third-person": "dsh-e2e run e2e/run.mjs third-person",
+		"e2e:real-api": "dsh-e2e run e2e/run.mjs real-api",
+		"e2e": "dsh-e2e run e2e/run.mjs --list"
 	},
 	"keywords": [
 		"dsh",
