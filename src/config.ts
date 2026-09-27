@@ -134,20 +134,6 @@ export interface PluginConfig {
 	 */
 	eyeTracking: boolean;
 	/**
-	 * Gaze behavior mode when eyeTracking is on:
-	 * "follow"  — legacy rigid tracking (stare at the user's face continuously);
-	 * "natural" — lifelike behavior: mutual-eye-contact bursts (0.5–3s) with
-	 * periodic aversion, turn-taking signals, thinking aversions, saccades and
-	 * head/body micro-motion (see client behavior.ts).
-	 */
-	gazeMode: "follow" | "natural";
-	/**
-	 * Idle liveliness without the camera: even when eyeTracking is off, the
-	 * character keeps natural micro motion (idle saccades, head sway, body
-	 * sway). Off → the character stands still like before.
-	 */
-	idleGaze: boolean;
-	/**
 	 * Experimental: gyroscope parallax — phone tilt drives head/body angles
 	 * and a position offset (the "character behind the screen glass"
 	 * illusion). Calibrates the neutral pose on enable.
@@ -270,8 +256,6 @@ export const DEFAULT_CONFIG: PluginConfig = {
 	speechPrompt: "",
 	idleInterval: 20,
 	eyeTracking: false,
-	gazeMode: "natural",
-	idleGaze: true,
 	gyroParallax: false,
 	emotionMap: { ...DEFAULT_EMOTION_MAP },
 	thirdPerson: false,
@@ -302,8 +286,6 @@ export function loadConfig(): PluginConfig {
 			emotionMap: { ...DEFAULT_EMOTION_MAP, ...(raw.emotionMap ?? {}) },
 			playerEmotionMap: { ...DEFAULT_EMOTION_MAP, ...(raw.playerEmotionMap ?? {}) },
 			idleInterval: typeof raw.idleInterval === "number" ? raw.idleInterval : DEFAULT_CONFIG.idleInterval,
-			gazeMode: raw.gazeMode === "follow" ? "follow" : "natural",
-			idleGaze: typeof raw.idleGaze === "boolean" ? raw.idleGaze : true,
 			workspaces: raw.workspaces ?? {},
 			apiKeys: Array.isArray(raw.apiKeys) ? raw.apiKeys.filter((k) => typeof k === "string" && k) : [],
 		};

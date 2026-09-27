@@ -62,16 +62,9 @@ export const LOOK_PRESETS: ReadonlyArray<{ id: string; label: string; params: Lo
 	},
 ];
 
-/** Behavior-pose intents from the gaze-behavior controller (-1..1 each). */
-export interface BehaviorPose {
-	nod: number;
-	tilt: number;
-	turn: number;
-	bodySway: number;
-}
-
 export interface Live2DHandle {
-	setExpression(expression: number | string): void;	/**
+	setExpression(expression: number | string): void;
+	/**
 	 * Play a motion defined in the model's settings file. Returns true on
 	 * success, false if the motion could not be started (missing group,
 	 * out-of-range index, etc.).
@@ -83,18 +76,9 @@ export interface Live2DHandle {
 	getMotions(): { name: string; group: string; index: number }[];
 	getEyePosition(): { x: number; y: number };
 	/**
-	 * Drive the look: camera gaze target + gyro parallax, plus optional
-	 * behavior-pose intents (nod/tilt/turn/body-sway in -1..1). Omit `pose`
-	 * to keep the legacy camera/gyro-only path.
+	 * Drive the look: camera gaze target + gyro parallax.
 	 */
-	setLook(camera: { dx: number; dy: number } | null, gyro: { dx: number; dy: number } | null, pose?: BehaviorPose | null): void;
-	/**
-	 * Switch the look driver between the legacy camera/gyro follower (full
-	 * gain, no lag chain, no motion yield — the pre-lively-gaze behavior)
-	 * and the natural behavior driver. The master switch in the HUD flips
-	 * this on every frame.
-	 */
-	setLegacyFollow(on: boolean): void;
+	setLook(camera: { dx: number; dy: number } | null, gyro: { dx: number; dy: number } | null): void;
 	setLookParams(params: Partial<LookParams>): void;
 	/**
 	 * Update the stage layout (third-person mode shifts the two avatars
@@ -250,44 +234,12 @@ export async function mountModel(
 	// samples make pan/angle visibly jitter. ~0.18/frame ≈ 200ms to settle.
 	let camSm = { dx: 0, dy: 0 };
 	let gyroSm = { dx: 0, dy: 0 };
-	// Lifelike gaze driver state: eyes lead, head follows with lag; amplitude
-	// split (small shifts = eyes only, big shifts bring head & body in);
-	// pose channels (nod/tilt/turn/body-sway) from the behavior controller;
-	// pink-noise micro jitter so a fixating eye is never dead-still.
-	let camTarget = { dx: 0, dy: 0 };
-	let headSm = { dx: 0, dy: 0 };
-	let bodySm = { dx: 0, dy: 0 };
-	let poseInput: { nod: number; tilt: number; turn: number; bodySway: number } | null = null;
-	let poseSm = { nod: 0, tilt: 0, turn: 0, bodySway: 0 };
-	// Master-switch OFF: drive exactly like the pre-lively-gaze follower
-	// (full-gain angles, no lag chain, no amplitude split, no motion yield).
-	let legacyFollow = false;
-	let breathPhase = Math.random() * Math.PI * 2;
-	const SACCADE_LERP = 0.5, SETTLE_LERP = 0.12;
-	const HEAD_LERP = 0.09, POSE_LERP = 0.14;
-	/** Amplitude split thresholds in -1..1 look space (≈ screen fractions). */
-	const SPLIT_SMALL = 0.15, SPLIT_LARGE = 0.55;
-	const HEAD_RATIO = 0.6, BODY_RATIO = 0.22;
-	/** Pink-noise micro jitter amplitude on the eye-ball params. */
-	const EYE_JITTER = 0.05;
-	const NOD_DEG = 3, TILT_DEG = 5, TURN_DEG = 5, BODY_SWAY_DEG = 2.2, BREATH_DEG = 0.7;
-	// Voss-McCartney pink noise (16 rows of uniform white) — pure arithmetic.
-	const pinkRows = new Float32Array(16);
-	let pinkSum = 0;
-	const pinkNext = () => {
-		const white = Math.random() * 2 - 1;
-		const idx = Math.floor(Math.random() * 16);
-		pinkSum += white - pinkRows[idx];
-		pinkRows[idx] = white;
-		return pinkSum / 16;
-	};
-	const clamp01 = (v: number) => Math.max(0, Math.min(1, v));
+	const LOOK_LERP = 0.18;
 
 	/**
 	 * Blend one channel of two source vectors by their gain weights. Gains
 	 * are signed (a negative gain mirrors that source) while the weight stays
-	 * absolute — see look-math.ts. The follower chain has no gyro twin, so the
-	 * gyro side is always its raw vector; `cam` carries the lagged channel.
+	 * absolute — see look-math.ts.
 	 */
 	const mixSigned = (camGain: number, gyroGain: number, cam: LookVector, channel: "dx" | "dy"): number =>
 		mixLookChannel(camGain, gyroGain, cam, gyroSm, channel, camInput !== null, gyroInput !== null);
@@ -296,39 +248,18 @@ export async function mountModel(
 	const smoothLook = () => {
 		const tx = camInput ?? { dx: 0, dy: 0 };
 		const ty = gyroInput ?? { dx: 0, dy: 0 };
-		// Saccade-aware rate: keep the fast rate while the EYE is still far
-		// from the target (residual distance, not target-to-target delta —
-		// the latter would brake 1 frame after every jump), then settle slow.
-		const dist = Math.hypot(tx.dx - camSm.dx, tx.dy - camSm.dy);
-		camTarget = tx;
-		const rate = dist > 0.1 ? SACCADE_LERP : SETTLE_LERP;
-		camSm.dx += (tx.dx - camSm.dx) * rate;
-		camSm.dy += (tx.dy - camSm.dy) * rate;
-		gyroSm.dx += (ty.dx - gyroSm.dx) * SETTLE_LERP;
-		gyroSm.dy += (ty.dy - gyroSm.dy) * SETTLE_LERP;
-		// Head trails the eyes (eyes lead, head follows); the body lags the
-		// head further (the two-stage inertia chain).
-		headSm.dx += (camSm.dx - headSm.dx) * HEAD_LERP;
-		headSm.dy += (camSm.dy - headSm.dy) * HEAD_LERP;
-		bodySm.dx += (headSm.dx - bodySm.dx) * 0.05;
-		bodySm.dy += (headSm.dy - bodySm.dy) * 0.05;
-		// Pose channels (nod fast, tilt/turn/sway slow).
-		const p = poseInput ?? { nod: 0, tilt: 0, turn: 0, bodySway: 0 };
-		poseSm.nod += (p.nod - poseSm.nod) * 0.25;
-		poseSm.tilt += (p.tilt - poseSm.tilt) * POSE_LERP;
-		poseSm.turn += (p.turn - poseSm.turn) * POSE_LERP;
-		poseSm.bodySway += (p.bodySway - poseSm.bodySway) * 0.07;
-		breathPhase = (breathPhase + 0.035) % (Math.PI * 2);
+		camSm.dx += (tx.dx - camSm.dx) * LOOK_LERP;
+		camSm.dy += (tx.dy - camSm.dy) * LOOK_LERP;
+		gyroSm.dx += (ty.dx - gyroSm.dx) * LOOK_LERP;
+		gyroSm.dy += (ty.dy - gyroSm.dy) * LOOK_LERP;
 	};
 
 	/** True while a look source is active or the smoothed vectors have not settled back to zero. */
 	const lookSettling = () =>
 		camInput !== null ||
 		gyroInput !== null ||
-		poseInput !== null ||
 		stageLayout.faceBiasX !== 0 ||
-		Math.abs(camSm.dx) + Math.abs(camSm.dy) + Math.abs(gyroSm.dx) + Math.abs(gyroSm.dy) +
-			Math.abs(poseSm.nod) + Math.abs(poseSm.tilt) + Math.abs(poseSm.turn) + Math.abs(poseSm.bodySway) > 0.004;
+		Math.abs(camSm.dx) + Math.abs(camSm.dy) + Math.abs(gyroSm.dx) + Math.abs(gyroSm.dy) > 0.004;
 	let lookParams: LookParams = { ...DEFAULT_LOOK_PARAMS };
 	let baseX = 0;
 	let baseY = 0;
@@ -401,11 +332,7 @@ export async function mountModel(
 	// view of the internal model.
 	const internal = model.internalModel as unknown as {
 		coreModel: { setParameterValueById?(id: string, value: number): void; setParamFloat?(id: string, value: number): void };
-		motionManager: {
-			lipSyncIds?: string[];
-			/** Framework motion queue — isFinished() === false while a motion plays (drives the look/pose yield). */
-			queueManager?: { isFinished?: () => boolean };
-		};
+		motionManager: { lipSyncIds?: string[] };
 		on(event: "beforeModelUpdate", listener: () => void): unknown;
 	};
 	// Cubism 2 uses uppercase PARAM_* ids, Cubism 3+ uses camelCase — the
@@ -427,92 +354,25 @@ export async function mountModel(
 		const value = getMouth();
 		const applied = value > 0.002 ? value : 0;
 		for (const id of lipSyncIds) setParam(id, applied);
-		// A full-body motion owns the head/body pose — the natural driver
-		// yields the angle writes while one plays so it doesn't fight the
-		// motion's own animation. Only non-idle motions deserve the yield:
-		// idle motions are low-information background sway, and handing the
-		// angles over would freeze the gaze response for their whole play
-		// time (mouth lip-sync keeps running regardless).
-		const qm = internal.motionManager.queueManager as
-			| { isFinished?: () => boolean; currentGroup?: string }
-			| undefined;
-		const motionPlaying = qm?.isFinished?.() === false;
-		const motionGroup = qm?.currentGroup;
-		const yieldAngles = motionPlaying && motionGroup !== undefined && motionGroup !== "Idle" && motionGroup !== "";
-		if (legacyFollow) {
-			// Legacy camera/gyro follower (master switch OFF): the exact
-			// pre-lively-gaze driver — full-gain angles, no lag chain, no
-			// amplitude split, no pose channels, no motion yield. The
-			// parallax pan updates every frame, motions or not.
-			if (lookSettling()) {
-				smoothLook();
-				const lx = mixSigned(lookParams.camAngleGain, lookParams.gyroAngleGain, camSm, "dx");
-				const ly = mixSigned(lookParams.camAngleGain, lookParams.gyroAngleGain, camSm, "dy");
-				// Roll is its own gain pair: the head tilt no longer has to
-				// follow the turn vector, it can be softened, doubled or
-				// mirrored (negative) independently.
-				const lz = mixSigned(lookParams.camRollGain, lookParams.gyroRollGain, camSm, "dx");
-				const ar = lookParams.angleRange;
-				const rr = lookParams.rollRange;
-				const angles: Array<[string, number]> = [
-					[LOOK_IDS.angleX, lx * ar],
-					[LOOK_IDS.angleY, ly * ar],
-					[LOOK_IDS.angleZ, lz * rr],
-					[LOOK_IDS.bodyX, lx * ar * 0.5],
-					[LOOK_IDS.bodyY, ly * ar * 0.5],
-					[LOOK_IDS.eyeX, lx],
-					[LOOK_IDS.eyeY, ly],
-				];
-				for (const [id, v] of angles) setParam(id, v);
-				applyTransform();
-			}
-			return;
-		}
-		// Natural driver: while a non-idle motion plays, yield only the
-		// angle writes; smoothing and the parallax pan keep running so
-		// camera/gyro feel stays responsive.
-		if (yieldAngles) {
-			smoothLook();
-			applyTransform();
-			return;
-		}
 		// Unified look: camera + gyro both contribute to head/body/eye angles.
 		// Runs while any source is live AND while the smoothed vectors ease
 		// back to zero after both stop, so tracking loss glides home.
 		if (lookSettling()) {
 			smoothLook();
-			const parallaxX = mixSigned(lookParams.camAngleGain, lookParams.gyroAngleGain, camSm, "dx");
-			const parallaxY = mixSigned(lookParams.camAngleGain, lookParams.gyroAngleGain, camSm, "dy");
-			// Eyes lead, head follows, body trails: the head/body angles are
-			// driven by the lagged headSm/bodySm channels, not the eye vector.
-			const headX = mixSigned(lookParams.camAngleGain, lookParams.gyroAngleGain, headSm, "dx");
-			const headY = mixSigned(lookParams.camAngleGain, lookParams.gyroAngleGain, headSm, "dy");
-			const bodyX = mixSigned(lookParams.camAngleGain, lookParams.gyroAngleGain, bodySm, "dx");
-			const bodyY = mixSigned(lookParams.camAngleGain, lookParams.gyroAngleGain, bodySm, "dy");
-			// Roll (the 3D head tilt) rides its own signed gains: 0 disables
-			// the tilt entirely, a negative gain leans the other way.
-			const rollX = mixSigned(lookParams.camRollGain, lookParams.gyroRollGain, camSm, "dx");
-			// Amplitude split (eyes lead, head follows, body only on big
-			// shifts): small offsets move only the eyeballs; the head joins
-			// with headRatio as the shift grows; the body trails behind.
-			const mag = Math.hypot(parallaxX, parallaxY);
-			const headGain = clamp01((mag - SPLIT_SMALL) / (SPLIT_LARGE - SPLIT_SMALL));
+			const lx = mixSigned(lookParams.camAngleGain, lookParams.gyroAngleGain, camSm, "dx");
+			const ly = mixSigned(lookParams.camAngleGain, lookParams.gyroAngleGain, camSm, "dy");
+			const lz = mixSigned(lookParams.camRollGain, lookParams.gyroRollGain, camSm, "dx");
 			const ar = lookParams.angleRange;
 			const rr = lookParams.rollRange;
-			// faceBiasX turns head/body/eyes toward the other avatar; roll
-			// (angleZ) stays unbiased — a constant head tilt would look off.
 			const bias = stageLayout.faceBiasX;
-			// Subtle breath-synced head sway — the SDK drives ParamBreath, we
-			// mirror a tiny bit of its phase into the head angles.
-			const breath = Math.sin(breathPhase) * BREATH_DEG;
 			const angles: Array<[string, number]> = [
-				[LOOK_IDS.angleX, (bias + headX * headGain * HEAD_RATIO) * ar + poseSm.turn * TURN_DEG + breath],
-				[LOOK_IDS.angleY, headY * headGain * HEAD_RATIO * ar - poseSm.nod * NOD_DEG + breath * 0.5],
-				[LOOK_IDS.angleZ, rollX * rr + poseSm.tilt * TILT_DEG],
-				[LOOK_IDS.bodyX, (bias + bodyX * headGain * BODY_RATIO) * ar + poseSm.bodySway * BODY_SWAY_DEG],
-				[LOOK_IDS.bodyY, bodyY * headGain * BODY_RATIO * ar],
-				[LOOK_IDS.eyeX, clamp01((bias + parallaxX + pinkNext() * EYE_JITTER) * 0.5 + 0.5) * 2 - 1],
-				[LOOK_IDS.eyeY, clamp01((parallaxY + pinkNext() * EYE_JITTER) * 0.5 + 0.5) * 2 - 1],
+				[LOOK_IDS.angleX, (bias + lx) * ar],
+				[LOOK_IDS.angleY, ly * ar],
+				[LOOK_IDS.angleZ, lz * rr],
+				[LOOK_IDS.bodyX, (bias + lx) * ar * 0.5],
+				[LOOK_IDS.bodyY, ly * ar * 0.5],
+				[LOOK_IDS.eyeX, Math.max(-1, Math.min(1, bias + lx))],
+				[LOOK_IDS.eyeY, Math.max(-1, Math.min(1, ly))],
 			];
 			for (const [id, v] of angles) setParam(id, v);
 			applyTransform();
@@ -787,15 +647,11 @@ export async function mountModel(
 				y: Math.round(Math.max(20, Math.min(height - 20, eyeY))),
 			};
 		},
-		setLook(cam, gyro, pose) {
+		setLook(cam, gyro) {
 			camInput = cam;
 			gyroInput = gyro;
-			poseInput = pose ?? null;
 			// When both stop, lookSettling() keeps easing the smoothed
 			// vectors home — no instant snap here.
-		},
-		setLegacyFollow(on) {
-			legacyFollow = on;
 		},
 		setLookParams(params) {
 			lookParams = { ...lookParams, ...params };

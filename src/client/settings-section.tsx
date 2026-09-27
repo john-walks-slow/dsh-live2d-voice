@@ -325,8 +325,6 @@ export function Live2DSettingsSection() {
 	const [subLang, setSubLang] = useState("zh");
 	const [sentenceSubs, setSentenceSubs] = useState(true);
 	const [idleSec, setIdleSec] = useState(20);
-	const [gazeMode, setGazeMode] = useState<"follow" | "natural">("natural");
-	const [idleGaze, setIdleGaze] = useState(true);
 	const [sttLang, setSttLang] = useState("auto");
 	const [asrMode, setAsrMode] = useState("stream");
 	const [micNs, setMicNs] = useState(true);
@@ -360,8 +358,6 @@ export function Live2DSettingsSection() {
 				setSubLang(data.config.subtitleLanguage || "zh");
 				setSentenceSubs(data.config.sentenceSubtitles ?? true);
 				setIdleSec(typeof data.config.idleInterval === "number" ? data.config.idleInterval : 20);
-				setGazeMode(data.config.gazeMode === "follow" ? "follow" : "natural");
-				setIdleGaze(data.config.idleGaze !== false);
 				setSttLang(data.config.sttLanguage || "auto");
 				setAsrMode(data.config.asrMode || "stream");
 				setMicNs(data.config.micNoiseSuppression !== false);
@@ -773,42 +769,6 @@ export function Live2DSettingsSection() {
 					</select>
 					<div className="lv-set-help">
 						角色长时间不互动时才轻微触发一次待机动作（系统提示词会同步告诉大模型当前可用的所有动作标签 [motion:xxx]）。
-					</div>
-				</div>
-				<div className="lv-set-field">
-					<label className="lv-set-label">视线模式 (gazeMode)</label>
-					<select
-						className="lv-set-select"
-						value={gazeMode}
-						onChange={(e) => {
-							const next = e.target.value as "follow" | "natural";
-							setGazeMode(next);
-							handleSave({ gazeMode: next });
-						}}
-					>
-						<option value="natural">自然 (活眼神：互视节奏、回避、头身微动)</option>
-						<option value="follow">跟随 (旧行为：持续盯着用户)</option>
-					</select>
-					<div className="lv-set-help">
-						自然模式下视线不再死盯：互视 0.5–3s、周期性移开、说话/倾听/思考各有注视节奏（参数可在 HUD ⚙ 的实验参数里调）。
-					</div>
-				</div>
-				<div className="lv-set-field">
-					<label className="lv-set-label">待机眼神微动 (idleGaze)</label>
-					<select
-						className="lv-set-select"
-						value={idleGaze ? "on" : "off"}
-						onChange={(e) => {
-							const next = e.target.value === "on";
-							setIdleGaze(next);
-							handleSave({ idleGaze: next });
-						}}
-					>
-						<option value="on">开启 (无摄像头时也有扫视/呼吸/微摆)</option>
-						<option value="off">关闭 (无摄像头时保持静止)</option>
-					</select>
-					<div className="lv-set-help">
-						关闭后，配合视线模式「跟随」即完全回到旧行为——HUD 面板的「自然行为」总开关可以一键完成这个操作。
 					</div>
 				</div>
 			</div>

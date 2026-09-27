@@ -11,10 +11,9 @@ import type { ConvViewProps } from "@deepseek-ai/dsh-client-ui-conversation/clie
 import { fetchConfig, fetchModelInfo, fetchModelCatalog, fetchModelSelection, openStream, postMessage, postPlayerLine, recognizeUtterance, saveConfig, selectModel, postCameraResult, startAsrUpload, type AsrUpload } from "./api.js";
 import { SpeechEngine } from "./engine.js";
 import { Hud } from "./hud.js";
-import { isCubismCoreLoaded, mountModel, createLive2DStage, DEFAULT_LOOK_PARAMS, type Live2DHandle, type LookParams, type SharedStage, type BehaviorPose } from "./model.js";
+import { isCubismCoreLoaded, mountModel, createLive2DStage, DEFAULT_LOOK_PARAMS, type Live2DHandle, type LookParams, type SharedStage } from "./model.js";
 import { MicCapture, type MicState } from "./mic.js";
 import { GazeTracker, capturePhoto } from "./gaze.js";
-import { BehaviorController, loadBehaviorTuning, saveBehaviorTuning, type BehaviorTuning } from "./behavior.js";
 import { TiltParallax } from "./tilt.js";
 import { SubtitleOverlay, SUBTITLE_TTL_MS, type SubtitleLine } from "./subtitle.js";
 import type { LanguageOption, ModelCatalog, ModelInfo, ModelSelection, Speaker, VoicePreset } from "./types.js";
@@ -163,28 +162,6 @@ export function Live2DView(props: ViewProps) {
 	/** State mirror so the HUD sliders re-render on change. */
 	const [lookParams, setLookParams] = useState<LookParams>(lookParamsRef.current);
 
-	// ── Lifelike gaze behavior (natural mode + idle liveliness) ──
-	// Config-backed master switches; the experiment tuning lives client-side
-	// (localStorage) like lookParams. See behavior.ts for the policy.
-	const [gazeMode, setGazeMode] = useState<"follow" | "natural">("natural");
-	const [idleGaze, setIdleGaze] = useState(true);
-	const behaviorTuningRef = useRef<BehaviorTuning>(loadBehaviorTuning());
-	const [behaviorTuning, setBehaviorTuning] = useState<BehaviorTuning>(behaviorTuningRef.current);
-	const behaviorRef = useRef<BehaviorController | null>(null);
-	/** Perception + conversation signals feeding the behavior controller. */
-	const userLookRef = useRef(false);
-	const userLookRisingRef = useRef(false);
-	const userSpeakingRef = useRef(false);
-	const thinkingRef = useRef(false);
-	const sentenceBoundaryRef = useRef(false);
-	const speechStartRef = useRef(false);
-	const speakingRef = useRef<"assistant" | "player" | null>(null);
-	const dualRef = useRef(false);
-	const gazeModeRef = useRef(gazeMode);
-	gazeModeRef.current = gazeMode;
-	const idleGazeRef = useRef(idleGaze);
-	idleGazeRef.current = idleGaze;
-
 	// LLM model catalog and current selection for the model selector.
 	const [modelCatalog, setModelCatalog] = useState<ModelCatalog | null>(null);
 	const [currentModelSelection, setCurrentModelSelection] = useState<ModelSelection | null>(null);
@@ -308,10 +285,6 @@ export function Live2DView(props: ViewProps) {
 			const ready = pendingSubsRef.current.filter(due);
 			if (ready.length === 0) return;
 			pendingSubsRef.current = pendingSubsRef.current.filter((line) => !due(line));
-			// The previous sentence's audio has just ended (this one is
-			// starting) — that is the REAL turn-yield moment for the behavior
-			// controller (SSE arrival would be far ahead of playback).
-			if (ready.some((line) => line.speaker !== "player")) sentenceBoundaryRef.current = true;
 			for (const line of ready) showSubtitle(line.role, line.text, line.lineId, line.at, line.translation, line.speaker);
 		}, 250);
 		return () => window.clearInterval(id);
@@ -333,8 +306,6 @@ export function Live2DView(props: ViewProps) {
 				micNsRef.current = config.micNoiseSuppression !== false;
 				setEyeTracking(config.eyeTracking);
 				setGyroParallax(config.gyroParallax);
-				setGazeMode(config.gazeMode ?? "natural");
-				setIdleGaze(config.idleGaze !== false);
 				setIdleInterval(typeof config.idleInterval === "number" ? config.idleInterval : 20);
 				setThirdPerson(config.thirdPerson === true);
 				setPlayerVoiceId(config.playerVoiceId || "");
@@ -534,7 +505,6 @@ export function Live2DView(props: ViewProps) {
 	// right half — refit without reloading the model.
 	useEffect(() => {
 		const dual = modelInfo?.thirdPerson === true && Boolean(modelInfo?.player?.url);
-		dualRef.current = dual;
 		modelRef.current?.setLayout({ xFraction: dual ? 0.72 : 0.5, scaleGain: dual ? 0.8 : 1, faceBiasX: dual ? AI_FACE_BIAS : 0 });
 		// Clear the player bias on the way out too — its effect cleanup
 		// destroys the model, but until then the layout must not keep a
@@ -689,7 +659,6 @@ export function Live2DView(props: ViewProps) {
 	useEffect(() => {
 		const wire = window.setInterval(() => {
 			const speaking = engineRef.current?.currentSpeaker();
-			speakingRef.current = speaking ?? null;
 			if (speaking !== undefined && !audioPlayingRef.current) {
 				audioPlayingRef.current = true;
 				lastInteractionRef.current = Date.now();
@@ -700,11 +669,6 @@ export function Live2DView(props: ViewProps) {
 		}, 250);
 		return () => window.clearInterval(wire);
 	}, []);
-
-	// User-speaking signal for the behavior controller (mic live).
-	useEffect(() => {
-		userSpeakingRef.current = micState === "listening" || micState === "requesting";
-	}, [micState]);
 
 	// Gaze tracking lifecycle: the tracker owns the front camera while the
 	// config says so; normalized gaze (dx/dy in -1..1) lands in camLookRef.
@@ -718,11 +682,6 @@ export function Live2DView(props: ViewProps) {
 		const tracker = new GazeTracker({
 			onGaze: (x, y) => {
 				camLookRef.current = x === null ? null : { dx: (x - 0.5) * 2, dy: (y - 0.5) * 2 };
-			},
-			onUserLook: (looking) => {
-				// Edge + level for the behavior controller ("noticed you" script).
-				userLookRisingRef.current = looking && !userLookRef.current;
-				userLookRef.current = looking;
 			},
 			onState: (state) => {
 				if (state === "starting") {
@@ -774,74 +733,20 @@ export function Live2DView(props: ViewProps) {
 		};
 	}, [gyroParallax]);
 
-	// Unified look loop: while any motion source is active, drive the model
-	// every frame from the latest cam/gyro vectors and current look params.
-	// In lifelike mode (gazeMode=natural, or idleGaze with no camera) the
-	// BehaviorController owns the target — the driver gets a pose payload.
+	// Look loop: while camera gaze or gyro tilt is active, drive the model
+	// every frame from the latest cam/gyro vectors.
 	useEffect(() => {
-		const controller = new BehaviorController(loadBehaviorTuning(), Math.random);
-		behaviorRef.current = controller;
 		let raf = 0;
 		const tick = () => {
-			const now = performance.now();
-			const behaviorOn =
-				!dualRef.current &&
-				(gazeModeRef.current === "natural" || idleGazeRef.current) &&
-				modelRef.current != null;
-			if (behaviorOn) {
-				modelRef.current?.setLegacyFollow(false);
-				playerModelRef.current?.setLegacyFollow(false);
-				const out = controller.update(
-					{
-						face: camLookRef.current ? { x: (camLookRef.current.dx + 1) / 2, y: (camLookRef.current.dy + 1) / 2 } : null,
-						userLooking: userLookRef.current,
-						userLookRising: userLookRisingRef.current,
-						speaking: speakingRef.current,
-						userSpeaking: userSpeakingRef.current,
-						thinking: thinkingRef.current,
-						sentenceBoundary: sentenceBoundaryRef.current,
-						speechStart: speechStartRef.current,
-					},
-					now,
-				);
-				// Pulses are one-shot: consumed on the frame they were set.
-				userLookRisingRef.current = false;
-				sentenceBoundaryRef.current = false;
-				speechStartRef.current = false;
-				const cam = { dx: (out.x - 0.5) * 2, dy: (out.y - 0.5) * 2 };
-				const pose: BehaviorPose = { nod: out.nod, tilt: out.tilt, turn: out.turn, bodySway: out.bodySway };
-				modelRef.current?.setLook(cam, gyroLookRef.current, pose);
-				playerModelRef.current?.setLook(cam, gyroLookRef.current, pose);
-				// e2e assertion contract: which behavior state is live right now.
-				if (stageRef.current && stageRef.current.dataset.lvGaze !== out.state) {
-					stageRef.current.dataset.lvGaze = out.state;
-				}
-			} else {
-				// Legacy path — always dispatch so the model glides home even
-				// when NO source is active (otherwise the last behavior pose
-				// sticks forever after the master switch is turned off). The
-				// driver runs in legacy-follow mode: full-gain camera/gyro
-				// tracking, no lag chain, no motion yield.
-				modelRef.current?.setLegacyFollow(true);
-				playerModelRef.current?.setLegacyFollow(true);
-				modelRef.current?.setLook(
-					gazeRef.current?.active ? camLookRef.current : null,
-					tiltRef.current?.active ? gyroLookRef.current : null,
-					null,
-				);
-				playerModelRef.current?.setLook(
-					gazeRef.current?.active ? camLookRef.current : null,
-					tiltRef.current?.active ? gyroLookRef.current : null,
-					null,
-				);
-				if (stageRef.current?.dataset.lvGaze) delete stageRef.current.dataset.lvGaze;
-			}
+			const cam = gazeRef.current?.active ? camLookRef.current : null;
+			const gyro = tiltRef.current?.active ? gyroLookRef.current : null;
+			modelRef.current?.setLook(cam, gyro);
+			playerModelRef.current?.setLook(cam, gyro);
 			raf = window.requestAnimationFrame(tick);
 		};
 		raf = window.requestAnimationFrame(tick);
 		return () => {
 			window.cancelAnimationFrame(raf);
-			behaviorRef.current = null;
 		};
 	}, []);
 
@@ -896,12 +801,6 @@ export function Live2DView(props: ViewProps) {
 						if (isPlayer) return false; // a new player line superseded everything else
 						return line.speaker === "player"; // an assistant utterance never kills the player's queued line
 					});
-				}
-				if (!isPlayer) {
-					// The assistant started talking: generation is over, and a
-					// turn-start aversion is the natural first beat.
-					thinkingRef.current = false;
-					speechStartRef.current = true;
 				}
 				void engineRef.current?.resume();
 			},
@@ -1229,51 +1128,6 @@ export function Live2DView(props: ViewProps) {
 		}
 	};
 
-	// ── Lifelike gaze behavior switches (config-backed) ──
-	const toggleGazeMode = async () => {
-		const next: "follow" | "natural" = gazeMode === "natural" ? "follow" : "natural";
-		try {
-			const { config } = await saveConfig({ gazeMode: next });
-			setGazeMode(config.gazeMode);
-			showToast(next === "natural" ? "自然视线已开启" : "已切换为跟随模式（持续盯着用户）");
-		} catch (error) {
-			showToast(`切换失败：${String((error as Error)?.message ?? error)}`);
-		}
-	};
-
-	const toggleIdleGaze = async () => {
-		const next = !idleGaze;
-		try {
-			const { config } = await saveConfig({ idleGaze: next });
-			setIdleGaze(config.idleGaze);
-			if (!config.idleGaze) showToast("待机眼神微动已关闭");
-		} catch (error) {
-			showToast(`切换失败：${String((error as Error)?.message ?? error)}`);
-		}
-	};
-
-	/** Master switch: one tap turns ALL new lively behavior off (back to legacy). */
-	const toggleLivelyGaze = async () => {
-		const next = !(gazeMode === "natural" || idleGaze);
-		try {
-			const { config } = await saveConfig({ gazeMode: next ? "natural" : "follow", idleGaze: next });
-			setGazeMode(config.gazeMode);
-			setIdleGaze(config.idleGaze);
-			showToast(next ? "自然行为已开启" : "自然行为已全部关闭（回到旧行为）");
-		} catch (error) {
-			showToast(`切换失败：${String((error as Error)?.message ?? error)}`);
-		}
-	};
-
-	/** Live-update behavior experiment tuning: ref + state + controller, no server round-trip. */
-	const changeBehaviorTuning = (patch: Partial<BehaviorTuning>) => {
-		const next = { ...behaviorTuningRef.current, ...patch };
-		behaviorTuningRef.current = next;
-		setBehaviorTuning(next);
-		saveBehaviorTuning(next);
-		behaviorRef.current?.setTuning(patch);
-	};
-
 	/** Live-update look params: ref + state + model, no round-trip to the server. */
 	const changeLookParams = (patch: Partial<LookParams>) => {
 		lookParamsRef.current = { ...lookParamsRef.current, ...patch };
@@ -1392,13 +1246,6 @@ export function Live2DView(props: ViewProps) {
 				}
 			}
 			engineRef.current?.unmuzzle();
-			// "Thinking" window for the behavior controller: starts at submit,
-			// ends when the assistant's speech-start arrives (or 15s timeout —
-			// covers TTS failure with no reply at all).
-			thinkingRef.current = true;
-			window.setTimeout(() => {
-				thinkingRef.current = false;
-			}, 15000);
 			return true;
 		} catch (error) {
 			showToast(`发送失败：${String((error as Error)?.message ?? error)}`);
@@ -1723,13 +1570,6 @@ export function Live2DView(props: ViewProps) {
 				onToggleEyeTracking={() => void toggleEyeTracking()}
 				gyroParallax={gyroParallax}
 				onToggleGyroParallax={() => void toggleGyroParallax()}
-				gazeMode={gazeMode}
-				idleGaze={idleGaze}
-				behaviorTuning={behaviorTuning}
-				onToggleGazeMode={() => void toggleGazeMode()}
-				onToggleIdleGaze={() => void toggleIdleGaze()}
-				onToggleLivelyGaze={() => void toggleLivelyGaze()}
-				onBehaviorTuningChange={changeBehaviorTuning}
 				lookParams={lookParams}
 				onLookParamsChange={changeLookParams}
 				presets={presets}

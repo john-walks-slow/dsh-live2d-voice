@@ -28,10 +28,6 @@ export interface PublicConfig {
 	/** Seconds between automatic random idle motions (0 = off). */
 	idleInterval: number;
 	eyeTracking: boolean;
-	/** Gaze behavior mode: "follow" = rigid camera tracking (legacy), "natural" = lifelike gaze/head/body behavior. */
-	gazeMode: "follow" | "natural";
-	/** Idle liveliness without camera: micro eye/head/body motion even when eyeTracking is off. */
-	idleGaze: boolean;
 	gyroParallax: boolean;
 	emotionMap: Record<string, number | string>;
 	/** Third-person mode: the player avatar speaks the (polished) user line first. */

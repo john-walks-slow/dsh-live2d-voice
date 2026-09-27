@@ -310,8 +310,6 @@ export function installRoutes(ctx: Context, deps: RouteDeps): (() => void) | und
 						if (typeof body[key] === "string") patch[key] = body[key] as string;
 					}
 					if (typeof body.eyeTracking === "boolean") patch.eyeTracking = body.eyeTracking;
-					if (body.gazeMode === "follow" || body.gazeMode === "natural") patch.gazeMode = body.gazeMode;
-					if (typeof body.idleGaze === "boolean") patch.idleGaze = body.idleGaze;
 					if (typeof body.gyroParallax === "boolean") patch.gyroParallax = body.gyroParallax;
 					if (typeof body.idleInterval === "number") patch.idleInterval = body.idleInterval;
 					if (typeof body.sentenceSubtitles === "boolean") patch.sentenceSubtitles = body.sentenceSubtitles;

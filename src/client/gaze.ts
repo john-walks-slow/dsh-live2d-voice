@@ -24,12 +24,6 @@ export interface GazeEvents {
 	onState: (state: GazeState) => void;
 	/** Raw normalized landmark position (0..1, mirrored x) before calibration, useful for calibration sampling. */
 	onRawLandmark?: (rawX: number, rawY: number) => void;
-	/**
-	 * Whether the user is looking at the camera/screen right now (head pose
-	 * yaw/pitch near zero + irises centered — GeoGaze/Vonage heuristics).
-	 * `meta` carries the raw signals for calibration/debug.
-	 */
-	onUserLook?: (looking: boolean, meta: { yaw: number; pitch: number; rho: number }) => void;
 }
 
 export interface AffineGazeMatrix {
@@ -165,8 +159,6 @@ interface VisionModule {
 				baseOptions: { modelAssetPath: string; delegate: "GPU" | "CPU" };
 				runningMode: "VIDEO";
 				numFaces: number;
-				/** Head-pose transformation matrix (yaw/pitch/roll) — cheap, comes from the same pass. */
-				outputFacialTransformationMatrixes?: boolean;
 			},
 		): Promise<FaceLandmarkerLike>;
 	};
@@ -177,7 +169,7 @@ interface FaceLandmarkerLike {
 	detectForVideo(
 		video: HTMLVideoElement,
 		timestamp: number,
-	): { faceLandmarks?: Array<Array<{ x: number; y: number }>>; facialTransformationMatrixes?: Array<{ data: Float32Array }> } | null;
+	): { faceLandmarks?: Array<Array<{ x: number; y: number }>> } | null;
 }
 
 const VISION_URL = "/live2d-voice/gaze/vision.mjs";
@@ -218,64 +210,6 @@ const DETECT_INTERVAL_MS = 80;
 /** Face lost this long → gaze home. */
 const FACE_LOST_MS = 2500;
 
-// ── "Is the user looking at the camera?" heuristics ──────────────────────
-// Head pose from the facial transformation matrix (Three.js ZYX Euler on the
-// column-major 4x4), iris centeredness from the GeoGaze position ratio.
-// Low-pass + hysteresis — webcam eye signals are noisy, strong smoothing is
-// the field consensus (VTube Studio docs).
-const EYE_IRIS_LEFT = 468, EYE_LEFT_OUTER = 33, EYE_LEFT_INNER = 133;
-const EYE_IRIS_RIGHT = 473, EYE_RIGHT_OUTER = 263, EYE_RIGHT_INNER = 362;
-/** EMA factor per detection (~0.3 at 12fps ≈ 250ms time constant). */
-const LOOK_EMA = 0.3;
-/** Vonage attention scoring: |angle|<10° → 1.0, ≥30° → 0. */
-const LOOK_ANGLE_ON = 10, LOOK_ANGLE_OFF = 30;
-/** Iris ratio deviation from center: ≤0.10 → full, ≥0.35 → 0. */
-const LOOK_IRIS_ON = 0.1, LOOK_IRIS_OFF = 0.35;
-/** Hysteresis on the combined 0..1 score. */
-const LOOK_SCORE_ON = 0.55, LOOK_SCORE_OFF = 0.35;
-
-const clamp01 = (v: number) => Math.max(0, Math.min(1, v));
-
-/**
- * Euler angles (degrees) from a MediaPipe facial transformation matrix
- * (column-major 4x4, canonical-face → detected-face). Formula: Three.js
- * Euler order ZYX — yaw = asin(m13), pitch = atan2(-m23, m33),
- * roll = atan2(-m12, m11), with elements in column-major layout.
- * Signs are only meaningful relative to MediaPipe's canonical frame; the
- * "looking" decision below uses absolute magnitudes, so sign convention
- * differences between face directions don't matter.
- */
-export function eulerFromMatrix(data: Float32Array | undefined): { yaw: number; pitch: number; roll: number } {
-	if (!data || data.length < 12) return { yaw: 0, pitch: 0, roll: 0 };
-	// column-major: m13 = row1 col3 = data[8], m23 = data[9], m33 = data[10],
-	// m12 = data[4], m11 = data[0].
-	const m13 = data[8], m23 = data[9], m33 = data[10], m12 = data[4], m11 = data[0];
-	const yaw = Math.asin(Math.max(-1, Math.min(1, m13)));
-	const pitch = Math.atan2(-m23, m33);
-	const roll = Math.atan2(-m12, m11);
-	const deg = 180 / Math.PI;
-	return { yaw: yaw * deg, pitch: pitch * deg, roll: roll * deg };
-}
-
-/**
- * Iris centeredness (GeoGaze ρh): average |ρh − 0.5| over both eyes, in raw
- * (unmirrored) image space. 0 = both irises centered (looking at the camera),
- * larger = gaze off to a side. Returns null when the needed landmarks are
- * missing (e.g. partially occluded face).
- */
-export function irisCenteredness(landmarks: Array<{ x: number; y: number }> | undefined): number | null {
-	if (!landmarks || landmarks.length <= EYE_IRIS_RIGHT) return null;
-	const ratio = (iris: number, outer: number, inner: number): number | null => {
-		const a = landmarks[outer]?.x, b = landmarks[inner]?.x, i = landmarks[iris]?.x;
-		if (a === undefined || b === undefined || i === undefined || b === a) return null;
-		return (i - a) / (b - a);
-	};
-	const l = ratio(EYE_IRIS_LEFT, EYE_LEFT_OUTER, EYE_LEFT_INNER);
-	const r = ratio(EYE_IRIS_RIGHT, EYE_RIGHT_OUTER, EYE_RIGHT_INNER);
-	if (l === null || r === null) return null;
-	return (Math.abs(l - 0.5) + Math.abs(r - 0.5)) / 2;
-}
-
 export class GazeTracker {
 	private stream: MediaStream | null = null;
 	private video: HTMLVideoElement | null = null;
@@ -286,10 +220,6 @@ export class GazeTracker {
 	private events: GazeEvents;
 	private calibration: GazeCalibration;
 	private running = false;
-	/** Smoothed user-look signals (EMA over detections). */
-	private lookEma = { yaw: 0, pitch: 0, rho: 0.25 };
-	/** Current user-looking verdict (hysteresis latched). */
-	private userLooking = false;
 
 	constructor(events: GazeEvents, calibration: GazeCalibration = {}) {
 		this.events = events;
@@ -342,7 +272,6 @@ export class GazeTracker {
 					baseOptions: { modelAssetPath: MODEL_URL, delegate },
 					runningMode: "VIDEO",
 					numFaces: 1,
-					outputFacialTransformationMatrixes: true,
 				});
 			// Old phones may lack the WebGL flavor MediaPipe wants.
 			this.landmarker = await create("GPU").catch(() => create("CPU"));
@@ -383,29 +312,6 @@ export class GazeTracker {
 						// Feed raw normalized coordinates to calibration listener if listening
 						this.events.onRawLandmark?.(rawX, rawY);
 
-						// ── user-looking estimate (head pose + iris) ──
-						// Cheap: pure arithmetic on outputs of the same detect pass.
-						const face = result?.faceLandmarks?.[0];
-						const euler = eulerFromMatrix(result?.facialTransformationMatrixes?.[0]?.data);
-						const rho = irisCenteredness(face);
-						if (rho !== null) {
-							const ema = LOOK_EMA;
-							this.lookEma.yaw += (euler.yaw - this.lookEma.yaw) * ema;
-							this.lookEma.pitch += (euler.pitch - this.lookEma.pitch) * ema;
-							this.lookEma.rho += (rho - this.lookEma.rho) * ema;
-							const yawScore = clamp01((LOOK_ANGLE_OFF - Math.abs(this.lookEma.yaw)) / (LOOK_ANGLE_OFF - LOOK_ANGLE_ON));
-							const pitchScore = clamp01((LOOK_ANGLE_OFF - Math.abs(this.lookEma.pitch)) / (LOOK_ANGLE_OFF - LOOK_ANGLE_ON));
-							const irisScore = clamp01((LOOK_IRIS_OFF - this.lookEma.rho) / (LOOK_IRIS_OFF - LOOK_IRIS_ON));
-							const score = Math.min(yawScore, pitchScore) * (0.3 + 0.7 * irisScore);
-							const next = this.userLooking
-								? score >= LOOK_SCORE_OFF
-								: score >= LOOK_SCORE_ON;
-							if (next !== this.userLooking) {
-								this.userLooking = next;
-								this.events.onUserLook?.(next, { ...this.lookEma });
-							}
-						}
-
 						let screenX: number;
 						let screenY: number;
 
@@ -427,10 +333,6 @@ export class GazeTracker {
 						this.lostSince = now;
 					} else if (now - this.lostSince > FACE_LOST_MS) {
 						this.events.onGaze(null, 0.5);
-						if (this.userLooking) {
-							this.userLooking = false;
-							this.events.onUserLook?.(false, { ...this.lookEma });
-						}
 					}
 				} catch {
 					/* a bad frame must not kill the loop */
@@ -449,7 +351,6 @@ export class GazeTracker {
 		this.running = false;
 		cancelAnimationFrame(this.raf);
 		this.raf = 0;
-		this.userLooking = false;
 		try {
 			this.landmarker?.close();
 		} catch {

@@ -9,7 +9,6 @@ import type { MicState } from "./mic.js";
 import type { LanguageOption, VoicePreset } from "./types.js";
 import type { ModelCatalog, ModelProviderGroup, ModelSelection } from "./types.js";
 import type { LookParams } from "./model.js";
-import type { BehaviorTuning } from "./behavior.js";
 import { LOOK_PRESETS } from "./model.js";
 import {
 	IconMic,
@@ -76,15 +75,6 @@ export interface HudProps {
 	speechPrompt: string;
 	eyeTracking: boolean;
 	gyroParallax: boolean;
-	/** Lifelike gaze behavior: config-backed mode + idle liveliness + experiment tuning. */
-	gazeMode: "follow" | "natural";
-	idleGaze: boolean;
-	behaviorTuning: BehaviorTuning;
-	onToggleGazeMode: () => void;
-	onToggleIdleGaze: () => void;
-	/** Master switch: turns the whole new lively behavior off/on at once. */
-	onToggleLivelyGaze: () => void;
-	onBehaviorTuningChange: (patch: Partial<BehaviorTuning>) => void;
 	/** Current look parameters (pan/angle gains). */
 	lookParams: LookParams;
 	/** Called when a look parameter changes (live feedback). */
@@ -177,66 +167,11 @@ function formatLookValue(key: keyof LookParams, value: number): string {
 	return String(rounded);
 }
 
-/** Behavior experiment sliders, grouped (all fields of BehaviorTuning). */
-const BEHAVIOR_SLIDER_GROUPS: ReadonlyArray<{
-	group: string;
-	sliders: ReadonlyArray<{ key: keyof BehaviorTuning; label: string; min: number; max: number; step: number; unit?: string }>;
-}> = [
-	{
-		group: "视线节奏",
-		sliders: [
-			{ key: "eyeContactMinMs", label: "互视最短", min: 200, max: 2000, step: 100, unit: "ms" },
-			{ key: "eyeContactMaxMs", label: "互视最长", min: 1000, max: 6000, step: 100, unit: "ms" },
-			{ key: "aversionMinMs", label: "回避最短", min: 100, max: 1000, step: 50, unit: "ms" },
-			{ key: "aversionMaxMs", label: "回避最长", min: 300, max: 3000, step: 100, unit: "ms" },
-		],
-	},
-	{
-		group: "注视概率",
-		sliders: [
-			{ key: "speakLookRatio", label: "说话时注视率", min: 0.2, max: 0.9, step: 0.05 },
-			{ key: "listenLookRatio", label: "倾听时注视率", min: 0.5, max: 1, step: 0.05 },
-			{ key: "thinkAversionRatio", label: "思考回避率", min: 0.3, max: 0.95, step: 0.05 },
-		],
-	},
-	{
-		group: "扫视",
-		sliders: [
-			{ key: "saccadeScale", label: "扫视间隔倍率", min: 0.3, max: 2, step: 0.05 },
-			{ key: "microSaccadeAmp", label: "微扫视幅度", min: 0, max: 0.1, step: 0.005 },
-		],
-	},
-	{
-		group: "头与身",
-		sliders: [
-			{ key: "nodEverySec", label: "点头间隔", min: 0, max: 30, step: 1, unit: "s" },
-			{ key: "headTiltProb", label: "歪头概率", min: 0, max: 1, step: 0.05 },
-			{ key: "bodySwayPeriodMs", label: "重心微摆周期", min: 2000, max: 10000, step: 200, unit: "ms" },
-			{ key: "aversionTurnDeg", label: "回避转头幅度", min: 0, max: 10, step: 0.5, unit: "°" },
-		],
-	},
-];
-
-/** Compact display for behavior slider values. */
-function formatBehaviorValue(key: keyof BehaviorTuning, value: number): string {
-	if (key === "nodEverySec") return `${Math.round(value)}s`;
-	if (key === "aversionTurnDeg") return `${value}°`;
-	if (key === "speakLookRatio" || key === "listenLookRatio" || key === "thinkAversionRatio" || key === "headTiltProb" || key === "liveliness" || key === "saccadeScale") {
-		return String(Math.round(value * 100) / 100);
-	}
-	return String(Math.round(value));
-}
-
-/** True when any lively behavior is on (the master switch state). */
-const livelyOn = (p: HudProps): boolean => p.gazeMode === "natural" || p.idleGaze;
-
 export function Hud(props: HudProps) {
 	const micOn = props.micState === "listening" || props.micState === "requesting";
 	const [logCopied, setLogCopied] = useState(false);
 	/** Detailed look sliders fold (collapsed by default; presets cover 99%). */
 	const [lookAdvanced, setLookAdvanced] = useState(false);
-	/** Behavior experiment sliders fold (collapsed by default). */
-	const [behaviorAdvanced, setBehaviorAdvanced] = useState(false);
 	/** Motion debug fold (collapsed by default; model-specific list). */
 	const [motionDebugOpen, setMotionDebugOpen] = useState(false);
 
@@ -618,97 +553,6 @@ export function Hud(props: HudProps) {
 								<span className="lv-switch-knob" />
 							</button>
 						</div>
-
-						{/* 自然行为总开关：一键关闭全部新行为（互视/回避/头身微动），回到旧行为 */}
-						<div className="lv-switch-row" style={{ marginTop: "6px" }}>
-							<span>
-								<b>自然行为</b>
-								<small style={{ display: "block", opacity: 0.6, fontWeight: 400 }}>互视节奏 · 头身微动 · 待机眼神</small>
-							</span>
-							<button
-								type="button"
-								role="switch"
-								aria-checked={livelyOn(props)}
-								className={`lv-switch${livelyOn(props) ? " lv-on" : ""}`}
-								onClick={props.onToggleLivelyGaze}
-							>
-								<span className="lv-switch-knob" />
-							</button>
-						</div>
-						<div className="lv-switch-row">
-							<span>视线模式：{props.gazeMode === "natural" ? "自然（活眼神）" : "跟随（紧盯）"}</span>
-							<button
-								type="button"
-								role="switch"
-								aria-checked={props.gazeMode === "natural"}
-								className={`lv-switch${props.gazeMode === "natural" ? " lv-on" : ""}`}
-								onClick={props.onToggleGazeMode}
-							>
-								<span className="lv-switch-knob" />
-							</button>
-						</div>
-						<div className="lv-switch-row">
-							<span>待机眼神微动（无摄像头时）</span>
-							<button
-								type="button"
-								role="switch"
-								aria-checked={props.idleGaze}
-								className={`lv-switch${props.idleGaze ? " lv-on" : ""}`}
-								onClick={props.onToggleIdleGaze}
-							>
-								<span className="lv-switch-knob" />
-							</button>
-						</div>
-
-						{/* 活泼度 + 实验参数（行为层全部旋钮，见 behavior.ts 调参说明） */}
-						{livelyOn(props) && (
-							<div className="lv-look-params" style={{ marginTop: "8px" }}>
-								<label className="lv-slider-row">
-									<span className="lv-slider-label">活泼度（总乘子）</span>
-									<input
-										type="range"
-										min={0.5}
-										max={1.5}
-										step={0.05}
-										value={props.behaviorTuning.liveliness}
-										onChange={(event) => props.onBehaviorTuningChange({ liveliness: Number(event.target.value) })}
-									/>
-									<span className="lv-slider-value">{formatBehaviorValue("liveliness", props.behaviorTuning.liveliness)}</span>
-								</label>
-								<button
-									type="button"
-									className="lv-look-fold"
-									aria-expanded={behaviorAdvanced}
-									onClick={() => setBehaviorAdvanced((open) => !open)}
-								>
-									<span className={`lv-look-caret${behaviorAdvanced ? " lv-open" : ""}`}>▸</span>
-									实验参数
-								</button>
-								{behaviorAdvanced &&
-									BEHAVIOR_SLIDER_GROUPS.map((group) => (
-										<div key={group.group} className="lv-slider-group">
-											<div className="lv-slider-group-title">{group.group}</div>
-											{group.sliders.map((slider) => (
-												<label key={slider.key} className="lv-slider-row">
-													<span className="lv-slider-label">{slider.label}</span>
-													<input
-														type="range"
-														min={slider.min}
-														max={slider.max}
-														step={slider.step}
-														value={props.behaviorTuning[slider.key]}
-														onChange={(event) => props.onBehaviorTuningChange({ [slider.key]: Number(event.target.value) })}
-													/>
-													<span className="lv-slider-value">
-														{formatBehaviorValue(slider.key, props.behaviorTuning[slider.key])}
-														{slider.unit ?? ""}
-													</span>
-												</label>
-											))}
-										</div>
-									))}
-							</div>
-						)}
 
 						{/* 视向灵敏度：预设 + 折叠详细参数 */}
 						<div className="lv-look-params">
