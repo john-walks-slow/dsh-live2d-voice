@@ -14,7 +14,7 @@ import pw from '/root/projects/camoufox-mcp/node_modules/playwright-core/index.j
 import { execSync } from 'node:child_process';
 
 const { chromium } = pw;
-const E2E_URL = process.env.E2E_URL ?? 'http://127.0.0.1:4188/?token=e2etest';
+const E2E_URL = process.env.E2E_URL ?? `http://127.0.0.1:${process.env.DSH_E2E_PORT}/?token=${process.env.DSH_E2E_TOKEN || 'e2etest'}`;
 const browser = await chromium.launch({
   executablePath: '/root/.cache/ms-playwright/chromium-1243/chrome-linux-arm64/chrome',
   headless: true,

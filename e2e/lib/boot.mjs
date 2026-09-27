@@ -12,8 +12,13 @@ import pw from '/root/projects/camoufox-mcp/node_modules/playwright-core/index.j
 import { readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 
-export const E2E_URL = process.env.E2E_URL ?? 'http://127.0.0.1:4188/?token=e2etest';
-export const E2E_SESSIONS = process.env.E2E_SESSIONS ?? '/root/.dsh-e2e/sessions';
+export const E2E_URL = process.env.E2E_URL
+	?? (process.env.DSH_E2E_PORT ? `http://127.0.0.1:${process.env.DSH_E2E_PORT}/?token=${process.env.DSH_E2E_TOKEN || 'e2etest'}` : undefined);
+export const E2E_SESSIONS = process.env.E2E_SESSIONS
+	?? (process.env.DSH_E2E_HOME ? `${process.env.DSH_E2E_HOME}/sessions` : undefined);
+if (!E2E_URL || !E2E_SESSIONS) {
+	throw new Error('missing DSH_E2E_PORT/DSH_E2E_HOME — run via `dsh-e2e run` (from the plugin worktree) or set E2E_URL/E2E_SESSIONS');
+}
 
 const CHROMIUM = '/root/.cache/ms-playwright/chromium-1243/chrome-linux-arm64/chrome';
 

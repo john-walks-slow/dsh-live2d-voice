@@ -16,7 +16,7 @@ import pw from '/root/projects/camoufox-mcp/node_modules/playwright-core/index.j
 const { chromium } = pw;
 import { readFileSync } from 'node:fs';
 
-const url = process.env.E2E_URL ?? 'http://127.0.0.1:4188/?token=e2etest';
+const url = process.env.E2E_URL ?? `http://127.0.0.1:${process.env.DSH_E2E_PORT}/?token=${process.env.DSH_E2E_TOKEN || 'e2etest'}`;
 const zhB64 = readFileSync('/tmp/t-zh-16k.pcm').toString('base64');
 const SHOT = (n) => `/tmp/lvstream-${n}.png`;
 

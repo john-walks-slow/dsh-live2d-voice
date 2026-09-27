@@ -25,15 +25,15 @@ npm run e2e:light                 # 8 个零 API 套件
 npm run e2e:heavy                  # 14 个真实 API 套件（默认别跑）
 node e2e/run.mjs verify-boot       # 单跑指定套件
 
-# 环境变量（非默认 4188 实例时必带）
-E2E_URL="http://127.0.0.1:<port>/?token=e2etest"
-E2E_SESSIONS=<隔离home>/sessions   # 会话日志根（套件读日志断言用）
-E2E_CFG=<隔离home>/live2d-voice.json
+# 环境变量（由 `dsh-e2e run` 自动注入；裸跑时必带）
+DSH_E2E_PORT=<端口>               # boot.mjs 组装 E2E_URL
+DSH_E2E_HOME=<worktree>/.dsh-e2e-home   # boot.mjs 组装 E2E_SESSIONS；E2E_CFG 同理
+# 旧三件套 E2E_URL/E2E_SESSIONS/E2E_CFG 仍可显式覆盖
 ```
 
 实例管理（隔离 home、动态端口、槽位上限）见 **dsh-e2e** skill；端口一律走 **acquire-port**。
 
-> **插件解析链警告**：e2e home 的 `profiles/web/node_modules/dsh-live2d-voice` 是指向仓库的符号链接。默认链指向**主仓库**——测 worktree 代码必须用把该链接改指 worktree 的隔离 home，否则"新功能不生效"是假象（响应来自主仓库 lib）。
+> 2026-09-27 起 worktree 模式下此警告已结构性消除：home 在 `<worktree>/.dsh-e2e-home`，profile `link:` 直接指向 worktree 本身，测的必然是 worktree 代码。
 
 ## boot 规范（e2e/lib/boot.mjs）
 
@@ -105,7 +105,7 @@ const sessionId = [...streams].at(-1); // attach 请求捕获的 id
 
 - 默认零 API：断言走 DOM/配置/日志/纯计算。确实需要 LLM 行为的探针消息放**断言段**，boot 一律 `lib/boot.mjs`。
 - 命名 `verify-<topic>.mjs`；结束输出 `N/M checks passed` 汇总 + 正确退出码（runner 依赖）。
-- 必须支持 `E2E_URL` / `E2E_SESSIONS` / `E2E_CFG` 三件套，不许硬编码 4188。
+- 必须支持 `DSH_E2E_PORT` / `DSH_E2E_HOME`（或 E2E_URL/E2E_SESSIONS/E2E_CFG 显式覆盖），不许硬编码端口。
 
 ## 迁移状态（童子军：改到哪迁到哪）
 

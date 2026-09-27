@@ -18,8 +18,8 @@ import { readFileSync, writeFileSync, readdirSync } from 'node:fs';
 import { execSync } from 'node:child_process';
 const { chromium } = pw;
 
-const url = process.env.E2E_URL ?? 'http://127.0.0.1:4188/?token=e2etest';
-const CFG = process.env.E2E_CFG ?? '/root/.dsh-e2e/live2d-voice.json';
+const url = process.env.E2E_URL ?? `http://127.0.0.1:${process.env.DSH_E2E_PORT}/?token=${process.env.DSH_E2E_TOKEN || 'e2etest'}`;
+const CFG = process.env.E2E_CFG ?? `${process.env.DSH_E2E_HOME}/live2d-voice.json`;
 const SHOT = (n) => `/tmp/lvp3-${n}.png`;
 const results = [];
 const check = (id, ok, note = '') => { results.push({ id, ok, note }); console.log(`${ok ? '✓' : '✗'} ${id} ${note}`); };
@@ -182,10 +182,10 @@ try {
   console.log('=== P3 workspace overlay ===');
   // derive cwd from the session storage slug
   let cwd = null;
-  for (const dir of readdirSync('/root/.dsh-e2e/sessions')) {
+  for (const dir of readdirSync(`${process.env.DSH_E2E_HOME}/sessions`)) {
     try {
-      if (!readdirSync(`/root/.dsh-e2e/sessions/${dir}`).includes(sessionId)) continue;
-      const head = execSync(`zstd -dc /root/.dsh-e2e/sessions/${dir}/${sessionId}/session.v3.jsonl.zstd 2>/dev/null | head -1`).toString();
+      if (!readdirSync(`${process.env.DSH_E2E_HOME}/sessions/${dir}`).includes(sessionId)) continue;
+      const head = execSync(`zstd -dc ${process.env.DSH_E2E_HOME}/sessions/${dir}/${sessionId}/session.v3.jsonl.zstd 2>/dev/null | head -1`).toString();
       cwd = JSON.parse(head).cwd ?? null;
       break;
     } catch {}

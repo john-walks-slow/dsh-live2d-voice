@@ -25,7 +25,7 @@ import pw from '/root/projects/camoufox-mcp/node_modules/playwright-core/index.j
 import { readFileSync, writeFileSync } from 'node:fs';
 
 const PROBE = '/root/projects/token-game/plugins/dsh-token-game/lib/client.js';
-const URL = process.env.E2E_URL ?? 'http://127.0.0.1:4188/?token=e2etest';
+const URL = process.env.E2E_URL ?? `http://127.0.0.1:${process.env.DSH_E2E_PORT}/?token=${process.env.DSH_E2E_TOKEN || 'e2etest'}`;
 const SELF_ID = 'dsh-live2d-voice';
 
 const results = [];

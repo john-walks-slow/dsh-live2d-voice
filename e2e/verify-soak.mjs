@@ -100,7 +100,7 @@ const check = (id, ok, note = '') => { results.push({ id, ok, note }); console.l
 const sleep = (ms) => page.waitForTimeout(ms);
 
 try {
-  await page.goto('http://127.0.0.1:4188/?token=e2etest', { waitUntil: 'domcontentloaded', timeout: 30000 });
+  await page.goto(`http://127.0.0.1:${process.env.DSH_E2E_PORT}/?token=${process.env.DSH_E2E_TOKEN || 'e2etest'}`, { waitUntil: 'domcontentloaded', timeout: 30000 });
   await sleep(9000);
   console.log('  probe@boot:', await page.evaluate(() => JSON.stringify({ soak: typeof window.__soak, feed: typeof window.__soakFeed })).catch((e) => String(e).slice(0, 100)));
   await page.evaluate(() => { const ed = document.querySelector('[contenteditable="true"][aria-label*="Describe"]'); if (ed) ed.focus(); });

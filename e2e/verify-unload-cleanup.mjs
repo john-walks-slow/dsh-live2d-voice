@@ -6,7 +6,7 @@
 //   5. Verify that switching sessions mounts fresh component with unique key
 import pw from '/root/projects/camoufox-mcp/node_modules/playwright-core/index.js';
 const { firefox } = pw;
-const url = 'http://127.0.0.1:4188/?token=e2etest';
+const url = `http://127.0.0.1:${process.env.DSH_E2E_PORT}/?token=${process.env.DSH_E2E_TOKEN || 'e2etest'}`;
 
 let pass = 0, fail = 0;
 function check(c, m) {

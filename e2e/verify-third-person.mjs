@@ -27,8 +27,8 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import { execSync } from 'node:child_process';
 const { chromium } = pw;
 
-const url = process.env.E2E_URL ?? 'http://127.0.0.1:4188/?token=e2etest';
-const CFG = process.env.E2E_CFG ?? '/root/.dsh-e2e/live2d-voice.json';
+const url = process.env.E2E_URL ?? `http://127.0.0.1:${process.env.DSH_E2E_PORT}/?token=${process.env.DSH_E2E_TOKEN || 'e2etest'}`;
+const CFG = process.env.E2E_CFG ?? `${process.env.DSH_E2E_HOME}/live2d-voice.json`;
 const PLAYER_MODEL = 'deepseek-chan';
 const PLAYER_VOICE = 'ed3a1c523b524870a85a5a76cb1e0c3d'; // 元气少年音
 const SHOT = (n) => `/tmp/lvtp-${n}.png`;
@@ -71,7 +71,7 @@ const patchCfg = (patch) => {
 
 /** The session's zstd log as text (newest session.v3 under /root/.dsh-e2e). */
 const sessionLog = () => {
-  const latest = execSync(`find /root/.dsh-e2e/sessions -name "session.v3.jsonl.zstd" -printf "%T@ %p\\n" | sort -rn | head -1 | cut -d' ' -f2-`).toString().trim();
+  const latest = execSync(`find ${process.env.DSH_E2E_HOME}/sessions -name "session.v3.jsonl.zstd" -printf "%T@ %p\\n" | sort -rn | head -1 | cut -d' ' -f2-`).toString().trim();
   return execSync(`zstd -dc "${latest}"`).toString();
 };
 

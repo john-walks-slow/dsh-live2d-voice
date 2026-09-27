@@ -3,7 +3,7 @@ import pw from '/root/projects/camoufox-mcp/node_modules/playwright-core/index.j
 const { chromium } = pw;
 import { readFileSync } from 'node:fs';
 import { execSync } from 'node:child_process';
-const url = process.env.E2E_URL ?? 'http://127.0.0.1:4188/?token=e2etest';
+const url = process.env.E2E_URL ?? `http://127.0.0.1:${process.env.DSH_E2E_PORT}/?token=${process.env.DSH_E2E_TOKEN || 'e2etest'}`;
 const zhB64 = readFileSync('/tmp/t-zh-16k.pcm').toString('base64');
 const results = [];
 const check = (id, ok, note = '') => { results.push({ id, ok, note }); console.log(`${ok ? '✓' : '✗'} ${id} ${note}`); };
@@ -124,7 +124,7 @@ try {
   check('I2a', !!asst, `assistant reply subtitle: ${asst ? `"${asst.text.slice(0, 50)}"` : 'none within 90s'}`);
   await sleep(3000);
   // ---- log check: the injection must be recorded as a user/message event ----
-  const dir = '/root/.dsh-e2e/sessions';
+  const dir = `${process.env.DSH_E2E_HOME}/sessions`;
   const latest = execSync(`find ${dir} -name "session.v3.jsonl.zstd" -printf "%T@ %p\\n" | sort -rn | head -1 | cut -d' ' -f2-`).toString().trim();
   const log = execSync(`zstd -dc "${latest}"`).toString();
   const hits = log.split('\n').filter((l) => l.includes('dsh-live2d-voice'));

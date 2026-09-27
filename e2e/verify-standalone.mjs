@@ -89,7 +89,7 @@ const sleep = (ms) => page.waitForTimeout(ms);
 
 try {
   // login (establish the auth cookie) then open the GUI once to create a session
-  await page.goto('http://127.0.0.1:4188/?token=e2etest', { waitUntil: 'domcontentloaded', timeout: 30000 });
+  await page.goto(`http://127.0.0.1:${process.env.DSH_E2E_PORT}/?token=${process.env.DSH_E2E_TOKEN || 'e2etest'}`, { waitUntil: 'domcontentloaded', timeout: 30000 });
   await sleep(9000);
   await ev(() => { const ed = document.querySelector('[contenteditable="true"][aria-label*="Describe"]'); if (ed) ed.focus(); });
   await page.keyboard.type('你好呀', { delay: 12 });
@@ -99,7 +99,7 @@ try {
   check('S0a', !!warmSession, `warm session captured (${warmSession?.slice(0, 18)}…)`);
 
   // ---- S1: no session param ----
-  await page.goto('http://127.0.0.1:4188/live2d-voice/app', { waitUntil: 'domcontentloaded', timeout: 30000 });
+  await page.goto(`http://127.0.0.1:${process.env.DSH_E2E_PORT}/live2d-voice/app`, { waitUntil: 'domcontentloaded', timeout: 30000 });
   await sleep(3500);
   const s1 = await ev(() => ({
     guidance: document.body.textContent?.includes('缺少会话参数') ?? false,
@@ -108,7 +108,7 @@ try {
   check('S1', s1.guidance && s1.root, `no-session guidance (${JSON.stringify(s1)})`);
 
   // ---- S2: valid session, standalone mounts ----
-  await page.goto(`http://127.0.0.1:4188/live2d-voice/app?session=${encodeURIComponent(warmSession)}`, { waitUntil: 'domcontentloaded', timeout: 30000 });
+  await page.goto(`http://127.0.0.1:${process.env.DSH_E2E_PORT}/live2d-voice/app?session=${encodeURIComponent(warmSession)}`, { waitUntil: 'domcontentloaded', timeout: 30000 });
   await sleep(6000);
   const s2 = await ev(() => ({
     canvas: !!document.querySelector('.lv-stage canvas'),
@@ -139,12 +139,12 @@ try {
   // ---- S4: cold session ----
   // pick a persisted session never opened in this GUI run (its agent is cold)
   let coldSession = null;
-  for (const dir of readdirSync('/root/.dsh-e2e/sessions')) {
+  for (const dir of readdirSync(`${process.env.DSH_E2E_HOME}/sessions`)) {
     try {
-      const ids = readdirSync(`/root/.dsh-e2e/sessions/${dir}`);
+      const ids = readdirSync(`${process.env.DSH_E2E_HOME}/sessions/${dir}`);
       const candidate = ids.find((id) => id.startsWith('session-') && id !== warmSession && !followSessionIds.has(id));
       if (candidate) {
-        const head = execSync(`zstd -dc /root/.dsh-e2e/sessions/${dir}/${candidate}/session.v3.jsonl.zstd 2>/dev/null | head -1`).toString();
+        const head = execSync(`zstd -dc ${process.env.DSH_E2E_HOME}/sessions/${dir}/${candidate}/session.v3.jsonl.zstd 2>/dev/null | head -1`).toString();
         const cwd = JSON.parse(head).cwd;
         if (cwd) { coldSession = candidate; break; }
       }
@@ -152,7 +152,7 @@ try {
   }
   check('S4a', !!coldSession, `cold session found (${coldSession?.slice(0, 18)}…)`);
   if (coldSession) {
-    await page.goto(`http://127.0.0.1:4188/live2d-voice/app?session=${encodeURIComponent(coldSession)}`, { waitUntil: 'domcontentloaded', timeout: 30000 });
+    await page.goto(`http://127.0.0.1:${process.env.DSH_E2E_PORT}/live2d-voice/app?session=${encodeURIComponent(coldSession)}`, { waitUntil: 'domcontentloaded', timeout: 30000 });
     await sleep(6000);
     const mounted = await ev(() => !!document.querySelector('.lv-stage canvas'));
     check('S4b', mounted, 'cold session standalone mounted');

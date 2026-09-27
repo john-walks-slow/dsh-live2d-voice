@@ -23,7 +23,7 @@ import pw from '/root/projects/camoufox-mcp/node_modules/playwright-core/index.j
 const { chromium } = pw;
 import { readFileSync } from 'node:fs';
 
-const url = process.env.E2E_URL ?? 'http://127.0.0.1:4188/?token=e2etest';
+const url = process.env.E2E_URL ?? `http://127.0.0.1:${process.env.DSH_E2E_PORT}/?token=${process.env.DSH_E2E_TOKEN || 'e2etest'}`;
 const zhB64 = readFileSync('/tmp/t-zh-16k.pcm').toString('base64');
 const results = [];
 const check = (id, ok, note = '') => { results.push({ id, ok, note }); console.log(`${ok ? '✓' : '✗'} ${id} ${note}`); };
@@ -197,7 +197,7 @@ try {
   // second view instance: standalone page watching the same session
   const page2 = await ctx.newPage();
   wireConsole('p2', page2);
-  await page2.goto(`http://127.0.0.1:4188/live2d-voice/app?session=${encodeURIComponent(sid)}`, { waitUntil: 'domcontentloaded', timeout: 30000 });
+  await page2.goto(`http://127.0.0.1:${process.env.DSH_E2E_PORT}/live2d-voice/app?session=${encodeURIComponent(sid)}`, { waitUntil: 'domcontentloaded', timeout: 30000 });
   await sleep(5000);
   check('D0c', await page2.evaluate(() => !!document.querySelector('.lv-root')), 'standalone second view up');
 

@@ -14,7 +14,7 @@
  * business — never as a blanket "make everything green" pass.
  *
  * Requires a running e2e instance (see the dsh-e2e skill); set E2E_URL /
- * E2E_SESSIONS / E2E_CFG when it is not the default 4188 home.
+ * E2E_SESSIONS / E2E_CFG when overriding the DSH_E2E_* defaults injected by `dsh-e2e run`.
  */
 import { spawnSync } from 'node:child_process';
 
