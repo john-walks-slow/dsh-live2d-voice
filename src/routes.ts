@@ -13,6 +13,8 @@
  *                                            overlaid effective config)
  *   POST /live2d-voice/config                update config fields (global)
  *   POST /live2d-voice/message               submit a user message to a session
+ *   POST /live2d-voice/session               create (or idempotently adopt) a session
+ *   GET  /live2d-voice/sessions              visible session list for the picker
  *   GET  /live2d-voice/model[?session=..]   which .model3.json to render +
  *                                           the full model catalog
  *   GET  /live2d-voice/models/*              model assets (traversal-guarded)
@@ -86,6 +88,20 @@ async function readJsonBody(req: IncomingMessage, maxBytes = BODY_MAX_BYTES): Pr
 	const parsed = JSON.parse(Buffer.concat(chunks).toString("utf-8"));
 	if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) throw new Error("body must be a JSON object");
 	return parsed as Record<string, unknown>;
+}
+
+/** Best-effort session title from projection values: any key containing "title". */
+function projectionTitle(values: Record<string, unknown> | undefined): string | undefined {
+	if (!values) return undefined;
+	for (const [key, value] of Object.entries(values)) {
+		if (!key.includes("title")) continue;
+		if (typeof value === "string" && value) return value;
+		if (value && typeof value === "object" && "value" in value) {
+			const inner = (value as { value?: unknown }).value;
+			if (typeof inner === "string" && inner) return inner;
+		}
+	}
+	return undefined;
 }
 
 /** Read a raw binary request body (bounded). */
@@ -406,6 +422,74 @@ export function installRoutes(ctx: Context, deps: RouteDeps): (() => void) | und
 				})
 				.catch((error: unknown) => {
 					writeJson(res, 400, { code: "bad_message", message: error instanceof Error ? error.message : String(error) });
+				});
+		} })
+	);
+
+	// Session creation: standalone entries need to mint brand-new sessions —
+	// the message route only resumes existing ones (resolveAgent is a resume,
+	// not a create). create() is idempotent: re-creating an existing id
+	// adopts that session instead of failing.
+	disposers.push(
+		webServer.register({ kind: "exact", path: "/live2d-voice/session", handler: (req, res) => {
+			if (req.method !== "POST") {
+				writeJson(res, 405, { code: "method_not_allowed" });
+				return;
+			}
+			void readJsonBody(req)
+				.then(async (body) => {
+					const request: { sessionId?: string; cwd?: string; agentPreset?: string } = {};
+					if (typeof body.sessionId === "string" && body.sessionId) request.sessionId = body.sessionId;
+					if (typeof body.cwd === "string" && body.cwd) request.cwd = body.cwd;
+					if (typeof body.agentPreset === "string" && body.agentPreset) request.agentPreset = body.agentPreset;
+					const controller = (
+						ctx as unknown as {
+							sessionController: {
+								create(request: { sessionId?: string; cwd?: string; agentPreset?: string }): Promise<{ sessionId: string; agentPreset?: string }>;
+							};
+						}
+					).sessionController;
+					const created = await controller.create(request);
+					writeJson(res, 200, { ok: true, sessionId: created.sessionId, agentPreset: created.agentPreset });
+				})
+				.catch((error: unknown) => {
+					writeJson(res, 500, { ok: false, code: "create_failed", message: error instanceof Error ? error.message : String(error) });
+				});
+		} })
+	);
+
+	// Session list: the picker reads every visible session without
+	// activating any agent. Titles live in projection values under a
+	// title-ish key; extract leniently and fall back to the raw id.
+	disposers.push(
+		webServer.register({ kind: "exact", path: "/live2d-voice/sessions", handler: (req, res) => {
+			if (req.method !== "GET") {
+				writeJson(res, 405, { code: "method_not_allowed" });
+				return;
+			}
+			const controller = (
+				ctx as unknown as {
+					sessionController: {
+						list(request: { cursor?: string }, signal: AbortSignal): Promise<{ items: ReadonlyArray<{ sessionId: string; updatedAt: number; running: boolean; blank: boolean; cwd?: string; projections?: { values?: Record<string, unknown> } }> }>;
+					};
+				}
+			).sessionController;
+			const abort = new AbortController();
+			req.on("close", () => abort.abort());
+			void controller.list({}, abort.signal)
+				.then((value) => {
+					const items = value.items.map((summary) => ({
+						sessionId: summary.sessionId,
+						updatedAt: summary.updatedAt,
+						running: summary.running,
+						blank: summary.blank,
+						cwd: summary.cwd,
+						title: projectionTitle(summary.projections?.values),
+					}));
+					writeJson(res, 200, { ok: true, items });
+				})
+				.catch((error: unknown) => {
+					writeJson(res, 500, { ok: false, code: "list_failed", message: error instanceof Error ? error.message : String(error) });
 				});
 		} })
 	);
