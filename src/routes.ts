@@ -2,7 +2,7 @@
  * Web routes on the host webserver (composed dsh web profiles only; a missing
  * webserver degrades to a no-op with one log line):
  *
- *   GET  /live2d-voice/stream?session=<id>   SSE event stream (the Live view)
+ *   GET  /live2d-voice                        session picker landing page
  *   GET  /live2d-voice/asr/ws?session=..     WebSocket upstream: one VAD
  *                                           utterance of live PCM frames in,
  *                                           interim/final text over SSE
@@ -744,6 +744,15 @@ export function installRoutes(ctx: Context, deps: RouteDeps): (() => void) | und
 			})().catch((error: unknown) => {
 				writeJson(res, 502, { code: "gaze_asset_error", message: error instanceof Error ? error.message : String(error) });
 			});
+		} })
+	);
+
+	// Session picker landing page: lists every visible session with one-tap
+	// create — standalone launchers open this first, then hop to /app.
+	disposers.push(
+		webServer.register({ kind: "exact", path: "/live2d-voice", handler: (_req, res) => {
+			const page = resolve(dirname(fileURLToPath(import.meta.url)), "../assets/picker.html");
+			if (!serveFile(res, page, 0)) writeJson(res, 404, { code: "picker_missing" });
 		} })
 	);
 

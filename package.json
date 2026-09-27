@@ -17,13 +17,16 @@
 		"assets/cubism4/live2dcubismcore.min.js",
 		"assets/cubism2/live2d.min.js",
 		"assets/standalone.html",
+		"assets/picker.html",
 		"cordis.patch.yml",
 		"README.md",
 		"LICENSE"
 	],
 	"scripts": {
 		"build": "node build.mjs",
-		"typecheck": "tsc --noEmit"
+		"typecheck": "tsc --noEmit",
+		"e2e:light": "node e2e/run.mjs light",
+		"e2e:heavy": "node e2e/run.mjs heavy"
 	},
 	"keywords": [
 		"dsh",
