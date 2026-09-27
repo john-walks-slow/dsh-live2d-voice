@@ -1325,7 +1325,7 @@ body[data-ds-dark-theme] .lv-calib-track,
 	font-family: inherit;
 	outline: none;
 	cursor: pointer;
-	margin-bottom: 6px;
+	margin-bottom: 0;
 	transition: border-color 0.15s;
 }
 .lv-model-select:focus {
@@ -1334,6 +1334,48 @@ body[data-ds-dark-theme] .lv-calib-track,
 .lv-model-select:disabled {
 	opacity: 0.5;
 	cursor: default;
+}
+.lv-model-select optgroup {
+	font-weight: 600;
+	color: var(--lv-fg-2);
+	background: var(--lv-surface);
+}
+body[data-ds-dark-theme] .lv-model-select optgroup,
+.lv-root.lv-dark .lv-model-select optgroup {
+	color: var(--lv-fg-2);
+	background: var(--lv-surface);
+}
+.lv-model-select option {
+	color: var(--lv-fg);
+	background: var(--lv-surface);
+}
+body[data-ds-dark-theme] .lv-model-select option,
+.lv-root.lv-dark .lv-model-select option {
+	color: var(--lv-fg);
+	background: var(--lv-surface);
+}
+.lv-select-group {
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+	width: 100%;
+}
+.lv-select-group-row {
+	display: flex;
+	flex-direction: row;
+	gap: 8px;
+	width: 100%;
+}
+.lv-select-group-row > .lv-model-select {
+	flex: 1;
+	min-width: 0;
+	margin-bottom: 0;
+}
+@media (max-width: 480px) {
+	.lv-select-group-row {
+		flex-direction: column;
+		gap: 6px;
+	}
 }
 
 /* ── Live entry button (session header utilities) ──────────────────── */

@@ -10,3 +10,9 @@ if [ "$WORKTREE_DIR" != "$REPO_ROOT" ] && [ ! -e "$WORKTREE_DIR/node_modules" ];
         echo "[init-worktree] Linked node_modules from $REPO_ROOT"
     fi
 fi
+<<<<<<< HEAD
+=======
+
+npm run build
+echo "[init-worktree] Build complete."
+>>>>>>> feat/align-selectors

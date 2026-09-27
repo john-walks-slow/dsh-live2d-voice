@@ -6,6 +6,11 @@ import {
 	IconCheck,
 	IconAlert,
 } from "./icons.js";
+import {
+	Live2DModelSelector,
+	VoicePresetSelector,
+	DedicatedModelCard,
+} from "./selectors.js";
 
 const CSS_SETTINGS = `
 .lv-set-wrap {
@@ -96,7 +101,7 @@ body[data-ds-dark-theme] .lv-set-label {
 	margin-top: 4px;
 }
 
-.lv-set-input, .lv-set-select, .lv-set-textarea {
+.lv-set-input, .lv-set-select, .lv-set-textarea, .lv-set-wrap .lv-model-select {
 	width: 100%;
 	box-sizing: border-box;
 	padding: 8px 12px;
@@ -107,18 +112,55 @@ body[data-ds-dark-theme] .lv-set-label {
 	color: inherit;
 	font-family: inherit;
 	outline: none;
+	cursor: pointer;
+	margin-bottom: 0;
 	transition: border-color 0.15s ease;
 }
 
 body[data-ds-dark-theme] .lv-set-input,
 body[data-ds-dark-theme] .lv-set-select,
-body[data-ds-dark-theme] .lv-set-textarea {
+body[data-ds-dark-theme] .lv-set-textarea,
+body[data-ds-dark-theme] .lv-set-wrap .lv-model-select {
 	background: var(--dsw-alias-bg-layer-1, #151517);
 	border-color: var(--dsw-alias-border-l2, rgba(255,255,255,0.12));
+	color: var(--dsw-alias-label-primary, #f9fafb);
 }
 
-.lv-set-input:focus, .lv-set-select:focus, .lv-set-textarea:focus {
+.lv-set-input:focus, .lv-set-select:focus, .lv-set-textarea:focus, .lv-set-wrap .lv-model-select:focus {
 	border-color: var(--dsw-alias-state-business-primary, #4176e6);
+}
+
+.lv-set-wrap .lv-model-select optgroup {
+	font-weight: 600;
+	color: var(--dsw-alias-label-secondary, #61666b);
+	background: var(--dsw-alias-bg-layer-1, #ffffff);
+}
+body[data-ds-dark-theme] .lv-set-wrap .lv-model-select optgroup {
+	color: var(--dsw-alias-label-secondary, #9ca3af);
+	background: var(--dsw-alias-bg-layer-1, #151517);
+}
+
+.lv-set-wrap .lv-select-group {
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+	width: 100%;
+}
+.lv-set-wrap .lv-select-group-row {
+	display: flex;
+	flex-direction: row;
+	gap: 8px;
+	width: 100%;
+}
+.lv-set-wrap .lv-select-group-row > .lv-model-select {
+	flex: 1;
+	min-width: 0;
+}
+@media (max-width: 480px) {
+	.lv-set-wrap .lv-select-group-row {
+		flex-direction: column;
+		gap: 6px;
+	}
 }
 
 .lv-set-row {
@@ -212,105 +254,10 @@ body[data-ds-dark-theme] .lv-set-textarea {
 }
 `;
 
-/**
- * Reusable provider → model → reasoning-effort picker card.
- * Used for the translation / polish dedicated-model options. Mirrors the
- * Live-model picker's UX (select provider, then model, then optional effort;
- * Save commits, Clear resets to "follow the session").
- */
-function ModelPickerCard({
-	title,
-	help,
-	modelCatalog,
-	saved,
-	saving,
-	onSave,
-}: {
-	title: string;
-	help: string;
-	modelCatalog: ModelCatalog | null;
-	saved?: { provider: string; model: string; reasoningEffort?: string } | null;
-	saving: boolean;
-	onSave: (value: { provider: string; model: string; reasoningEffort?: string } | null) => void;
-}) {
-	const [provider, setProvider] = useState(saved?.provider ?? "");
-	const [modelId, setModelId] = useState(saved?.model ?? "");
-	const [effort, setEffort] = useState(saved?.reasoningEffort ?? "");
-	useEffect(() => {
-		setProvider(saved?.provider ?? "");
-		setModelId(saved?.model ?? "");
-		setEffort(saved?.reasoningEffort ?? "");
-	}, [saved]);
-	const group = modelCatalog?.groups.find((g) => g.id === provider) ?? null;
-	const modelObj = group?.models.find((m) => m.id === modelId) ?? null;
-	return (
-		<div className="lv-set-card">
-			<div className="lv-set-card-head">
-				<h3 className="lv-set-card-title">{title}</h3>
-			</div>
-			<div className="lv-set-help" style={{ marginBottom: "12px" }}>{help}</div>
-			{modelCatalog ? (
-				<>
-					<div className="lv-set-field">
-						<label className="lv-set-label">模型供应商</label>
-						<select className="lv-set-select" value={provider} onChange={(e) => {
-							setProvider(e.target.value);
-							const grp = modelCatalog.groups.find((g) => g.id === e.target.value);
-							setModelId(grp?.models[0]?.id ?? "");
-							setEffort(grp?.models[0]?.reasoning?.defaultEffort ?? "");
-						}}>
-							<option value="">— 选择供应商 —</option>
-							{modelCatalog.groups.map((g) => <option key={g.id} value={g.id}>{g.name}</option>)}
-						</select>
-					</div>
-					{group && (
-						<div className="lv-set-field">
-							<label className="lv-set-label">模型</label>
-							<select className="lv-set-select" value={modelId} onChange={(e) => {
-								setModelId(e.target.value);
-								const m = group.models.find((mm) => mm.id === e.target.value);
-								setEffort(m?.reasoning?.defaultEffort ?? "");
-							}}>
-								<option value="">— 选择模型 —</option>
-								{group.models.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
-							</select>
-						</div>
-					)}
-					{modelObj?.reasoning && modelObj.reasoning.efforts.length > 0 && (
-						<div className="lv-set-field">
-							<label className="lv-set-label">思考程度</label>
-							<select className="lv-set-select" value={effort} onChange={(e) => setEffort(e.target.value)}>
-								<option value="">默认</option>
-								{modelObj.reasoning.efforts.map((eff) => <option key={eff.id} value={eff.id}>{eff.name}</option>)}
-							</select>
-						</div>
-					)}
-					<div className="lv-set-row" style={{ marginTop: "8px" }}>
-						<button type="button" className="lv-set-btn lv-set-btn-primary" disabled={saving || !provider || !modelId}
-							onClick={() => onSave({ provider, model: modelId, ...(effort ? { reasoningEffort: effort } : {}) })}>
-							保存
-						</button>
-						<button type="button" className="lv-set-btn" disabled={saving || !saved}
-							onClick={() => { setProvider(""); setModelId(""); setEffort(""); onSave(null); }}>
-							清除（跟随会话）
-						</button>
-						{saved && (
-							<span style={{ fontSize: "12px", color: "var(--dsw-alias-label-secondary, #61666b)" }}>
-								已设置：{saved.provider} / {saved.model}{saved.reasoningEffort ? ` / ${saved.reasoningEffort}` : ""}
-							</span>
-						)}
-					</div>
-				</>
-			) : (
-				<div className="lv-set-help">模型目录加载中或不可用（需 DSH 重启后加载新路由）。</div>
-			)}
-		</div>
-	);
-}
-
 export function Live2DSettingsSection() {
 	const [config, setConfig] = useState<PublicConfig | null>(null);
 	const [presets, setPresets] = useState<VoicePreset[]>([]);
+	const [voiceLanguages, setVoiceLanguages] = useState<LanguageOption[]>([]);
 	const [models, setModels] = useState<{ name: string; label?: string; kind?: "moc2" | "moc3"; group?: string; groupLabel?: string; url: string }[]>([]);
 	const [loading, setLoading] = useState(true);
 	const [statusMsg, setStatusMsg] = useState<{ type: "success" | "warn"; text: string } | null>(null);
@@ -339,16 +286,14 @@ export function Live2DSettingsSection() {
 	const [playerPrompt, setPlayerPrompt] = useState("");
 	// Live model auto-switch config
 	const [modelCatalog, setModelCatalog] = useState<ModelCatalog | null>(null);
-	const [liveProvider, setLiveProvider] = useState("");
-	const [liveModelId, setLiveModelId] = useState("");
-	const [liveEffort, setLiveEffort] = useState("");
 
 	const loadAll = useCallback(() => {
 		setLoading(true);
 		fetchConfig()
-			.then((data: { config: PublicConfig; presets: VoicePreset[]; languages: LanguageOption[] }) => {
+			.then((data: { config: PublicConfig; presets: VoicePreset[]; languages: LanguageOption[]; voiceLanguages?: LanguageOption[] }) => {
 				setConfig(data.config);
 				setPresets(data.presets || []);
+				if (data.voiceLanguages) setVoiceLanguages(data.voiceLanguages);
 				setModelPath(data.config.modelPath || "");
 				setVoiceId(data.config.voiceId || "");
 				setTtsModel(data.config.ttsModel || "s2.1-pro-free");
@@ -386,15 +331,6 @@ export function Live2DSettingsSection() {
 			.catch(() => undefined);
 	}, []);
 
-	// When config loads, populate live model drafts from saved config
-	useEffect(() => {
-		if (config?.liveModel) {
-			setLiveProvider(config.liveModel.provider || "");
-			setLiveModelId(config.liveModel.model || "");
-			setLiveEffort(config.liveModel.reasoningEffort || "");
-		}
-	}, [config]);
-
 	useEffect(() => {
 		loadAll();
 	}, [loadAll]);
@@ -423,10 +359,6 @@ export function Live2DSettingsSection() {
 
 	const hasVoice = (config?.apiKeyCount ?? 0) > 0;
 	const hasAsr = config?.asrConfigured ?? false;
-
-	// Derived: the provider group and model currently selected in the live-model picker
-	const liveGroup = modelCatalog?.groups.find((g) => g.id === liveProvider) ?? null;
-	const liveModelObj = liveGroup?.models.find((m) => m.id === liveModelId) ?? null;
 
 	return (
 		<div className="lv-set-wrap">
@@ -489,47 +421,27 @@ export function Live2DSettingsSection() {
 						指向单个包含 <code>.model3.json</code> 的文件夹，或包含多个角色子文件夹的上级目录。
 					</div>
 				</div>
-				{models.length > 0 &&
-					(() => {
-						// 按分类（二级目录）分组显示
-						const groups: { label: string; items: (typeof models)[number][] }[] = [];
-						for (const m of models) {
-							const key = m.groupLabel ?? m.group ?? "";
-							let g = groups.find((x) => x.label === key);
-							if (!g) {
-								g = { label: key, items: [] };
-								groups.push(g);
-							}
-							g.items.push(m);
-						}
-						return (
-							<div className="lv-set-field" style={{ marginTop: "12px" }}>
-								<label className="lv-set-label">已扫描到的可用模型 ({models.length} 个)</label>
-								{groups.map((g) => (
-									<div key={g.label || "misc"} style={{ marginTop: "10px" }}>
-										{g.label && (
-											<div style={{ fontSize: "12px", fontWeight: 600, opacity: 0.75, marginBottom: "6px" }}>
-												{g.label}
-											</div>
-										)}
-										<div style={{ display: "flex", gap: "6px", flexWrap: "wrap" }}>
-											{g.items.map((m) => (
-												<button
-													key={m.name}
-													type="button"
-													title={m.name}
-													className={`lv-set-btn ${config?.modelSelection === m.name ? "lv-set-btn-primary" : ""}`}
-													onClick={() => handleSave({ modelSelection: m.name })}
-												>
-													{m.label ?? m.name}{m.kind === "moc2" ? "（旧版）" : ""} {config?.modelSelection === m.name ? "✓" : ""}
-												</button>
-											))}
-										</div>
-									</div>
-								))}
+				{models.length > 0 && (
+					<div className="lv-set-field" style={{ marginTop: "12px" }}>
+						<label className="lv-set-label">选择角色模型 ({models.length} 个可用)</label>
+						<Live2DModelSelector
+							models={models}
+							value={config?.modelSelection}
+							onChange={(modelName) => handleSave({ modelSelection: modelName })}
+							autoSelectFirstOnGroupChange={false}
+							layout="row"
+						/>
+						{config?.modelSelection && (
+							<div className="lv-set-help" style={{ marginTop: "6px" }}>
+								当前默认模型：<code>{config.modelSelection}</code>
+								{(() => {
+									const cur = models.find((m) => m.name === config.modelSelection);
+									return cur ? ` (${cur.label ?? cur.name}${cur.kind === "moc2" ? " · 旧版moc2" : ""})` : "";
+								})()}
 							</div>
-						);
-					})()}
+						)}
+					</div>
+				)}
 			</div>
 
 			{/* 模块 2：语音合成 TTS */}
@@ -576,21 +488,26 @@ export function Live2DSettingsSection() {
 				</div>
 				<div className="lv-set-field">
 					<label className="lv-set-label">全局默认音色 (voiceId)</label>
-					<div style={{ display: "flex", gap: "6px", flexWrap: "wrap", marginTop: "6px" }}>
-						{presets.map((p) => (
-							<button
-								key={p.id}
-								type="button"
-								className={`lv-set-btn ${voiceId === p.voiceId ? "lv-set-btn-primary" : ""}`}
-								onClick={() => {
-									setVoiceId(p.voiceId);
-									handleSave({ voiceId: p.voiceId });
-								}}
-							>
-								{p.label} {voiceId === p.voiceId ? "✓" : ""}
-							</button>
-						))}
-					</div>
+					<VoicePresetSelector
+						presets={presets}
+						value={voiceId}
+						onChange={(p) => {
+							const next = p?.voiceId ?? "";
+							setVoiceId(next);
+							handleSave({ voiceId: next });
+						}}
+						voiceLanguages={voiceLanguages}
+						layout="row"
+					/>
+					{voiceId && (
+						<div className="lv-set-help" style={{ marginTop: "6px" }}>
+							当前默认音色：<code>{voiceId}</code>
+							{(() => {
+								const cur = presets.find((p) => p.voiceId === voiceId);
+								return cur ? ` (${cur.label})` : "";
+							})()}
+						</div>
+					)}
 				</div>
 			</div>
 
@@ -774,113 +691,16 @@ export function Live2DSettingsSection() {
 			</div>
 
 			{/* 模块 5：Live 模式专用模型 */}
-			<div className="lv-set-card">
-				<div className="lv-set-card-head">
-					<h3 className="lv-set-card-title">⑤ Live 模式专用模型</h3>
-				</div>
-				<div className="lv-set-help" style={{ marginBottom: "12px" }}>
-					进入 Live2D 视图时自动切换到该模型，退出时自动切回原来的模型。留空（清除）则不自动切换。
-				</div>
-				{modelCatalog ? (
-					<>
-						<div className="lv-set-field">
-							<label className="lv-set-label">模型供应商</label>
-							<select
-								className="lv-set-select"
-								value={liveProvider}
-								onChange={(e) => {
-									setLiveProvider(e.target.value);
-									const grp = modelCatalog.groups.find((g) => g.id === e.target.value);
-									setLiveModelId(grp?.models[0]?.id ?? "");
-									setLiveEffort(grp?.models[0]?.reasoning?.defaultEffort ?? "");
-								}}
-							>
-								<option value="">— 选择供应商 —</option>
-								{modelCatalog.groups.map((g) => (
-									<option key={g.id} value={g.id}>{g.name}</option>
-								))}
-							</select>
-						</div>
-						{liveGroup && (
-							<div className="lv-set-field">
-								<label className="lv-set-label">模型</label>
-								<select
-									className="lv-set-select"
-									value={liveModelId}
-									onChange={(e) => {
-										setLiveModelId(e.target.value);
-										const m = liveGroup.models.find((mm) => mm.id === e.target.value);
-										setLiveEffort(m?.reasoning?.defaultEffort ?? "");
-									}}
-								>
-									<option value="">— 选择模型 —</option>
-									{liveGroup.models.map((m) => (
-										<option key={m.id} value={m.id}>{m.name}</option>
-									))}
-								</select>
-							</div>
-						)}
-						{liveModelObj?.reasoning && liveModelObj.reasoning.efforts.length > 0 && (
-							<div className="lv-set-field">
-								<label className="lv-set-label">思考程度</label>
-								<select
-									className="lv-set-select"
-									value={liveEffort}
-									onChange={(e) => setLiveEffort(e.target.value)}
-								>
-									<option value="">默认</option>
-									{liveModelObj.reasoning.efforts.map((eff) => (
-										<option key={eff.id} value={eff.id}>{eff.name}</option>
-									))}
-								</select>
-							</div>
-						)}
-						<div className="lv-set-row" style={{ marginTop: "8px" }}>
-							<button
-								type="button"
-								className="lv-set-btn lv-set-btn-primary"
-								disabled={saving || !liveProvider || !liveModelId}
-								onClick={() =>
-									handleSave({
-										liveModel: {
-											provider: liveProvider,
-											model: liveModelId,
-											...(liveEffort ? { reasoningEffort: liveEffort } : {}),
-										},
-									})
-								}
-							>
-								保存
-							</button>
-							<button
-								type="button"
-								className="lv-set-btn"
-								disabled={saving || !config?.liveModel}
-								onClick={() => {
-									setLiveProvider("");
-									setLiveModelId("");
-									setLiveEffort("");
-									handleSave({ liveModel: null });
-								}}
-							>
-								清除
-							</button>
-							{config?.liveModel && (
-								<span style={{ fontSize: "12px", color: "var(--dsw-alias-label-secondary, #61666b)" }}>
-									已设置：{config.liveModel.provider} / {config.liveModel.model}
-									{config.liveModel.reasoningEffort ? ` / ${config.liveModel.reasoningEffort}` : ""}
-								</span>
-							)}
-						</div>
-					</>
-				) : (
-					<div className="lv-set-help">
-						模型目录加载中或不可用（需 DSH 重启后加载新路由）。
-					</div>
-				)}
-			</div>
-		{/* 模块 6：翻译 / 润色专用模型 */}
-			<ModelPickerCard
+			<DedicatedModelCard
+				title="⑤ Live 模式专用模型"
+				help="进入 Live2D 视图时自动切换到该模型，退出时自动切回原来的模型。留空（清除）则不自动切换。"
+				modelCatalog={modelCatalog}
+				saved={config?.liveModel}
+				saving={saving}
+				onSave={(v) => handleSave({ liveModel: v })}
+			/>
+			{/* 模块 6：翻译专用模型 */}
+			<DedicatedModelCard
 				title="⑥ 翻译专用模型"
 				help="字幕翻译默认复用会话当前模型（若会话用的是思考模型会偏慢）。指定一个快速非思考模型可显著加快翻译出现时机；留空则跟随会话。"
 				modelCatalog={modelCatalog}
@@ -888,7 +708,8 @@ export function Live2DSettingsSection() {
 				saving={saving}
 				onSave={(v) => handleSave({ translateModel: v })}
 			/>
-			<ModelPickerCard
+			{/* 模块 7：润色专用模型 */}
+			<DedicatedModelCard
 				title="⑦ 润色专用模型"
 				help="第三人称模式下玩家台词的润色默认复用会话当前模型。指定专用模型可独立控制润色质量与速度；留空则跟随会话。"
 				modelCatalog={modelCatalog}
@@ -896,47 +717,47 @@ export function Live2DSettingsSection() {
 				saving={saving}
 				onSave={(v) => handleSave({ polishModel: v })}
 			/>
-		{/* 模块 7：找更多模型与音色 */}
-				<div className="lv-set-card">
-					<div className="lv-set-card-head">
-						<h3 className="lv-set-card-title">⑧ 找更多模型与音色</h3>
+			{/* 模块 8：找更多模型与音色 */}
+			<div className="lv-set-card">
+				<div className="lv-set-card-head">
+					<h3 className="lv-set-card-title">⑧ 找更多模型与音色</h3>
+				</div>
+				<div className="lv-set-field">
+					<label className="lv-set-label">Live2D 模型来源</label>
+					<div className="lv-set-links">
+						<a className="lv-set-link" href="https://www.live2d.com/zh-CHS/learn/sample/" target="_blank" rel="noreferrer">
+							↗ Live2D 官方示例模型库（免费素材，本机 34 个模型的主要来源）
+						</a>
+						<a className="lv-set-link" href="https://github.com/Live2D/CubismNativeSamples/tree/main/Samples/Resources" target="_blank" rel="noreferrer">
+							↗ Live2D GitHub 官方样例仓库 (CubismNativeSamples)
+						</a>
+						<a className="lv-set-link" href="https://github.com/Eikanya/Live2d-model" target="_blank" rel="noreferrer">
+							↗ 第三方模型合集 Eikanya/Live2d-model（游戏提取，仅限个人学习，注意版权）
+						</a>
 					</div>
-					<div className="lv-set-field">
-						<label className="lv-set-label">Live2D 模型来源</label>
-						<div className="lv-set-links">
-							<a className="lv-set-link" href="https://www.live2d.com/zh-CHS/learn/sample/" target="_blank" rel="noreferrer">
-								↗ Live2D 官方示例模型库（免费素材，本机 34 个模型的主要来源）
-							</a>
-							<a className="lv-set-link" href="https://github.com/Live2D/CubismNativeSamples/tree/main/Samples/Resources" target="_blank" rel="noreferrer">
-								↗ Live2D GitHub 官方样例仓库 (CubismNativeSamples)
-							</a>
-							<a className="lv-set-link" href="https://github.com/Eikanya/Live2d-model" target="_blank" rel="noreferrer">
-								↗ 第三方模型合集 Eikanya/Live2d-model（游戏提取，仅限个人学习，注意版权）
-							</a>
-						</div>
-						<div className="lv-set-help">
-							下载 zip 解压后，把含 <code>.model3.json</code> 的角色文件夹放进模型目录（默认
-							<code>/root/.dsh/live2d-voice-models</code>），回本页点「刷新扫描」即可在 ① 与 HUD 中切换。
-						</div>
-					</div>
-					<div className="lv-set-field">
-						<label className="lv-set-label">Fish Audio 音色来源</label>
-						<div className="lv-set-links">
-							<a className="lv-set-link" href="https://fish.audio/zh-CN/discovery/" target="_blank" rel="noreferrer">
-								↗ Fish Audio 公共音色库发现页（浏览 / 试听全部公开音色）
-							</a>
-							<a className="lv-set-link" href="https://docs.fish.audio/" target="_blank" rel="noreferrer">
-								↗ Fish Audio 开发者文档（含公共音色库 API 检索方式）
-							</a>
-						</div>
-						<div className="lv-set-help">
-							音色详情页地址形如 <code>fish.audio/m/&#123;32位ID&#125;/</code>——把其中的 32 位十六进制 ID
-							填入 ② 的默认音色，即可在 HUD 音色选择器中选用（或直接挑选已有预设）。
-						</div>
+					<div className="lv-set-help">
+						下载 zip 解压后，把含 <code>.model3.json</code> 的角色文件夹放进模型目录（默认
+						<code>/root/.dsh/live2d-voice-models</code>），回本页点「刷新扫描」即可在 ① 与 HUD 中切换。
 					</div>
 				</div>
+				<div className="lv-set-field">
+					<label className="lv-set-label">Fish Audio 音色来源</label>
+					<div className="lv-set-links">
+						<a className="lv-set-link" href="https://fish.audio/zh-CN/discovery/" target="_blank" rel="noreferrer">
+							↗ Fish Audio 公共音色库发现页（浏览 / 试听全部公开音色）
+						</a>
+						<a className="lv-set-link" href="https://docs.fish.audio/" target="_blank" rel="noreferrer">
+							↗ Fish Audio 开发者文档（含公共音色库 API 检索方式）
+						</a>
+					</div>
+					<div className="lv-set-help">
+						音色详情页地址形如 <code>fish.audio/m/&#123;32位ID&#125;/</code>——把其中的 32 位十六进制 ID
+						填入 ② 的默认音色，即可在 HUD 音色选择器中选用（或直接挑选已有预设）。
+					</div>
+				</div>
+			</div>
 
-			{/* 模块 7：第三人称模式 */}
+			{/* 模块 9：第三人称模式 */}
 			<div className="lv-set-card">
 				<div className="lv-set-card-head">
 					<h3 className="lv-set-card-title">⑨ 第三人称模式（玩家化身）</h3>
@@ -995,44 +816,43 @@ export function Live2DSettingsSection() {
 				{models.length > 0 && (
 					<div className="lv-set-field">
 						<label className="lv-set-label">玩家角色模型 (playerModelSelection)</label>
-						<div style={{ display: "flex", gap: "6px", flexWrap: "wrap", marginTop: "6px" }}>
-							{models.map((m) => (
-								<button
-									key={m.name}
-									type="button"
-									title={m.name}
-									className={`lv-set-btn ${playerModelSel === m.name ? "lv-set-btn-primary" : ""}`}
-									onClick={() => {
-										setPlayerModelSel(m.name);
-										handleSave({ playerModelSelection: m.name });
-									}}
-								>
-									{m.label ?? m.name} {playerModelSel === m.name ? "✓" : ""}
-								</button>
-							))}
+						<Live2DModelSelector
+							models={models}
+							value={playerModelSel}
+							onChange={(modelName) => {
+								setPlayerModelSel(modelName);
+								handleSave({ playerModelSelection: modelName });
+							}}
+							allowEmpty={true}
+							emptyLabel="— 无独立模型（仅音色）—"
+							autoSelectFirstOnGroupChange={false}
+							layout="row"
+						/>
+						<div className="lv-set-help" style={{ marginTop: "6px" }}>
+							{playerModelSel ? `当前玩家模型：${playerModelSel}` : "不选则第三人称只有玩家音色（无独立模型）；双人同台时玩家居左、AI 居右。"}
 						</div>
-						<div className="lv-set-help">不选则第三人称只有玩家音色（无独立模型）；双人同台时玩家居左、AI 居右。</div>
 					</div>
 				)}
 				<div className="lv-set-field">
 					<label className="lv-set-label">玩家音色 (playerVoiceId)</label>
-					<div style={{ display: "flex", gap: "6px", flexWrap: "wrap", marginTop: "6px" }}>
-						{presets.map((p) => (
-							<button
-								key={p.id}
-								type="button"
-								className={`lv-set-btn ${playerVoiceId === p.voiceId ? "lv-set-btn-primary" : ""}`}
-								onClick={() => {
-									setPlayerVoiceId(p.voiceId);
-									handleSave({ playerVoiceId: p.voiceId });
-								}}
-							>
-								{p.label} {playerVoiceId === p.voiceId ? "✓" : ""}
-							</button>
-						))}
-					</div>
-					<div className="lv-set-help">
-						玩家化身的 Fish Audio 音色 ID；与 AI 音色相同时会缺少「两个角色」的听感，建议选不同音色。
+					<VoicePresetSelector
+						presets={presets}
+						value={playerVoiceId}
+						onChange={(p) => {
+							const next = p?.voiceId ?? "";
+							setPlayerVoiceId(next);
+							handleSave({ playerVoiceId: next });
+						}}
+						voiceLanguages={voiceLanguages}
+						layout="row"
+					/>
+					<div className="lv-set-help" style={{ marginTop: "6px" }}>
+						{playerVoiceId === voiceId && (
+							<span style={{ color: "var(--dsw-alias-state-warn-label, #f59e0b)", marginRight: "8px" }}>
+								⚠️ 玩家音色与 AI 音色相同，建议选不同音色更好分辨。
+							</span>
+						)}
+						玩家化身的 Fish Audio 音色；双人同台时用于区分玩家台词发音。
 					</div>
 				</div>
 				<div className="lv-set-field">
