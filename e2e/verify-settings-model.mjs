@@ -3,6 +3,8 @@
 import pw from '/root/projects/camoufox-mcp/node_modules/playwright-core/index.js';
 const { chromium } = pw;
 
+const E2E_URL = process.env.E2E_URL ?? 'http://127.0.0.1:4188/?token=e2etest';
+
 const browser = await chromium.launch({
   executablePath: '/root/.cache/ms-playwright/chromium-1243/chrome-linux-arm64/chrome',
   headless: true,
@@ -14,7 +16,7 @@ const errors = [];
 page.on('pageerror', (e) => errors.push(String(e).slice(0, 200)));
 page.on('console', (m) => { if (m.type() === 'error') errors.push(m.text().slice(0, 160)); });
 
-await page.goto('http://127.0.0.1:4188/?token=e2etest', { waitUntil: 'domcontentloaded', timeout: 30000 });
+await page.goto(E2E_URL, { waitUntil: 'domcontentloaded', timeout: 30000 });
 await page.waitForTimeout(3000);
 
 // Click the "Settings" trigger button, then look for the Live2D card.

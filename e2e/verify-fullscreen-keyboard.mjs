@@ -1,8 +1,9 @@
 import pw from '/root/projects/camoufox-mcp/node_modules/playwright-core/index.js';
 const { chromium } = pw;
 
-const BASE = 'http://127.0.0.1:4188';
-const TOKEN = 'e2etest';
+const E2E_URL = process.env.E2E_URL ?? 'http://127.0.0.1:4188/?token=e2etest';
+const BASE = new URL(E2E_URL).origin;
+const TOKEN = new URL(E2E_URL).searchParams.get('token') ?? 'e2etest';
 
 function check(label, cond, detail = '') {
   if (cond) {

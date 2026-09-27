@@ -2,7 +2,7 @@ node_modules/
 *.tsbuildinfo
 .worktrees/
 .mnemon/
-references/
+/references/
 generated/
 docs/research/
 tests/.behavior.mjs

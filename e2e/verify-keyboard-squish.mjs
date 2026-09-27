@@ -21,6 +21,7 @@ import { execSync } from 'node:child_process';
 import { writeFileSync } from 'node:fs';
 
 const { chromium } = pw;
+const E2E_URL = process.env.E2E_URL ?? 'http://127.0.0.1:4188/?token=e2etest';
 const browser = await chromium.launch({
   executablePath: '/root/.cache/ms-playwright/chromium-1243/chrome-linux-arm64/chrome',
   headless: true,
@@ -37,7 +38,7 @@ const check = (id, ok, note = '') => {
 };
 
 try {
-  await page.goto('http://127.0.0.1:4188/?token=e2etest', { waitUntil: 'domcontentloaded', timeout: 30000 });
+  await page.goto(E2E_URL, { waitUntil: 'domcontentloaded', timeout: 30000 });
   await sleep(8000);
   await page.evaluate(() => {
     const rows = [...document.querySelectorAll('[role="treeitem"]')].filter((r) =>

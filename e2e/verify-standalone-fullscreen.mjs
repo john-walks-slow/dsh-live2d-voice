@@ -13,6 +13,8 @@
 import pw from '/root/projects/camoufox-mcp/node_modules/playwright-core/index.js';
 
 const { chromium } = pw;
+const E2E_URL = process.env.E2E_URL ?? 'http://127.0.0.1:4188/?token=e2etest';
+const ORIGIN = new URL(E2E_URL).origin;
 const browser = await chromium.launch({
   executablePath: '/root/.cache/ms-playwright/chromium-1243/chrome-linux-arm64/chrome',
   headless: true,
@@ -39,14 +41,14 @@ try {
       }
     });
   });
-  await page.goto('http://127.0.0.1:4188/?token=e2etest', { waitUntil: 'domcontentloaded', timeout: 30000 });
+  await page.goto(E2E_URL, { waitUntil: 'domcontentloaded', timeout: 30000 });
   await sleep(9000);
   const sid = [...sessionIds][0];
   check('N1', !!sid, `捕获 session ${sid?.slice(0, 20) ?? 'none'}…（共 ${sessionIds.size} 个）`);
   if (!sid) throw new Error('no session captured');
 
   // N2: standalone 挂载
-  await page.goto(`http://127.0.0.1:4188/live2d-voice/app?session=${encodeURIComponent(sid)}`, { waitUntil: 'domcontentloaded', timeout: 30000 });
+  await page.goto(`${ORIGIN}/live2d-voice/app?session=${encodeURIComponent(sid)}`, { waitUntil: 'domcontentloaded', timeout: 30000 });
   await page.waitForSelector('.lv-root .lv-stage canvas', { timeout: 20000 });
   await sleep(3000);
   const s2 = await page.evaluate(() => ({
