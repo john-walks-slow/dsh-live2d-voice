@@ -11,9 +11,9 @@ import type { ConvViewProps } from "@deepseek-ai/dsh-client-ui-conversation/clie
 import { fetchConfig, fetchModelInfo, fetchModelCatalog, fetchModelSelection, openStream, postMessage, postPlayerLine, recognizeUtterance, saveConfig, selectModel, postCameraResult, startAsrUpload, type AsrUpload } from "./api.js";
 import { SpeechEngine } from "./engine.js";
 import { Hud } from "./hud.js";
-import { isCubismCoreLoaded, mountModel, createLive2DStage, DEFAULT_LOOK_PARAMS, type Live2DHandle, type LookParams, type SharedStage } from "./model.js";
+import { isCubismCoreLoaded, mountModel, createLive2DStage, DEFAULT_LOOK_PARAMS, compute3dTransform, type Live2DHandle, type LookParams, type SharedStage } from "./model.js";
 import { MicCapture, type MicState } from "./mic.js";
-import { GazeTracker, capturePhoto } from "./gaze.js";
+import { GazeTracker, capturePhoto, loadSavedCalibration, saveCalibration, type GazeCalibration } from "./gaze.js";
 import { TiltParallax } from "./tilt.js";
 import { SubtitleOverlay, SUBTITLE_TTL_MS, type SubtitleLine } from "./subtitle.js";
 import type { LanguageOption, ModelCatalog, ModelInfo, ModelSelection, Speaker, VoicePreset } from "./types.js";
@@ -153,6 +153,11 @@ export function Live2DView(props: ViewProps) {
 	const [interimText, setInterimText] = useState("");
 	const [eyeTracking, setEyeTracking] = useState(false);
 	const gazeRef = useRef<GazeTracker | null>(null);
+	const [gazeCalibration, setGazeCalibration] = useState<GazeCalibration>(
+		() => loadSavedCalibration() ?? { pitchOffset: -0.08, yawOffset: 0, yawGain: 1.3, pitchGain: 1.2 }
+	);
+	const gazeCalibrationRef = useRef<GazeCalibration>(gazeCalibration);
+	gazeCalibrationRef.current = gazeCalibration;
 	const [gyroParallax, setGyroParallax] = useState(false);
 	const tiltRef = useRef<TiltParallax | null>(null);
 	const camLookRef = useRef<{ dx: number; dy: number } | null>(null);
@@ -698,7 +703,7 @@ export function Live2DView(props: ViewProps) {
 					showToast(first ? "视线追踪启动中（首次需下载识别模型，请稍候）…" : "视线追踪启动中…");
 				} else if (typeof state === "object") showToast(`视线追踪不可用：${state.error}`);
 			},
-		});
+		}, gazeCalibrationRef.current);
 		gazeRef.current = tracker;
 		void tracker.start();
 		return () => {
@@ -734,19 +739,59 @@ export function Live2DView(props: ViewProps) {
 	}, [gyroParallax]);
 
 	// Look loop: while camera gaze or gyro tilt is active, drive the model
-	// every frame from the latest cam/gyro vectors.
+	// every frame from the latest cam/gyro vectors, and apply unified stage 3D transform.
 	useEffect(() => {
 		let raf = 0;
+		const camSm = { dx: 0, dy: 0 };
+		const gyroSm = { dx: 0, dy: 0 };
+		const LERP = 0.18;
+
 		const tick = () => {
 			const cam = gazeRef.current?.active ? camLookRef.current : null;
 			const gyro = tiltRef.current?.active ? gyroLookRef.current : null;
 			modelRef.current?.setLook(cam, gyro);
 			playerModelRef.current?.setLook(cam, gyro);
+
+			const targetCam = cam ?? { dx: 0, dy: 0 };
+			const targetGyro = gyro ?? { dx: 0, dy: 0 };
+			camSm.dx += (targetCam.dx - camSm.dx) * LERP;
+			camSm.dy += (targetCam.dy - camSm.dy) * LERP;
+			gyroSm.dx += (targetGyro.dx - gyroSm.dx) * LERP;
+			gyroSm.dy += (targetGyro.dy - gyroSm.dy) * LERP;
+
+			// Unified stage-level 3D perspective transform (single writer)
+			const stageCanvas = stageRef.current?.querySelector("canvas");
+			if (stageCanvas) {
+				const params = lookParamsRef.current;
+				const settling =
+					cam !== null ||
+					gyro !== null ||
+					Math.abs(camSm.dx) + Math.abs(camSm.dy) + Math.abs(gyroSm.dx) + Math.abs(gyroSm.dy) > 0.005;
+				const t3d = settling
+					? compute3dTransform(
+						params.transform3dCamGain,
+						params.transform3dGyroGain,
+						params.transform3dRange,
+						camSm,
+						gyroSm,
+						cam !== null || Math.abs(camSm.dx) + Math.abs(camSm.dy) > 0.002,
+						gyro !== null || Math.abs(gyroSm.dx) + Math.abs(gyroSm.dy) > 0.002,
+					)
+					: null;
+				if (t3d) {
+					if (stageCanvas.style.transform !== t3d.css) stageCanvas.style.transform = t3d.css;
+				} else if (stageCanvas.style.transform) {
+					stageCanvas.style.transform = "";
+				}
+			}
+
 			raf = window.requestAnimationFrame(tick);
 		};
 		raf = window.requestAnimationFrame(tick);
 		return () => {
 			window.cancelAnimationFrame(raf);
+			const stageCanvas = stageRef.current?.querySelector("canvas");
+			if (stageCanvas) stageCanvas.style.transform = "";
 		};
 	}, []);
 
@@ -1140,6 +1185,46 @@ export function Live2DView(props: ViewProps) {
 		} catch {
 			/* quota / private mode — persistence is best-effort */
 		}
+	};
+
+	const handleUpdateGazeCalibration = (patch: Partial<GazeCalibration>) => {
+		setGazeCalibration((prev) => {
+			const next = { ...prev, ...patch };
+			gazeRef.current?.setCalibration(next);
+			saveCalibration(next);
+			return next;
+		});
+	};
+
+	const handleCalibrateCenter = () => {
+		if (!gazeRef.current?.active) {
+			showToast("请先开启视线追踪");
+			return;
+		}
+		const calib = gazeRef.current.calibrateCenter();
+		if (calib) {
+			setGazeCalibration(calib);
+			showToast("已将当前视线设为正中");
+		} else {
+			showToast("未检测到面部，请面对摄像头重试");
+		}
+	};
+
+	const handleResetCalibrationCenter = () => {
+		if (gazeRef.current) {
+			const calib = gazeRef.current.resetCenter();
+			setGazeCalibration(calib);
+		} else {
+			const calib: GazeCalibration = {
+				...gazeCalibration,
+				yawOffset: 0,
+				pitchOffset: -0.08,
+				matrix: undefined,
+			};
+			setGazeCalibration(calib);
+			saveCalibration(calib);
+		}
+		showToast("视线中心已重置");
 	};
 
 
@@ -1568,6 +1653,10 @@ export function Live2DView(props: ViewProps) {
 				}
 				eyeTracking={eyeTracking}
 				onToggleEyeTracking={() => void toggleEyeTracking()}
+				gazeCalibration={gazeCalibration}
+				onUpdateCalibration={handleUpdateGazeCalibration}
+				onCalibrateCenter={handleCalibrateCenter}
+				onResetCalibrationCenter={handleResetCalibrationCenter}
 				gyroParallax={gyroParallax}
 				onToggleGyroParallax={() => void toggleGyroParallax()}
 				lookParams={lookParams}

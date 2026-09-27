@@ -9,6 +9,7 @@ import type { MicState } from "./mic.js";
 import type { LanguageOption, VoicePreset } from "./types.js";
 import type { ModelCatalog, ModelProviderGroup, ModelSelection } from "./types.js";
 import type { LookParams } from "./model.js";
+import type { GazeCalibration } from "./gaze.js";
 import { LOOK_PRESETS } from "./model.js";
 import {
 	IconMic,
@@ -95,6 +96,10 @@ export interface HudProps {
 	onToggleMic: () => void;
 	onToggleEyeTracking: () => void;
 	onToggleGyroParallax: () => void;
+	gazeCalibration?: GazeCalibration;
+	onUpdateCalibration?: (patch: Partial<GazeCalibration>) => void;
+	onCalibrateCenter?: () => void;
+	onResetCalibrationCenter?: () => void;
 	onStartCalibration?: () => void;
 	onResetCalibration?: () => void;
 	onPickVoice: (preset: VoicePreset) => void;
@@ -133,9 +138,25 @@ const LOOK_SLIDER_GROUPS: ReadonlyArray<{
 	{
 		group: "整体幅度",
 		sliders: [
-			{ key: "angleRange", label: "最大转头角度", min: 5, max: 40, step: 1, tip: "转头角度上限（度），与转头增益相乘" },
+			{ key: "angleRange", label: "最大转头角度", min: 2, max: 40, step: 1, tip: "转头角度上限（度），与转头增益相乘" },
 			{ key: "panRange", label: "最大位移", min: 0.02, max: 0.3, step: 0.01, tip: "平移占容器宽/高的比例上限，与位移增益相乘" },
 			{ key: "rollRange", label: "最大侧倾", min: 0, max: 20, step: 1, tip: "侧倾角上限（度），与旋转增益相乘" },
+		],
+	},
+	{
+		group: "3D 空间变换",
+		sliders: [
+			{ key: "transform3dRange", label: "3D透视角度", min: 0, max: 30, step: 1, tip: "舞台整体 3D CSS 透视旋转最大角度（度）" },
+			{ key: "transform3dCamGain", label: "视线 3D 增益", min: -2, max: 2, step: 0.05, tip: "视线驱动 3D 透视变换的权重：负值 = 反向透视" },
+			{ key: "transform3dGyroGain", label: "陀螺仪 3D 增益", min: -2, max: 2, step: 0.05, tip: "陀螺仪驱动 3D 透视变换的权重：负值 = 反向透视" },
+		],
+	},
+	{
+		group: "扩展可动性",
+		sliders: [
+			{ key: "bodyZGain", label: "身体侧倾联动", min: -1, max: 1, step: 0.05, tip: "头部侧倾时身体 Z 轴旋转 (ParamBodyAngleZ) 的联动增益" },
+			{ key: "browGain", label: "眉毛上下联动", min: -1, max: 1, step: 0.05, tip: "视线垂直看上下时眉毛 (ParamBrowLY/RY) 的微动联动增益" },
+			{ key: "eyeBallFormGain", label: "眼球形变联动", min: -1, max: 1, step: 0.05, tip: "视线移动时眼球形态 (ParamEyeBallForm) 的微动增益" },
 		],
 	},
 ];
@@ -157,14 +178,57 @@ const SIGNED_LOOK_KEYS: ReadonlySet<keyof LookParams> = new Set([
 	"gyroAngleGain",
 	"gyroRollGain",
 	"gyroPanGain",
+	"transform3dCamGain",
+	"transform3dGyroGain",
+	"bodyZGain",
+	"browGain",
+	"eyeBallFormGain",
 ]);
 
 /** Compact display for slider values (0.20 → 0.2, 22 → 22°, +0.55). */
 function formatLookValue(key: keyof LookParams, value: number): string {
-	if (key === "angleRange" || key === "rollRange") return `${value}°`;
+	if (key === "angleRange" || key === "rollRange" || key === "transform3dRange") return `${Math.round(value)}°`;
 	const rounded = Math.round(value * 100) / 100;
 	if (SIGNED_LOOK_KEYS.has(key)) return rounded > 0 ? `+${rounded}` : String(rounded);
 	return String(rounded);
+}
+
+/** Direct number input allowing keyboard typing (including minus signs and decimals) without getting prematurely wiped. */
+function LookParamInput(props: {
+	value: number;
+	step: number;
+	disabled?: boolean;
+	title?: string;
+	onChange: (val: number) => void;
+}) {
+	const [text, setText] = useState<string | null>(null);
+	const displayed = text !== null ? text : String(Math.round(props.value * 100) / 100);
+
+	return (
+		<input
+			type="number"
+			className="lv-slider-num-input"
+			step={props.step}
+			disabled={props.disabled}
+			title={props.title}
+			value={displayed}
+			onFocus={() => setText(String(props.value))}
+			onChange={(e) => {
+				const next = e.target.value;
+				setText(next);
+				const parsed = parseFloat(next);
+				if (!isNaN(parsed)) props.onChange(parsed);
+			}}
+			onBlur={() => {
+				setText(null);
+			}}
+			onKeyDown={(e) => {
+				if (e.key === "Enter") {
+					(e.target as HTMLInputElement).blur();
+				}
+			}}
+		/>
+	);
 }
 
 export function Hud(props: HudProps) {
@@ -541,6 +605,70 @@ export function Hud(props: HudProps) {
 								<span className="lv-switch-knob" />
 							</button>
 						</div>
+						{props.eyeTracking && (
+							<div className="lv-gaze-center-box">
+								<div className="lv-gaze-center-actions">
+									<button
+										type="button"
+										className="lv-gaze-btn"
+										title="以当前面部位置作为正中央 (0, 0)"
+										onClick={props.onCalibrateCenter}
+									>
+										设当前为中心
+									</button>
+									<button
+										type="button"
+										className="lv-gaze-btn lv-gaze-btn-subtle"
+										title="重置中心偏移为默认值"
+										onClick={props.onResetCalibrationCenter}
+									>
+										重置中心
+									</button>
+								</div>
+								<label className="lv-slider-row" style={{ marginTop: "4px" }}>
+									<span className="lv-slider-label">水平中心 X</span>
+									<input
+										type="range"
+										className="lv-signed"
+										min={-0.4}
+										max={0.4}
+										step={0.01}
+										value={Math.max(-0.4, Math.min(0.4, props.gazeCalibration?.yawOffset ?? 0))}
+										onChange={(e) => props.onUpdateCalibration?.({ yawOffset: Number(e.target.value), matrix: undefined })}
+									/>
+									<LookParamInput
+										step={0.01}
+										value={props.gazeCalibration?.yawOffset ?? 0}
+										title="手动输入水平中心偏移数值"
+										onChange={(val) => props.onUpdateCalibration?.({ yawOffset: val, matrix: undefined })}
+									/>
+									<span className="lv-slider-value">
+										{((props.gazeCalibration?.yawOffset ?? 0) > 0 ? "+" : "") + Math.round((props.gazeCalibration?.yawOffset ?? 0) * 100) / 100}
+									</span>
+								</label>
+								<label className="lv-slider-row">
+									<span className="lv-slider-label">垂直中心 Y</span>
+									<input
+										type="range"
+										className="lv-signed"
+										min={-0.4}
+										max={0.4}
+										step={0.01}
+										value={Math.max(-0.4, Math.min(0.4, props.gazeCalibration?.pitchOffset ?? -0.08))}
+										onChange={(e) => props.onUpdateCalibration?.({ pitchOffset: Number(e.target.value), matrix: undefined })}
+									/>
+									<LookParamInput
+										step={0.01}
+										value={props.gazeCalibration?.pitchOffset ?? -0.08}
+										title="手动输入垂直中心偏移数值（摄像头在上方时为负值）"
+										onChange={(val) => props.onUpdateCalibration?.({ pitchOffset: val, matrix: undefined })}
+									/>
+									<span className="lv-slider-value">
+										{((props.gazeCalibration?.pitchOffset ?? -0.08) > 0 ? "+" : "") + Math.round((props.gazeCalibration?.pitchOffset ?? -0.08) * 100) / 100}
+									</span>
+								</label>
+							</div>
+						)}
 						<div className="lv-switch-row">
 							<span>陀螺仪 3D 视差</span>
 							<button
@@ -590,8 +718,9 @@ export function Hud(props: HudProps) {
 										<div className="lv-slider-group-title">{group.group}</div>
 																				{group.sliders.map((slider) => {
 											// Third-person stage: characters face each other and camera/gyro only
-											// drive position parallax, so the angle + roll gains are forced to 0 —
+											// drive position parallax, so the head angle + roll gains are forced to 0 —
 											// disable the sliders instead of showing values that silently do nothing.
+											// (3D stage perspective transform stays active like position parallax).
 											const stageAngleOff =
 												props.thirdPerson &&
 												Boolean(props.currentPlayerModel) &&
@@ -609,12 +738,19 @@ export function Hud(props: HudProps) {
 														min={slider.min}
 														max={slider.max}
 														step={slider.step}
-														value={props.lookParams[slider.key]}
+														value={Math.max(slider.min, Math.min(slider.max, props.lookParams[slider.key]))}
 														disabled={stageAngleOff}
 														title={stageAngleOff ? "第三人称对视模式下转头/旋转增益固定为 0（视线输入只做位置视差）" : slider.tip}
 														onChange={(event) =>
 															props.onLookParamsChange({ [slider.key]: Number(event.target.value) })
 														}
+													/>
+													<LookParamInput
+														step={slider.step}
+														value={props.lookParams[slider.key]}
+														disabled={stageAngleOff}
+														title="手动输入数值（支持超出范围实验）"
+														onChange={(val) => props.onLookParamsChange({ [slider.key]: val })}
 													/>
 													<span className="lv-slider-value">
 														{formatLookValue(slider.key, props.lookParams[slider.key])}

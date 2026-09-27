@@ -20,47 +20,17 @@ import { Application } from "pixi.js";
 import { Live2DModel as Live2DModelCubism4 } from "pixi-live2d-display-lipsyncpatch/cubism4";
 import { Live2DModel as Live2DModelCubism2 } from "pixi-live2d-display-lipsyncpatch/cubism2";
 import { logger } from "./logger.js";
-import { mixLookChannel, type LookVector } from "./look-math.js";
+import {
+	mixLookChannel,
+	compute3dTransform,
+	type LookVector,
+	type LookParams,
+	DEFAULT_LOOK_PARAMS,
+	LOOK_PRESETS,
+} from "./look-math.js";
 
-export interface LookParams {
-	camPanGain: number;
-	camAngleGain: number;
-	/** Head roll (ParamAngleZ, the 3D tilt) gain from the camera. Signed: negative mirrors the tilt. */
-	camRollGain: number;
-	gyroPanGain: number;
-	gyroAngleGain: number;
-	gyroRollGain: number;
-	panRange: number;
-	angleRange: number;
-	rollRange: number;
-}
-
-export const DEFAULT_LOOK_PARAMS: LookParams = {
-	camPanGain: 0.20,
-	camAngleGain: 1.0,
-	camRollGain: 1.0,
-	gyroPanGain: 0.45,
-	gyroAngleGain: 0.55,
-	gyroRollGain: 1.0,
-	panRange: 0.10,
-	angleRange: 22,
-	rollRange: 6,
-};
-
-/** One-tap look presets for the settings popover. */
-export const LOOK_PRESETS: ReadonlyArray<{ id: string; label: string; params: LookParams }> = [
-	{
-		id: "subtle",
-		label: "柔和",
-		params: { camPanGain: 0.12, camAngleGain: 0.6, camRollGain: 0.6, gyroPanGain: 0.25, gyroAngleGain: 0.35, gyroRollGain: 0.6, panRange: 0.06, angleRange: 14, rollRange: 4 },
-	},
-	{ id: "standard", label: "标准", params: { ...DEFAULT_LOOK_PARAMS } },
-	{
-		id: "vivid",
-		label: "灵敏",
-		params: { camPanGain: 0.3, camAngleGain: 1.4, camRollGain: 1.4, gyroPanGain: 0.6, gyroAngleGain: 0.8, gyroRollGain: 1.4, panRange: 0.16, angleRange: 30, rollRange: 10 },
-	},
-];
+export type { LookParams };
+export { DEFAULT_LOOK_PARAMS, LOOK_PRESETS, compute3dTransform };
 
 export interface Live2DHandle {
 	setExpression(expression: number | string): void;
@@ -339,8 +309,32 @@ export async function mountModel(
 	// cores are case-sensitive, so keep format-specific fallbacks.
 	const MOUTH_FALLBACK = kind === "moc2" ? "PARAM_MOUTH_OPEN_Y" : "ParamMouthOpenY";
 	const LOOK_IDS = kind === "moc2"
-		? { angleX: "PARAM_ANGLE_X", angleY: "PARAM_ANGLE_Y", angleZ: "PARAM_ANGLE_Z", bodyX: "PARAM_BODY_ANGLE_X", bodyY: "PARAM_BODY_ANGLE_Y", eyeX: "PARAM_EYE_BALL_X", eyeY: "PARAM_EYE_BALL_Y" }
-		: { angleX: "ParamAngleX", angleY: "ParamAngleY", angleZ: "ParamAngleZ", bodyX: "ParamBodyAngleX", bodyY: "ParamBodyAngleY", eyeX: "ParamEyeBallX", eyeY: "ParamEyeBallY" };
+		? {
+			angleX: "PARAM_ANGLE_X",
+			angleY: "PARAM_ANGLE_Y",
+			angleZ: "PARAM_ANGLE_Z",
+			bodyX: "PARAM_BODY_ANGLE_X",
+			bodyY: "PARAM_BODY_ANGLE_Y",
+			bodyZ: "PARAM_BODY_ANGLE_Z",
+			eyeX: "PARAM_EYE_BALL_X",
+			eyeY: "PARAM_EYE_BALL_Y",
+			eyeBallForm: "PARAM_EYE_BALL_FORM",
+			browLY: "PARAM_BROW_L_Y",
+			browRY: "PARAM_BROW_R_Y",
+		}
+		: {
+			angleX: "ParamAngleX",
+			angleY: "ParamAngleY",
+			angleZ: "ParamAngleZ",
+			bodyX: "ParamBodyAngleX",
+			bodyY: "ParamBodyAngleY",
+			bodyZ: "ParamBodyAngleZ",
+			eyeX: "ParamEyeBallX",
+			eyeY: "ParamEyeBallY",
+			eyeBallForm: "ParamEyeBallForm",
+			browLY: "ParamBrowLY",
+			browRY: "ParamBrowRY",
+		};
 	const setParam = (id: string, value: number) => {
 		const core = internal.coreModel;
 		if (typeof core.setParamFloat === "function") core.setParamFloat(id, value);
@@ -365,15 +359,30 @@ export async function mountModel(
 			const ar = lookParams.angleRange;
 			const rr = lookParams.rollRange;
 			const bias = stageLayout.faceBiasX;
+
+			const bzGain = lookParams.bodyZGain ?? 0.4;
+			const browGain = lookParams.browGain ?? 0.25;
+			const formGain = lookParams.eyeBallFormGain ?? 0;
+			// Third-person base face angle (bias ±0.6 → ±13.2°) stays decoupled
+			// from angleRange so smaller dynamic head turns don't flatten the stage
+			const faceBiasAngle = stageLayout.faceBiasX * 22;
+
 			const angles: Array<[string, number]> = [
-				[LOOK_IDS.angleX, (bias + lx) * ar],
+				[LOOK_IDS.angleX, faceBiasAngle + lx * ar],
 				[LOOK_IDS.angleY, ly * ar],
 				[LOOK_IDS.angleZ, lz * rr],
-				[LOOK_IDS.bodyX, (bias + lx) * ar * 0.5],
+				[LOOK_IDS.bodyX, (faceBiasAngle + lx * ar) * 0.5],
 				[LOOK_IDS.bodyY, ly * ar * 0.5],
-				[LOOK_IDS.eyeX, Math.max(-1, Math.min(1, bias + lx))],
+				[LOOK_IDS.bodyZ, lz * rr * bzGain],
+				[LOOK_IDS.eyeX, Math.max(-1, Math.min(1, stageLayout.faceBiasX + lx))],
 				[LOOK_IDS.eyeY, Math.max(-1, Math.min(1, ly))],
+				[LOOK_IDS.browLY, Math.max(-1, Math.min(1, ly * browGain))],
+				[LOOK_IDS.browRY, Math.max(-1, Math.min(1, ly * browGain))],
 			];
+			if (formGain !== 0) {
+				// Pure dynamic look shift — no static stage bias so avatars don't stay deformed
+				angles.push([LOOK_IDS.eyeBallForm, Math.max(-1, Math.min(1, lx * formGain))]);
+			}
 			for (const [id, v] of angles) setParam(id, v);
 			applyTransform();
 		}

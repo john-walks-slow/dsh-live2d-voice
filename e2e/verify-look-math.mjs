@@ -8,7 +8,7 @@
  * opposed sources cancel the denominator (0/0 → NaN) and a single negative
  * source flips the mix of the other one.
  */
-import { mixLookChannel } from '../src/client/look-math.ts';
+import { mixLookChannel, DEFAULT_LOOK_PARAMS, LOOK_PRESETS, compute3dTransform } from '../src/client/look-math.ts';
 
 const results = [];
 const check = (id, ok, note = '') => { results.push({ id, ok }); console.log(`${ok ? '✓' : '✗'} ${id} ${note}`); };
@@ -47,6 +47,28 @@ check('zero gains -> 0', close(mixLookChannel(0, 0, CAM, GYRO, 'dy', true, true)
 
 // 7. dy channel is independent of dx.
 check('dy channel reads dy', close(mixLookChannel(1, 1, CAM, GYRO, 'dy', true, true), (CAM.dy + GYRO.dy) / 2));
+
+// 8. Head turn angleRange is significantly reduced (< 12°) for natural subtle gaze.
+check('default angleRange <= 10 (reduced head turn)', DEFAULT_LOOK_PARAMS.angleRange <= 10 && DEFAULT_LOOK_PARAMS.angleRange >= 5, `angleRange=${DEFAULT_LOOK_PARAMS.angleRange}`);
+
+// 9. 3D transform & mobility parameters exist in DEFAULT_LOOK_PARAMS and presets.
+check('3D transform gains exist', Number.isFinite(DEFAULT_LOOK_PARAMS.transform3dCamGain) && Number.isFinite(DEFAULT_LOOK_PARAMS.transform3dGyroGain) && Number.isFinite(DEFAULT_LOOK_PARAMS.transform3dRange));
+check('extended mobility gains exist (bodyZ, brow, eyeball form)', Number.isFinite(DEFAULT_LOOK_PARAMS.bodyZGain) && Number.isFinite(DEFAULT_LOOK_PARAMS.browGain) && Number.isFinite(DEFAULT_LOOK_PARAMS.eyeBallFormGain));
+check('presets maintain valid ranges', LOOK_PRESETS.every((p) => p.params.angleRange <= 16 && p.params.transform3dRange > 0));
+
+// 10. Center calibration math: offsets shift raw coords to 0.5 neutral center.
+const rawX = 0.42;
+const rawY = 0.65;
+const yawOffset = 0.5 - rawX; // 0.08
+const pitchOffset = 0.5 - rawY; // -0.15
+const calibratedScreenX = (rawX - 0.5 + yawOffset) * 1.3 + 0.5;
+const calibratedScreenY = (rawY - 0.5 + pitchOffset) * 1.2 + 0.5;
+check('center calibration math maps current point to (0.5, 0.5)', close(calibratedScreenX, 0.5) && close(calibratedScreenY, 0.5));
+
+// 11. compute3dTransform returns correct perspective and angles
+const t3d = compute3dTransform(0.5, 0.8, 6, CAM, GYRO, true, true);
+check('compute3dTransform generates valid css and angles', t3d !== null && t3d.css.includes('perspective(1000px)') && Number.isFinite(t3d.yaw) && Number.isFinite(t3d.pitch));
+check('compute3dTransform returns null when dead or range=0', compute3dTransform(0.5, 0.8, 0, CAM, GYRO, true, true) === null && compute3dTransform(0.5, 0.8, 6, CAM, GYRO, false, false) === null);
 
 const failed = results.filter((r) => !r.ok);
 console.log(`\n${results.length - failed.length}/${results.length} passed`);

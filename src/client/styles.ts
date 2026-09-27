@@ -683,12 +683,79 @@ body[data-live2d-active="true"] [class*="taskBoard"] {
 
 .lv-slider-row {
 	display: grid;
-	grid-template-columns: 88px 1fr 40px;
+	grid-template-columns: 80px 1fr 40px 32px;
 	align-items: center;
-	gap: 8px;
+	gap: 5px;
 	padding: 3px 0;
 	font-size: 12px;
 	color: var(--lv-fg);
+}
+
+.lv-slider-num-input {
+	width: 40px;
+	height: 19px;
+	padding: 0 2px;
+	font-size: 10px;
+	font-variant-numeric: tabular-nums;
+	color: var(--lv-fg);
+	background: rgba(255, 255, 255, 0.08);
+	border: 1px solid var(--lv-border-soft);
+	border-radius: 4px;
+	text-align: right;
+	box-sizing: border-box;
+}
+
+.lv-slider-num-input:focus {
+	outline: none;
+	border-color: var(--lv-accent);
+	background: rgba(255, 255, 255, 0.16);
+}
+
+.lv-gaze-center-box {
+	margin: 6px 0;
+	padding: 6px 8px;
+	border-radius: 8px;
+	background: rgba(255, 255, 255, 0.04);
+	border: 1px solid var(--lv-border-soft);
+}
+
+.lv-gaze-center-actions {
+	display: flex;
+	gap: 6px;
+	margin-bottom: 4px;
+}
+
+.lv-gaze-btn {
+	flex: 1;
+	height: 24px;
+	padding: 0 6px;
+	font-size: 11px;
+	font-weight: 500;
+	color: var(--lv-fg);
+	background: rgba(255, 255, 255, 0.08);
+	border: 1px solid var(--lv-border-soft);
+	border-radius: 6px;
+	cursor: pointer;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	transition: background 0.15s, border-color 0.15s;
+}
+
+.lv-gaze-btn:hover {
+	background: rgba(255, 255, 255, 0.15);
+	border-color: var(--lv-accent);
+}
+
+.lv-gaze-btn-subtle {
+	color: var(--lv-fg-3);
+	background: transparent;
+	border-color: transparent;
+}
+
+.lv-gaze-btn-subtle:hover {
+	color: var(--lv-fg-2);
+	background: rgba(255, 255, 255, 0.06);
 }
 
 .lv-slider-label {

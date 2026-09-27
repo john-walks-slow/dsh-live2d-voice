@@ -38,6 +38,8 @@ export interface AffineGazeMatrix {
 export interface GazeCalibration {
 	/** Vertical pitch offset (-0.5 .. 0.5), positive shifts gaze upward (counteracts top camera angle). */
 	pitchOffset?: number;
+	/** Horizontal yaw offset (-0.5 .. 0.5), positive shifts gaze rightward. */
+	yawOffset?: number;
 	/** Horizontal sensitivity multiplier (0.5 .. 2.5). */
 	yawGain?: number;
 	/** Vertical sensitivity multiplier (0.5 .. 2.5). */
@@ -220,11 +222,14 @@ export class GazeTracker {
 	private events: GazeEvents;
 	private calibration: GazeCalibration;
 	private running = false;
+	private lastRawX: number | null = null;
+	private lastRawY: number | null = null;
 
 	constructor(events: GazeEvents, calibration: GazeCalibration = {}) {
 		this.events = events;
 		this.calibration = {
 			pitchOffset: -0.08, // default shift: phone camera is at top, looking down slightly
+			yawOffset: 0,
 			yawGain: 1.3,
 			pitchGain: 1.2,
 			...calibration,
@@ -233,6 +238,42 @@ export class GazeTracker {
 
 	setCalibration(calibration: GazeCalibration): void {
 		this.calibration = { ...this.calibration, ...calibration };
+	}
+
+	getCalibration(): GazeCalibration {
+		return { ...this.calibration };
+	}
+
+	/**
+	 * Automatically calibrate the center so the current detected gaze lands at (0.5, 0.5).
+	 * Returns the updated calibration, or null if no face is currently detected.
+	 */
+	calibrateCenter(): GazeCalibration | null {
+		if (this.lastRawX === null || this.lastRawY === null) return null;
+		const yawOffset = Math.round((0.5 - this.lastRawX) * 1000) / 1000;
+		const pitchOffset = Math.round((0.5 - this.lastRawY) * 1000) / 1000;
+		const next: GazeCalibration = {
+			...this.calibration,
+			yawOffset,
+			pitchOffset,
+			matrix: undefined,
+		};
+		this.calibration = next;
+		saveCalibration(next);
+		return next;
+	}
+
+	/** Reset the center offsets to defaults. */
+	resetCenter(): GazeCalibration {
+		const next: GazeCalibration = {
+			...this.calibration,
+			yawOffset: 0,
+			pitchOffset: -0.08,
+			matrix: undefined,
+		};
+		this.calibration = next;
+		saveCalibration(next);
+		return next;
 	}
 
 	get active(): boolean {
@@ -308,6 +349,8 @@ export class GazeTracker {
 						this.lostSince = 0;
 						const rawX = 1 - nose.x;
 						const rawY = nose.y;
+						this.lastRawX = rawX;
+						this.lastRawY = rawY;
 
 						// Feed raw normalized coordinates to calibration listener if listening
 						this.events.onRawLandmark?.(rawX, rawY);
@@ -320,9 +363,11 @@ export class GazeTracker {
 							screenX = m.a * rawX + m.b * rawY + m.c;
 							screenY = m.d * rawX + m.e * rawY + m.f;
 						} else {
-							// Default prior: pitch offset & gains
-							screenX = (rawX - 0.5) * (this.calibration.yawGain ?? 1.3) + 0.5;
-							screenY = (rawY - 0.5 + (this.calibration.pitchOffset ?? -0.08)) * (this.calibration.pitchGain ?? 1.2) + 0.5;
+							// Default prior: pitch & yaw offset & gains
+							const yawOff = this.calibration.yawOffset ?? 0;
+							const pitchOff = this.calibration.pitchOffset ?? -0.08;
+							screenX = (rawX - 0.5 + yawOff) * (this.calibration.yawGain ?? 1.3) + 0.5;
+							screenY = (rawY - 0.5 + pitchOff) * (this.calibration.pitchGain ?? 1.2) + 0.5;
 						}
 
 						this.events.onGaze(
