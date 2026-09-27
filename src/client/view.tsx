@@ -11,12 +11,12 @@ import type { ConvViewProps } from "@deepseek-ai/dsh-client-ui-conversation/clie
 import { fetchConfig, fetchModelInfo, fetchModelCatalog, fetchModelSelection, openStream, postMessage, postPlayerLine, recognizeUtterance, saveConfig, selectModel, postCameraResult, startAsrUpload, type AsrUpload } from "./api.js";
 import { SpeechEngine } from "./engine.js";
 import { Hud } from "./hud.js";
-import { isCubismCoreLoaded, mountModel, createLive2DStage, DEFAULT_LOOK_PARAMS, compute3dTransform, type Live2DHandle, type LookParams, type SharedStage } from "./model.js";
+import { isCubismCoreLoaded, mountModel, createLive2DStage, DEFAULT_LOOK_PARAMS, compute3dTransform, type Live2DHandle, type LookParams, type SharedStage, type StageWindow } from "./model.js";
 import { MicCapture, type MicState } from "./mic.js";
 import { GazeTracker, capturePhoto, loadSavedCalibration, saveCalibration, type GazeCalibration } from "./gaze.js";
 import { TiltParallax } from "./tilt.js";
 import { SubtitleOverlay, SUBTITLE_TTL_MS, type SubtitleLine } from "./subtitle.js";
-import type { LanguageOption, ModelCatalog, ModelInfo, ModelSelection, Speaker, VoicePreset } from "./types.js";
+import type { LanguageOption, LiveMode, ModelCatalog, ModelInfo, ModelSelection, Speaker, VoicePreset } from "./types.js";
 import { LevelMeter } from "./level-meter.js";
 import { IconSpinner, IconSend } from "./icons.js";
 import { logger } from "./logger.js";
@@ -30,6 +30,54 @@ interface SentinelLike {
 }
 
 const HUD_IDLE_FADE_MS = 2500;
+
+/** Video-call PiP window geometry: width fraction of the stage, w/h ratio, corner radius px, edge margin px. */
+const PIP_WIDTH_FRACTION = 0.26;
+const PIP_ASPECT_RATIO = 3 / 4;
+const PIP_RADIUS_PX = 16;
+const PIP_MARGIN_PX = 12;
+
+/** Build the PiP window spec for the player model from a fractional position. */
+const pipWindowOf = (pos: { x: number; y: number }): StageWindow => ({
+	x: pos.x,
+	y: pos.y,
+	w: PIP_WIDTH_FRACTION,
+	aspectRatio: PIP_ASPECT_RATIO,
+	radius: PIP_RADIUS_PX,
+});
+
+/** Clamp a PiP top-left (stage fractions) so the whole window stays on-screen. */
+const clampPipPos = (pos: { x: number; y: number }, stageW: number, stageH: number) => {
+	const winH = (stageW * PIP_WIDTH_FRACTION) / PIP_ASPECT_RATIO;
+	return {
+		x: Math.min(Math.max(pos.x, 0), 1 - PIP_WIDTH_FRACTION),
+		y: Math.min(Math.max(pos.y, 0), 1 - winH / stageH),
+	};
+};
+
+/** Snap to the nearest on-screen corner (inset by the edge margin). */
+const snapPipPos = (pos: { x: number; y: number }, stageW: number, stageH: number) => {
+	const w = PIP_WIDTH_FRACTION;
+	const h = (stageW * PIP_WIDTH_FRACTION) / PIP_ASPECT_RATIO / stageH;
+	const mx = PIP_MARGIN_PX / stageW;
+	const my = PIP_MARGIN_PX / stageH;
+	const corners = [
+		{ x: mx, y: my },
+		{ x: 1 - w - mx, y: my },
+		{ x: mx, y: 1 - h - my },
+		{ x: 1 - w - mx, y: 1 - h - my },
+	];
+	let best = corners[0];
+	let bestDist = Infinity;
+	for (const corner of corners) {
+		const dist = (corner.x - pos.x) ** 2 + (corner.y - pos.y) ** 2;
+		if (dist < bestDist) {
+			best = corner;
+			bestDist = dist;
+		}
+	}
+	return clampPipPos(best, stageW, stageH);
+};
 
 /**
  * Submit one user line through the host. The resolved result may carry
@@ -130,13 +178,28 @@ export function Live2DView(props: ViewProps) {
 	 */
 	const activeAssistantUtterance = useRef("");
 	const activePlayerUtterance = useRef("");
-	// Third-person mode state (drives submitText routing + HUD toggles).
-	const [thirdPerson, setThirdPerson] = useState(false);
+	// Live stage mode (drives submitText routing, stage layout + HUD).
+	const [liveMode, setLiveMode] = useState<LiveMode>("first");
 	const [playerVoiceId, setPlayerVoiceId] = useState("");
 	const [playerPolish, setPlayerPolish] = useState(true);
-	/** thirdPerson at submit time must match what the host believes. */
-	const thirdPersonRef = useRef(false);
-	thirdPersonRef.current = thirdPerson;
+	/** liveMode at submit time must match what the host believes. */
+	const liveModeRef = useRef<LiveMode>("first");
+	liveModeRef.current = liveMode;
+
+	// ---- Video-call self-view PiP (call mode) ----
+	/** Window top-left as fractions of the stage (size is a fixed fraction). */
+	const [pipPos, setPipPos] = useState({ x: 0.97 - PIP_WIDTH_FRACTION, y: 0.03 });
+	const pipPosRef = useRef(pipPos);
+	pipPosRef.current = pipPos;
+	const [pipDragging, setPipDragging] = useState(false);
+	/** Pointer grab offset inside the PiP window (px), held while dragging. */
+	const pipGrabRef = useRef({ dx: 0, dy: 0 });
+	/** Mic RMS (0..1, already ×6 amplified) feeding the PiP avatar's mouth. */
+	const micMouthRef = useRef(0);
+	/** Which role the mounted player model plays: stage duo / call window. */
+	const playerViewRef = useRef<"stage" | "window" | null>(null);
+	/** True while the stage runs the dual-avatar (third person) layout. */
+	const dualRef = useRef(false);
 
 	// Voice input (continuous listening).
 	const [micState, setMicState] = useState<MicState>("idle");
@@ -312,7 +375,7 @@ export function Live2DView(props: ViewProps) {
 				setEyeTracking(config.eyeTracking);
 				setGyroParallax(config.gyroParallax);
 				setIdleInterval(typeof config.idleInterval === "number" ? config.idleInterval : 20);
-				setThirdPerson(config.thirdPerson === true);
+				setLiveMode(config.liveMode === "third" || config.liveMode === "call" ? config.liveMode : "first");
 				setPlayerVoiceId(config.playerVoiceId || "");
 				setPlayerPolish(config.playerPolish !== false);
 			})
@@ -401,11 +464,16 @@ export function Live2DView(props: ViewProps) {
 	const PLAYER_FACE_BIAS = 0.6;
 	// In third-person the avatars must not turn toward the user: zero the
 	// head/body angle and roll gains and keep only the positional parallax so
-	// camera/gyro still add depth. Single-model keeps the user's params.
+	// camera/gyro still add depth. Single-model (first / call) keeps the
+	// user's params — the character looks at you.
 	const stageLookParams = (): LookParams =>
-		modelInfo?.thirdPerson === true && Boolean(modelInfo?.player?.url)
+		modelInfo?.liveMode === "third" && Boolean(modelInfo?.player?.url)
 			? { ...lookParamsRef.current, camAngleGain: 0, gyroAngleGain: 0, camRollGain: 0, gyroRollGain: 0 }
 			: lookParamsRef.current;
+	// The call-mode PiP avatar MIMICS the user: keep the full head/roll gains
+	// so it visibly follows your movement, but zero the positional pan so the
+	// model never slides out of its mask.
+	const pipLookParams = (): LookParams => ({ ...lookParamsRef.current, camPanGain: 0, gyroPanGain: 0 });
 
 	// The stage's shared Pixi application — created once per view (both
 	// avatars mount into it; see sharedStageRef). Destroyed on unmount.
@@ -439,7 +507,9 @@ export function Live2DView(props: ViewProps) {
 			return;
 		}
 		// Third-person: two avatars share the stage — this one shifts right.
-		const dual = modelInfo?.thirdPerson === true && Boolean(modelInfo?.player?.url);
+		// (Call mode keeps the AI centered like first-person: the "remote
+		// party" of the video call.)
+		const dual = modelInfo?.liveMode === "third" && Boolean(modelInfo?.player?.url);
 		// Append cache-busting timestamp to model URL so updated textures or models are not stuck on old browser cache
 		const url = rawUrl.includes("?") ? `${rawUrl}&_v=${Date.now()}` : `${rawUrl}?_v=${Date.now()}`;
 		let cancelled = false;
@@ -506,10 +576,12 @@ export function Live2DView(props: ViewProps) {
 		};
 	}, [modelInfo?.url, reloadModel]);
 
-	// Third-person toggle shifts the AI avatar between centered and the
-	// right half — refit without reloading the model.
+	// Mode toggle shifts the AI avatar between centered and the right half —
+	// refit without reloading the model.
 	useEffect(() => {
-		const dual = modelInfo?.thirdPerson === true && Boolean(modelInfo?.player?.url);
+		const dual = modelInfo?.liveMode === "third" && Boolean(modelInfo?.player?.url);
+		dualRef.current = dual;
+		playerViewRef.current = modelInfo?.liveMode === "call" && Boolean(modelInfo?.player?.url) ? "window" : dual ? "stage" : null;
 		modelRef.current?.setLayout({ xFraction: dual ? 0.72 : 0.5, scaleGain: dual ? 0.8 : 1, faceBiasX: dual ? AI_FACE_BIAS : 0 });
 		// Clear the player bias on the way out too — its effect cleanup
 		// destroys the model, but until then the layout must not keep a
@@ -517,31 +589,47 @@ export function Live2DView(props: ViewProps) {
 		playerModelRef.current?.setLayout({ faceBiasX: dual ? PLAYER_FACE_BIAS : 0 });
 		const look = stageLookParams();
 		modelRef.current?.setLookParams(look);
-		playerModelRef.current?.setLookParams(look);
-	}, [modelInfo?.thirdPerson, modelInfo?.player?.url]);
+		if (playerViewRef.current !== "window") playerModelRef.current?.setLookParams(look);
+		else playerModelRef.current?.setLookParams(pipLookParams());
+	}, [modelInfo?.liveMode, modelInfo?.player?.url]);
 
-	// The player's own avatar (third-person mode): a second model on the
-	// left half of the SAME shared stage (one WebGL context — see above).
-	// Voice-only third-person (no player model selected) simply skips this.
+	// The player's own avatar (third-person stage duo / call-mode PiP): a
+	// second model on the SAME shared stage (one WebGL context — see above).
+	// Third-person: left half, facing the AI. Call: inside a small rounded
+	// window (Pixi mask) that mirrors the user — mic-driven mouth + head
+	// follow. Voice-only third-person (no player model selected) skips this.
 	useEffect(() => {
-		const rawUrl = modelInfo?.thirdPerson === true ? modelInfo?.player?.url : undefined;
+		const mode = modelInfo?.liveMode;
+		const rawUrl = mode === "third" || mode === "call" ? modelInfo?.player?.url : undefined;
+		const inWindow = mode === "call";
 		const stage = sharedStageRef.current;
 		if (!rawUrl || !stageRef.current || !stage) return undefined;
 		if (!isCubismCoreLoaded()) return undefined;
 		const url = rawUrl.includes("?") ? `${rawUrl}&_v=${Date.now()}` : `${rawUrl}?_v=${Date.now()}`;
 		let cancelled = false;
 		let handle: Live2DHandle | null = null;
-		logger.info(`Mounting player Live2D model: ${modelInfo?.player?.name ?? url}`);
+		logger.info(`Mounting player Live2D model: ${modelInfo?.player?.name ?? url}${inWindow ? " (call window)" : ""}`);
+		// Call mode: the mouth follows the USER'S microphone (mimicry, like a
+		// video call self-view), not TTS playback. Per-frame attack/release
+		// envelope — the raw level (~30 fps) is too jumpy to apply directly.
+		let micMouth = 0;
+		const mouthFromMic = () => {
+			const target = Math.min(1, micMouthRef.current * 1.8) ** 0.7;
+			micMouth += (target - micMouth) * (target > micMouth ? 0.4 : 0.16);
+			return micMouth;
+		};
 		const mountPromise = mountModel(
 			stageRef.current,
 			url,
-			() => engineRef.current?.mouthValue("player") ?? 0,
+			inWindow ? mouthFromMic : () => engineRef.current?.mouthValue("player") ?? 0,
 			() => {
 				// Player model context loss: remount via the same effect.
 				logger.warn("Player model WebGL context lost, remounting");
 				setModelInfo((prev) => (prev ? { ...prev, player: prev.player ? { ...prev.player } : prev.player } : prev));
 			},
-			{ xFraction: 0.28, scaleGain: 0.8, faceBiasX: PLAYER_FACE_BIAS },
+			inWindow
+				? { window: pipWindowOf(pipPosRef.current), scaleGain: 1, faceBiasX: 0 }
+				: { xFraction: 0.28, scaleGain: 0.8, faceBiasX: PLAYER_FACE_BIAS },
 			stage,
 			"Player",
 		);
@@ -564,10 +652,16 @@ export function Live2DView(props: ViewProps) {
 					pendingPlayerExpressionRef.current = null;
 					mounted.setExpression(pendingExpression);
 				}
-				// Join the look pipeline (parallax only in third-person) with
-				// the resting gaze already facing the AI avatar.
+				// Join the look pipeline: stage duo uses the parallax-only
+				// stage params facing the AI; the call window mimics the user
+				// with full angle gains (pan zeroed).
 				if (gazeRef.current?.active || tiltRef.current?.active) mounted.setLook(camLookRef.current, gyroLookRef.current);
-				mounted.setLookParams(stageLookParams());
+				if (inWindow) {
+					mounted.setLayout({ window: pipWindowOf(pipPosRef.current) });
+					mounted.setLookParams(pipLookParams());
+				} else {
+					mounted.setLookParams(stageLookParams());
+				}
 				if (stageRef.current) stageRef.current.dataset.lvPlayer = String(modelInfo?.player?.name ?? "");
 				logger.info(`Player Live2D model ready: ${modelInfo?.player?.name}`);
 			})
@@ -596,7 +690,13 @@ export function Live2DView(props: ViewProps) {
 				})
 				.catch(() => {});
 		};
-	}, [modelInfo?.thirdPerson, modelInfo?.player?.url]);
+	}, [modelInfo?.liveMode, modelInfo?.player?.url]);
+
+	// PiP drag: push the window rect to the mounted model (no remount).
+	useEffect(() => {
+		if (modelInfo?.liveMode !== "call" || !modelInfo?.player?.url) return;
+		playerModelRef.current?.setLayout({ window: pipWindowOf(pipPos) });
+	}, [pipPos, modelInfo?.liveMode, modelInfo?.player?.url]);
 
 	// Idle scheduler: replaces the engine's automatic random-idle loop (which
 	// plays successive idle motions back-to-back with no gap, producing
@@ -750,7 +850,17 @@ export function Live2DView(props: ViewProps) {
 			const cam = gazeRef.current?.active ? camLookRef.current : null;
 			const gyro = tiltRef.current?.active ? gyroLookRef.current : null;
 			modelRef.current?.setLook(cam, gyro);
-			playerModelRef.current?.setLook(cam, gyro);
+			// The PiP self-view is a MIRROR of the user, not an autonomous
+			// character: raw camera/gyro follow while the stage avatar keeps
+			// the normal look pipeline.
+			if (playerViewRef.current === "window") {
+				playerModelRef.current?.setLook(
+					gazeRef.current?.active ? camLookRef.current : null,
+					tiltRef.current?.active ? gyroLookRef.current : null,
+				);
+			} else {
+				playerModelRef.current?.setLook(cam, gyro);
+			}
 
 			const targetCam = cam ?? { dx: 0, dy: 0 };
 			const targetGyro = gyro ?? { dx: 0, dy: 0 };
@@ -782,6 +892,7 @@ export function Live2DView(props: ViewProps) {
 					if (stageCanvas.style.transform !== t3d.css) stageCanvas.style.transform = t3d.css;
 				} else if (stageCanvas.style.transform) {
 					stageCanvas.style.transform = "";
+
 				}
 			}
 
@@ -1179,7 +1290,8 @@ export function Live2DView(props: ViewProps) {
 		setLookParams(lookParamsRef.current);
 		const look = stageLookParams();
 		modelRef.current?.setLookParams(look);
-		playerModelRef.current?.setLookParams(look);
+		if (playerViewRef.current !== "window") playerModelRef.current?.setLookParams(look);
+		else playerModelRef.current?.setLookParams(pipLookParams());
 		try {
 			localStorage.setItem(LOOK_PARAMS_STORE, JSON.stringify(lookParamsRef.current));
 		} catch {
@@ -1239,17 +1351,22 @@ export function Live2DView(props: ViewProps) {
 		}
 	};
 
-	// ---- Third-person controls (⚙ popover + settings share these) ----
+	// ---- Live mode controls (⚙ popover + settings share these) ----
 
-	const toggleThirdPerson = async () => {
-		const next = !thirdPerson;
+	const MODE_TOASTS: Record<LiveMode, string> = {
+		first: "已切换为第一人称模式",
+		third: "第三人称模式已开启",
+		call: "视频通话模式已开启（你的化身在小窗中实时跟随你）",
+	};
+
+	const setStageMode = async (next: LiveMode) => {
 		try {
-			const { config } = await saveConfig({ thirdPerson: next });
-			setThirdPerson(config.thirdPerson === true);
+			const { config } = await saveConfig({ liveMode: next });
+			setLiveMode(config.liveMode === "third" || config.liveMode === "call" ? config.liveMode : "first");
 			// Remount the player avatar / re-layout the AI one.
 			const info = await fetchModelInfo(sessionId);
 			setModelInfo(info);
-			showToast(config.thirdPerson ? "第三人称模式已开启" : "第三人称模式已关闭");
+			showToast(MODE_TOASTS[next]);
 		} catch (error) {
 			showToast(`切换失败：${String((error as Error)?.message ?? error)}`);
 		}
@@ -1260,7 +1377,7 @@ export function Live2DView(props: ViewProps) {
 			await saveConfig({ playerModelSelection: name });
 			const info = await fetchModelInfo(sessionId);
 			setModelInfo(info);
-			showToast(info.player?.name === name ? `玩家角色已切换：${info.player?.label ?? name}` : `已保存玩家角色 ${name}（需开启第三人称）`);
+			showToast(info.player?.name === name ? `玩家角色已切换：${info.player?.label ?? name}` : `已保存玩家角色 ${name}（需开启第三人称或视频通话）`);
 		} catch (error) {
 			showToast(`玩家角色切换失败：${String((error as Error)?.message ?? error)}`);
 		}
@@ -1310,7 +1427,7 @@ export function Live2DView(props: ViewProps) {
 	const submitText = async (text: string, mode: "queue" | "steer" = "queue"): Promise<boolean> => {
 		if (!text.trim()) return false;
 		try {
-			if (thirdPersonRef.current) {
+			if (liveModeRef.current === "third") {
 				// Third-person: the line goes through the player pipeline —
 				// polish → player avatar speaks → only then the agent hears
 				// it. The polished line arrives over SSE (replacing the
@@ -1367,6 +1484,7 @@ export function Live2DView(props: ViewProps) {
 		engineRef.current?.unmuzzle();
 		setMicState("idle");
 		setMicLevel(0);
+		micMouthRef.current = 0;
 		setInterimText("");
 	}, []);
 
@@ -1452,6 +1570,7 @@ export function Live2DView(props: ViewProps) {
 			{
 				onLevel: (level) => {
 				setMicLevel(level);
+				micMouthRef.current = level;
 				if (engineRef.current?.speaking() && MicCapture.isBargeLevel(level)) {
 					engineRef.current.muzzle();
 					activeAssistantUtterance.current = "";
@@ -1541,6 +1660,67 @@ export function Live2DView(props: ViewProps) {
 		<div ref={rootRef} className={`lv-root${fullscreen ? " lv-fullscreen" : ""}${inputOpen ? " lv-keyboard-open" : ""}`} data-no-gesture>
 			<div className="lv-ambient" />
 			<div ref={stageRef} className="lv-stage" />
+
+			{/* Video-call self-view: a draggable frame over the stage. The
+			    model itself renders on the shared canvas behind it (masked
+			    to the window); this DOM layer only draws the chrome, the
+			    name badge, and owns the drag gesture. */}
+			{liveMode === "call" && modelInfo?.player && (
+				<div
+					className={`lv-call-pip${pipDragging ? " lv-call-pip-dragging" : ""}`}
+					data-lv-pip={modelInfo.player.name}
+					style={{
+						left: `${pipPos.x * 100}%`,
+						top: `${pipPos.y * 100}%`,
+						width: `${PIP_WIDTH_FRACTION * 100}%`,
+						aspectRatio: String(PIP_ASPECT_RATIO),
+						borderRadius: `${PIP_RADIUS_PX}px`,
+					}}
+					onPointerDown={(event) => {
+						const stage = stageRef.current?.getBoundingClientRect();
+						if (!stage) return;
+						pipGrabRef.current = {
+							dx: event.clientX - (stage.left + pipPosRef.current.x * stage.width),
+							dy: event.clientY - (stage.top + pipPosRef.current.y * stage.height),
+						};
+						// Best-effort capture: keeps real-pointer moves flowing to
+						// the window after the pointer leaves it. Synthetic test
+						// events carry no active pointer id and make this throw —
+						// they are dispatched straight at the element anyway.
+						try {
+							event.currentTarget.setPointerCapture(event.pointerId);
+						} catch {}
+						setPipDragging(true);
+					}}
+					onPointerMove={(event) => {
+						if (!pipDragging) return;
+						const stage = stageRef.current?.getBoundingClientRect();
+						if (!stage) return;
+						setPipPos(
+							clampPipPos(
+								{
+									x: (event.clientX - pipGrabRef.current.dx - stage.left) / stage.width,
+									y: (event.clientY - pipGrabRef.current.dy - stage.top) / stage.height,
+								},
+								stage.width,
+								stage.height,
+							),
+						);
+					}}
+					onPointerUp={(event) => {
+						if (!pipDragging) return;
+						const stage = stageRef.current?.getBoundingClientRect();
+						try {
+							event.currentTarget.releasePointerCapture(event.pointerId);
+						} catch {}
+						if (stage) setPipPos(snapPipPos(pipPosRef.current, stage.width, stage.height));
+						setPipDragging(false);
+					}}
+					onPointerCancel={() => setPipDragging(false)}
+				>
+					<span className="lv-call-pip-badge">{modelInfo.player.label ?? "我"}</span>
+				</div>
+			)}
 
 			{status !== "ready" && (
 				<div className="lv-center">
@@ -1683,9 +1863,9 @@ export function Live2DView(props: ViewProps) {
 				motions={modelInfo?.motions ?? []}
 				onPlayMotion={(motion) => void modelRef.current?.playMotion(motion)}
 				onPickModel={(name) => void pickModel(name)}
-				thirdPerson={thirdPerson}
+				liveMode={liveMode}
 				playerPolish={playerPolish}
-				onToggleThirdPerson={() => void toggleThirdPerson()}
+				onSetLiveMode={(mode) => void setStageMode(mode)}
 				onTogglePlayerPolish={() => void togglePlayerPolish()}
 				currentPlayerModel={modelInfo?.player?.name}
 				onPickPlayerModel={(name) => void pickPlayerModel(name)}

@@ -19,8 +19,8 @@
  * T5 polish-on (playerSpeechLanguage=ja): Chinese input → Japanese player
  *    line (kana) + player expression event; session log holds the
  *    polished line, not the raw input.
- * T6 off-fallback: thirdPerson=false → /player-line submits raw text with
- *    no player SSE; ⚙ toggle drops the second canvas.
+ * T6 off-fallback: liveMode=first → /player-line submits raw text with
+ *    no player SSE; ⚙ segment control drops the second canvas.
  */
 import pw from '/root/projects/camoufox-mcp/node_modules/playwright-core/index.js';
 import { readFileSync, writeFileSync } from 'node:fs';
@@ -69,18 +69,18 @@ const patchCfg = (patch) => {
   writeFileSync(CFG, JSON.stringify(cfg, null, 2) + '\n');
 };
 
-/** The session's zstd log as text (newest session.v3 under /root/.dsh-e2e). */
+/** The session's zstd log as text (newest session.v3 under the e2e home). */
 const sessionLog = () => {
   const latest = execSync(`find ${process.env.DSH_E2E_HOME}/sessions -name "session.v3.jsonl.zstd" -printf "%T@ %p\\n" | sort -rn | head -1 | cut -d' ' -f2-`).toString().trim();
   return execSync(`zstd -dc "${latest}"`).toString();
 };
 
 try {
-  // baseline: dual model fixture, third-person ON, polish OFF.
+  // baseline: dual model fixture, third-person (liveMode=third), polish OFF.
   patchCfg({
     modelPath: '/root/.dsh-e2e-test-models',
     modelSelection: 'haru',
-    thirdPerson: true,
+    liveMode: 'third',
     playerModelSelection: PLAYER_MODEL,
     playerVoiceId: PLAYER_VOICE,
     playerPolish: false,
@@ -114,15 +114,15 @@ try {
     const r = await fetch('/live2d-voice/model', { headers: { accept: 'application/json' } });
     return JSON.stringify(await r.json());
   }));
-  check('T1a', modelInfo.thirdPerson === true, `/model thirdPerson=(${modelInfo.thirdPerson})`);
+  check('T1a', modelInfo.liveMode === 'third', `/model liveMode=(${modelInfo.liveMode})`);
   check('T1b', modelInfo.player?.name === PLAYER_MODEL && typeof modelInfo.player?.url === 'string' && modelInfo.player.url.length > 0,
     `/model player entry (${modelInfo.player?.name ?? 'none'})`);
   const cfgView = JSON.parse(await ev(async (sid) => {
     const r = await fetch(`/live2d-voice/config?session=${encodeURIComponent(sid)}`, { headers: { accept: 'application/json' } });
     return JSON.stringify((await r.json()).config);
   }, sessionId));
-  check('T1c', cfgView.thirdPerson === true && cfgView.playerPolish === false && cfgView.playerVoiceId === PLAYER_VOICE,
-    `config surface (thirdPerson=${cfgView.thirdPerson} polish=${cfgView.playerPolish})`);
+  check('T1c', cfgView.liveMode === 'third' && cfgView.playerPolish === false && cfgView.playerVoiceId === PLAYER_VOICE,
+    `config surface (liveMode=${cfgView.liveMode} polish=${cfgView.playerPolish})`);
 
   // ---- T2: dual stage ----
   console.log('=== T2 dual stage ===');
@@ -354,8 +354,8 @@ try {
   // ---- T6: off fallback ----
   console.log('=== T6 off fallback ===');
   await ev(() => { window.__tp = []; });
-  // Host-side: thirdPerson=false → /player-line is a plain submit.
-  patchCfg({ thirdPerson: false });
+  // Host-side: liveMode=first → /player-line is a plain submit.
+  patchCfg({ liveMode: 'first' });
   await sleep(800);
   const RAW6 = '第三人称关闭后这句话应该直接发出去';
   const sent6 = await ev(async ([sid, text]) => {
@@ -386,18 +386,18 @@ try {
   for (let i = 0; i < 12; i++) { log6 = sessionLog(); if (log6.includes(RAW6)) break; await sleep(1000); }
   check('T6c', log6.includes(RAW6), 'off → raw text submitted as the user message');
 
-  // View-side: ⚙ toggle off drops the second canvas; typed line goes the
-  // first-person path (local echo subtitle, no player events).
+  // View-side: ⚙ segment (第一人称) drops the second canvas; typed line
+  // goes the first-person path (local echo subtitle, no player events).
   await ev(() => document.querySelector('.lv-hud [title*="快捷调整"]')?.click());
   await sleep(500);
   const toggled = await ev(() => {
-    const rows = [...document.querySelectorAll('.lv-pop .lv-switch-row')];
-    const row = rows.find((r) => r.textContent?.includes('第三人称模式'));
-    if (!row) return { found: false };
-    row.querySelector('button[role="switch"]')?.click();
+    const seg = [...document.querySelectorAll('.lv-pop .lv-mode-seg-btn')];
+    const btn = seg.find((b) => b.textContent?.includes('第一人称'));
+    if (!btn) return { found: false };
+    btn.click();
     return { found: true };
   });
-  check('T6d', toggled.found, '⚙ popover carries the 第三人称 switch');
+  check('T6d', toggled.found, '⚙ popover carries the 舞台模式 segment control');
   let canvasCount6 = 0;
   for (let i = 0; i < 15; i++) {
     await sleep(1000);

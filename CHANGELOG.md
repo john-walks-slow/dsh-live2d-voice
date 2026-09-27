@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.6.0 (2026-09-27)
+
+- **视频通话模式（liveMode 三态）**：`thirdPerson: boolean` 升级为 `liveMode: "first" | "third" | "call"`（旧配置 `thirdPerson: true` 加载时自动迁移为 `"third"` 并清除遗留键）。`call` 模式：AI 角色居中大画面（取景同第一人称），玩家化身以可拖动小窗（PiP）同屏——口型实时跟随麦克风电平（攻快收慢包络，同 SpeechEngine 思路），视线追踪开启时头/眼/身体朝向用户人脸方向；输入原样直达 AI（不润色、不代播），提示词注入"正在视频通话"语境行
+- 小窗实现：`StageLayout.window`（px，相对舞台容器）+ 共享 Pixi Application 的 Graphics 圆角矩形 mask 裁剪（单 WebGL context 铁律不变）；窗框/阴影/名牌为 DOM 覆盖层，拖拽事件挂 DOM 层（不与舞台手势冲突），松手吸附最近角落；填充式取景（按窗宽缩放、模型顶部锚定窗内 10% → 半身像取景通吃全身/半身模型）；look 位移通道（pan）对小窗归零防滑出 mask，转头/侧倾保留
+- UI：⚙ 面板与系统设置的「第三人称」开关升级为三段选择器（第一人称 / 第三人称 / 视频通话）；`third` 显示润色/音色设置，`call` 只显示玩家模型选择 + 模式说明
+- e2e：新增 `verify-video-call.mjs` 29 项（配置迁移/PiP 挂载与几何/单 canvas 铁律/舞台拖拽不影响小窗/输入直达无 pending 无玩家 SSE/日志记原文/拖拽吸附边界带/三态往返切换/zero pageerror）；`verify-third-person.mjs` 迁移到 liveMode 后 35 项全量回归通过；`verify-v11.mjs` 支持 `E2E_URL` 环境变量
+
 ## 1.5.0 (2026-09-25)
 
 - **第三人称模式**：开启后玩家拥有自己的角色模型与音色，与 AI 角色同台双角色演出（左玩家、右 AI）。用户输入（键盘/语音）先经可选润色/翻译层，改写成玩家角色的台词（按 `playerPrompt` 人设与 `playerSpeechLanguage` 语言，句首情绪标签驱动玩家模型表情），由玩家皮套先念出（TTS + 口型 + 字幕「你」徽章），AI 皮套再回应；润色后的台词才是进入会话日志的 user 消息

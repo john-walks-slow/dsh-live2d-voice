@@ -6,6 +6,9 @@
 /** Who an utterance belongs to: the AI's avatar or the player's (third-person). */
 export type Speaker = "assistant" | "player";
 
+/** Live stage mode: single avatar / stage-play duo / video-call self-view PiP. */
+export type LiveMode = "first" | "third" | "call";
+
 export interface PublicConfig {
 	modelPath: string;
 	modelSelection: string;
@@ -30,8 +33,13 @@ export interface PublicConfig {
 	eyeTracking: boolean;
 	gyroParallax: boolean;
 	emotionMap: Record<string, number | string>;
-	/** Third-person mode: the player avatar speaks the (polished) user line first. */
-	thirdPerson: boolean;
+	/**
+	 * Live stage mode: "first" = input straight to the agent (single
+	 * avatar); "third" = the player avatar speaks the polished user line
+	 * first; "call" = input straight to the agent, the player avatar
+	 * mirrors the user in a small video-call window.
+	 */
+	liveMode: LiveMode;
 	/** The player avatar's model (catalog entry name); empty = voice only. */
 	playerModelSelection: string;
 	/** The player avatar's Fish Audio voice. */
@@ -84,9 +92,9 @@ export interface ModelInfo {
 	motions?: ModelMotion[];
 	/** The full catalog when modelPath is a directory of models. */
 	models?: { name: string; label?: string; kind?: "moc2" | "moc3"; group?: string; groupLabel?: string; url: string }[];
-	/** Third-person mode on (the stage hosts a second, player avatar). */
-	thirdPerson?: boolean;
-	/** The player avatar's model when third-person is on and a selection matches. */
+	/** The live stage mode the view should render. */
+	liveMode?: LiveMode;
+	/** The player avatar's model when the mode shows one and a selection matches. */
 	player?: { name: string; label?: string; kind?: "moc2" | "moc3"; url: string; motions?: ModelMotion[] };
 }
 

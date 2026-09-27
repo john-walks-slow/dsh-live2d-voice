@@ -329,7 +329,7 @@ export function installRoutes(ctx: Context, deps: RouteDeps): (() => void) | und
 					if (typeof body.gyroParallax === "boolean") patch.gyroParallax = body.gyroParallax;
 					if (typeof body.idleInterval === "number") patch.idleInterval = body.idleInterval;
 					if (typeof body.sentenceSubtitles === "boolean") patch.sentenceSubtitles = body.sentenceSubtitles;
-					if (typeof body.thirdPerson === "boolean") patch.thirdPerson = body.thirdPerson;
+					if (body.liveMode === "first" || body.liveMode === "third" || body.liveMode === "call") patch.liveMode = body.liveMode;
 					if (typeof body.playerPolish === "boolean") patch.playerPolish = body.playerPolish;
 					if (Array.isArray(body.apiKeys)) {
 						patch.apiKeys = body.apiKeys.filter((key): key is string => typeof key === "string" && key.length > 0);
@@ -567,15 +567,16 @@ export function installRoutes(ctx: Context, deps: RouteDeps): (() => void) | und
 				: deps.getConfig();
 			const catalog = resolveModelCatalog(config);
 			const entry = resolveModelSelection(config, catalog);
-			// Third-person: the player avatar (another catalog entry, if selected).
+			// Modes that render the player avatar: the third-person stage
+			// duo and the video-call self-view window.
 			const playerEntry = config.playerModelSelection ? catalog.find((model) => model.name === config.playerModelSelection) : undefined;
-			const thirdPerson = config.thirdPerson === true;
-			const playerMotions = (thirdPerson && playerEntry) ? extractModelMotions(join(config.modelPath, playerEntry.relative)) : [];
-			const player = thirdPerson && playerEntry
+			const showsPlayer = config.liveMode === "third" || config.liveMode === "call";
+			const playerMotions = (showsPlayer && playerEntry) ? extractModelMotions(join(config.modelPath, playerEntry.relative)) : [];
+			const player = showsPlayer && playerEntry
 				? { name: playerEntry.name, label: playerEntry.label, kind: playerEntry.kind, url: modelUrl(playerEntry), motions: playerMotions }
 				: undefined;
 			if (entry === undefined) {
-				writeJson(res, 200, { configured: Boolean(config.modelPath), url: undefined, thirdPerson, player });
+				writeJson(res, 200, { configured: Boolean(config.modelPath), url: undefined, liveMode: config.liveMode, player });
 				return;
 			}
 			const motions = extractModelMotions(join(config.modelPath, entry.relative));
@@ -597,7 +598,7 @@ export function installRoutes(ctx: Context, deps: RouteDeps): (() => void) | und
 					groupLabel: model.group ? (GROUP_LABELS[model.group] ?? model.group) : undefined,
 					url: modelUrl(model),
 				})),
-				thirdPerson,
+				liveMode: config.liveMode,
 				player,
 			});
 		} })
