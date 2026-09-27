@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 /**
- * Video-call mode e2e: liveMode=call against the e2e instance (:4188).
+ * Video-call mode e2e: liveMode=call against the e2e instance
+ * (dsh-e2e worktree mode — DSH_E2E_PORT/TOKEN/HOME env).
  *
  * T1 config surface: /model reports liveMode=call + player entry.
  * T2 PiP stage: the player avatar renders on the single shared canvas
@@ -21,9 +22,8 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import { execSync } from 'node:child_process';
 const { chromium } = pw;
 
-const url = process.env.E2E_URL ?? 'http://127.0.0.1:4188/?token=e2etest';
-const CFG = process.env.E2E_CFG ?? '/root/.dsh-e2e/live2d-voice.json';
-const SESSIONS = process.env.E2E_SESSIONS ?? '/root/.dsh-e2e/sessions';
+const CFG = process.env.E2E_CFG ?? `${process.env.DSH_E2E_HOME}/live2d-voice.json`;
+const SESSIONS = process.env.E2E_SESSIONS ?? `${process.env.DSH_E2E_HOME}/sessions`;
 const PLAYER_MODEL = 'deepseek-chan';
 const PLAYER_VOICE = 'ed3a1c523b524870a85a5a76cb1e0c3d'; // 元气少年音
 const SHOT = (n) => `/tmp/lvvc-${n}.png`;
@@ -44,16 +44,6 @@ const ctx = await browser.newContext({ viewport: { width: 1280, height: 800 } })
 const page = await ctx.newPage();
 const pageErrors = [];
 page.on('pageerror', (e) => pageErrors.push(e.message));
-const followSessionIds = new Set();
-page.on('websocket', (ws) => {
-  ws.on('framesent', (f) => {
-    const s = String(f.payload);
-    if (s.includes('session/follow')) {
-      const m = s.match(/sessionId":"(session-[a-f0-9-]{30,})"/);
-      if (m) followSessionIds.add(m[1]);
-    }
-  });
-});
 const ev = (fn, ...args) => page.evaluate(fn, ...args);
 const sleep = (ms) => page.waitForTimeout(ms);
 const shot = (n) => page.screenshot({ path: SHOT(n), timeout: 60000 }).catch(() => {});
@@ -109,24 +99,28 @@ try {
   { const cfg = JSON.parse(readFileSync(CFG, 'utf8')); delete cfg.workspaces; writeFileSync(CFG, JSON.stringify(cfg, null, 2) + '\n'); }
 
   console.log('=== boot + session ===');
-  await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
-  await sleep(9000);
-  await ev(() => { const ed = document.querySelector('[contenteditable="true"][aria-label*="Describe"]'); if (!ed) return false; ed.focus(); return true; });
-  await page.keyboard.type('你好，请用一句话自我介绍', { delay: 20 });
-  await page.keyboard.press('Enter');
-  await sleep(12000);
-  const ids = [...followSessionIds];
-  const sessionId = ids[ids.length - 1];
-  check('T0a', !!sessionId, `session captured (${sessionId?.slice(0, 18)}…)`);
-
-  await ev(() => {
-    const matches = [...document.querySelectorAll('*')].filter((el) => el.children.length === 0 && el.textContent?.trim() === 'Live2D');
-    let t = matches[0];
-    while (t && t.tagName !== 'BUTTON' && t.getAttribute('role') !== 'tab') t = t.parentElement;
-    t?.click();
-  });
-  await sleep(4000);
-  check('T0b', !!(await ev(() => document.querySelector('.lv-root'))), 'Live2D view mounted');
+  // 铁律 #3 (docs/references/260927-e2e-testing.md): create an empty session
+  // via the plugin route and open the standalone entry — no message burned,
+  // no GUI tab hunt (this dsh-web-app renders session tabs icon-only, so
+  // the legacy 'Live2D' text-tab click never matches).
+  const created = await fetch(`http://127.0.0.1:${process.env.DSH_E2E_PORT}/live2d-voice/session`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ title: 'video-call-e2e' }),
+  }).then((r) => r.json());
+  const sessionId = created.sessionId;
+  check('T0a', !!sessionId, `session created (${sessionId?.slice(0, 18)}…)`);
+  await page.goto(
+    `http://127.0.0.1:${process.env.DSH_E2E_PORT}/live2d-voice/app?session=${encodeURIComponent(sessionId)}`,
+    { waitUntil: 'domcontentloaded', timeout: 30000 },
+  );
+  let lvRoot = false;
+  for (let i = 0; i < 20; i++) {
+    await sleep(1000);
+    lvRoot = await ev(() => Boolean(document.querySelector('.lv-root')));
+    if (lvRoot) break;
+  }
+  check('T0b', lvRoot, 'Live2D view mounted (standalone entry)');
 
   // ---- T1: config surface ----
   console.log('=== T1 config surface ===');
@@ -217,7 +211,10 @@ try {
   for (let i = 0; i < 60; i++) {
     await sleep(1000);
     pendingSeen = pendingSeen || await ev(() => Boolean(document.querySelector('.lv-sub-pending')));
-    echoSeen = echoSeen || await ev((prefix) => [...document.querySelectorAll('.lv-sub-card')].some((c) => c.textContent?.includes(prefix)), RAW_LINE.slice(0, 10));
+    // The echoed user line renders as .lv-sub-card and is demoted to
+    // .lv-sub-old (kept ~14s) once the assistant reply lands — poll both,
+    // the mock provider can reply inside one poll interval.
+    echoSeen = echoSeen || await ev((prefix) => [...document.querySelectorAll('.lv-sub-card, .lv-sub-old')].some((c) => c.textContent?.includes(prefix)), RAW_LINE.slice(0, 10));
     const list = JSON.parse(await ev(() => JSON.stringify(window.__vc)));
     playerEvents = Math.max(playerEvents, list.filter((e) => e.data?.speaker === 'player').length);
     asstSeen = asstSeen || list.some((e) => e.name === 'subtitle' && e.data.role === 'assistant' && (e.data.text ?? '').length >= 4)

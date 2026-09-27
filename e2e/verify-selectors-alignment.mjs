@@ -92,9 +92,14 @@ const settingsCheck = await page.evaluate(() => {
   const card7 = cards.find((c) => (c.textContent ?? '').includes('⑦ 润色专用模型'));
   const card7Selects = card7 ? [...card7.querySelectorAll('select.lv-model-select')] : [];
 
-  // Check Module 9: Third-person player selectors
-  const card9 = cards.find((c) => (c.textContent ?? '').includes('⑨ 第三人称模式'));
-  const card9Selects = card9 ? [...card9.querySelectorAll('select.lv-model-select')] : [];
+  // Check Module 9: stage mode (liveMode) card — post video-call merge the
+  // card is "⑨ 舞台模式" with a persistent liveMode select (first/third/call);
+  // player model/voice selects render conditionally under third/call.
+  const card9 = cards.find((c) => (c.textContent ?? '').includes('⑨ 舞台模式'));
+  const card9Selects = card9 ? [...card9.querySelectorAll('select')] : [];
+  const card9LiveMode = card9Selects.find((s) =>
+    [...s.options].some((o) => (o.textContent ?? '').includes('第三人称'))
+    && [...s.options].some((o) => (o.textContent ?? '').includes('视频通话')));
 
   return {
     cardTitles,
@@ -120,6 +125,7 @@ const settingsCheck = await page.evaluate(() => {
     },
     card9: {
       selectCount: card9Selects.length,
+      hasLiveModeSelect: Boolean(card9LiveMode),
     },
   };
 });
@@ -250,7 +256,7 @@ const okSettings =
   settingsCheck.card5.selectCount >= 1 &&
   settingsCheck.card6.selectCount >= 1 &&
   settingsCheck.card7.selectCount >= 1 &&
-  settingsCheck.card9.selectCount >= 1 &&
+  settingsCheck.card9.hasLiveModeSelect &&
   interactiveCheck.groupSwitched &&
   interactiveCheck.saveBtnEnabled;
 
