@@ -17,6 +17,7 @@
 //    - Dark mode variables aligned
 
 import pw from '/root/projects/camoufox-mcp/node_modules/playwright-core/index.js';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 const { chromium } = pw;
 
 const browser = await chromium.launch({
@@ -41,7 +42,7 @@ page.on('console', (m) => {
 });
 
 console.log('Navigating to DSH web...');
-await page.goto('http://127.0.0.1:4188/?token=e2etest', { waitUntil: 'domcontentloaded', timeout: 30000 });
+await page.goto(`http://127.0.0.1:${process.env.DSH_E2E_PORT}/?token=${process.env.DSH_E2E_TOKEN || 'e2etest'}`, { waitUntil: 'domcontentloaded', timeout: 30000 });
 await page.waitForTimeout(4000);
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -59,7 +60,12 @@ await page.evaluate(() => {
   const el = [...document.querySelectorAll('button')].find((e) => (e.textContent ?? '').includes('Live2D'));
   el?.click();
 });
-await page.waitForTimeout(3000);
+// Poll until the settings cards render (fixed sleeps raced slow renders).
+await page.waitForFunction(
+  () => document.querySelectorAll('.lv-set-card').length >= 6,
+  null,
+  { timeout: 15000 },
+).catch(() => {});
 
 const settingsCheck = await page.evaluate(() => {
   const cards = [...document.querySelectorAll('.lv-set-card')];
@@ -192,13 +198,26 @@ console.log('Settings Interactive Check:', interactiveCheck);
 // Part 2: Live UI (HUD Popover) Verification via Live App
 // ─────────────────────────────────────────────────────────────────────────────
 console.log('--- Part 2: Checking Live UI (HUD popover) in Live view ---');
-await page.goto('http://127.0.0.1:4188/live2d-voice/app?session=session-660c2454-5ea1-48a7-8962-d73a1881e536', {
+// Point the catalog at the shared fixture models (auto-selects catalog[0]),
+// then create an empty session via the plugin API — no message, no LLM.
+const cfgFile = `${process.env.DSH_E2E_HOME}/live2d-voice.json`;
+const cfg = existsSync(cfgFile) ? JSON.parse(readFileSync(cfgFile, 'utf8')) : {};
+cfg.modelPath = '/root/.dsh-e2e-test-models';
+writeFileSync(cfgFile, JSON.stringify(cfg, null, 2) + '\n');
+const created = await fetch(`http://127.0.0.1:${process.env.DSH_E2E_PORT}/live2d-voice/session`, {
+  method: 'POST',
+  headers: { 'content-type': 'application/json' },
+  body: JSON.stringify({ title: 'selectors-e2e' }),
+}).then((r) => r.json());
+console.log('created session:', created.sessionId);
+await page.goto(`http://127.0.0.1:${process.env.DSH_E2E_PORT}/live2d-voice/app?session=${encodeURIComponent(created.sessionId)}`, {
   waitUntil: 'domcontentloaded',
   timeout: 30000,
 });
 await page.waitForTimeout(4000);
 
 // Open HUD Settings Popover
+await page.waitForSelector('button[title*="快捷调整"]', { timeout: 15000 }).catch(() => {});
 await page.click('button[title*="快捷调整"]');
 await page.waitForTimeout(1000);
 
