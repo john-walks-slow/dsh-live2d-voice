@@ -1,7 +1,9 @@
 node_modules/
 *.tsbuildinfo
+.worktrees/
 .mnemon/
 references/
 generated/
+docs/research/
 tests/.behavior.mjs
 tests/.sentence.mjs
