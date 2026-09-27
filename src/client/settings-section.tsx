@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
-import type { PublicConfig, VoicePreset, LanguageOption, ModelCatalog, ModelProviderGroup, ModelCatalogModel } from "./types.js";
+import type { PublicConfig, VoicePreset, LanguageOption, ModelCatalog, ModelProviderGroup, ModelCatalogModel, LiveMode } from "./types.js";
 import { fetchConfig, saveConfig, fetchModelCatalog } from "./api.js";
 import {
 	IconRefresh,
@@ -332,8 +332,8 @@ export function Live2DSettingsSection() {
 	const [micNs, setMicNs] = useState(true);
 	const [prompt, setPrompt] = useState("");
 	const [saving, setSaving] = useState(false);
-	// Third-person mode drafts
-	const [thirdPerson, setThirdPerson] = useState(false);
+	// Stage mode drafts
+	const [liveMode, setLiveMode] = useState<LiveMode>("first");
 	const [playerModelSel, setPlayerModelSel] = useState("");
 	const [playerVoiceId, setPlayerVoiceId] = useState("");
 	const [playerPolish, setPlayerPolish] = useState(true);
@@ -366,7 +366,7 @@ export function Live2DSettingsSection() {
 				setAsrMode(data.config.asrMode || "stream");
 				setMicNs(data.config.micNoiseSuppression !== false);
 				setPrompt(data.config.speechPrompt || "");
-				setThirdPerson(data.config.thirdPerson === true);
+				setLiveMode(data.config.liveMode ?? "first");
 				setPlayerModelSel(data.config.playerModelSelection || "");
 				setPlayerVoiceId(data.config.playerVoiceId || "");
 				setPlayerPolish(data.config.playerPolish !== false);
@@ -976,29 +976,33 @@ export function Live2DSettingsSection() {
 					</div>
 				</div>
 
-			{/* 模块 7：第三人称模式 */}
+			{/* 模块 9：舞台模式 */}
 			<div className="lv-set-card">
 				<div className="lv-set-card-head">
-					<h3 className="lv-set-card-title">⑨ 第三人称模式（玩家化身）</h3>
+					<h3 className="lv-set-card-title">⑨ 舞台模式（第一人称 / 第三人称 / 视频通话）</h3>
 				</div>
 				<div className="lv-set-help" style={{ marginBottom: "12px" }}>
-					开启后，你的输入先润色成你角色的台词（可选），由<b>你的模型与音色</b>先说出来，AI 的角色再开口回应——像一场双人剧。
+					<b>第一人称</b>：输入直接交给 AI，角色面对你。<br />
+					<b>第三人称</b>：输入先润色成你角色的台词（可选），由<b>你的模型与音色</b>先说出来，AI 的角色再开口回应——像一场双人剧。<br />
+					<b>视频通话</b>：输入原样直达 AI（不润色、不代播），你的化身以小窗形式实时跟随你的口型与视线，像一场视频通话。
 				</div>
 				<div className="lv-set-field">
-					<label className="lv-set-label">模式开关 (thirdPerson)</label>
+					<label className="lv-set-label">舞台模式 (liveMode)</label>
 					<select
 						className="lv-set-select"
-						value={thirdPerson ? "on" : "off"}
+						value={liveMode}
 						onChange={(e) => {
-							const next = e.target.value === "on";
-							setThirdPerson(next);
-							handleSave({ thirdPerson: next });
+							const next = e.target.value as LiveMode;
+							setLiveMode(next);
+							handleSave({ liveMode: next });
 						}}
 					>
-						<option value="off">关闭（第一人称：输入直接交给 AI）</option>
-						<option value="on">开启（第三人称：玩家化身先说，AI 再答）</option>
+						<option value="first">第一人称（输入直接交给 AI）</option>
+						<option value="third">第三人称（玩家化身先说，AI 再答）</option>
+						<option value="call">视频通话（小窗化身实时跟随，语音直达）</option>
 					</select>
 				</div>
+				{liveMode === "third" && (
 				<div className="lv-set-field">
 					<label className="lv-set-label">台词润色 / 翻译 (playerPolish)</label>
 					<select
@@ -1015,6 +1019,8 @@ export function Live2DSettingsSection() {
 					</select>
 					<div className="lv-set-help">润色使用当前会话的模型，保留全部信息点；关闭则你的原话就是台词。</div>
 				</div>
+				)}
+				{liveMode === "third" && (
 				<div className="lv-set-field">
 					<label className="lv-set-label">玩家台词语言 (playerSpeechLanguage)</label>
 					<select
@@ -1032,7 +1038,8 @@ export function Live2DSettingsSection() {
 					</select>
 					<div className="lv-set-help">润色开启时，台词最终用这种语言说出（例：中文输入 → 日语台词）。</div>
 				</div>
-				{models.length > 0 && (
+				)}
+				{liveMode !== "first" && models.length > 0 && (
 					<div className="lv-set-field">
 						<label className="lv-set-label">玩家角色模型 (playerModelSelection)</label>
 						<div style={{ display: "flex", gap: "6px", flexWrap: "wrap", marginTop: "6px" }}>
@@ -1051,9 +1058,14 @@ export function Live2DSettingsSection() {
 								</button>
 							))}
 						</div>
-						<div className="lv-set-help">不选则第三人称只有玩家音色（无独立模型）；双人同台时玩家居左、AI 居右。</div>
+						<div className="lv-set-help">
+							{liveMode === "third"
+								? "不选则第三人称只有玩家音色（无独立模型）；双人同台时玩家居左、AI 居右。"
+								: "不选则视频通话无小窗化身；小窗可拖动，松手自动吸附到最近的角落。"}
+						</div>
 					</div>
 				)}
+				{liveMode === "third" && (
 				<div className="lv-set-field">
 					<label className="lv-set-label">玩家音色 (playerVoiceId)</label>
 					<div style={{ display: "flex", gap: "6px", flexWrap: "wrap", marginTop: "6px" }}>
@@ -1075,6 +1087,8 @@ export function Live2DSettingsSection() {
 						玩家化身的 Fish Audio 音色 ID；与 AI 音色相同时会缺少「两个角色」的听感，建议选不同音色。
 					</div>
 				</div>
+				)}
+				{liveMode === "third" && (
 				<div className="lv-set-field">
 					<label className="lv-set-label">玩家人设 (playerPrompt)</label>
 					<textarea
@@ -1096,6 +1110,7 @@ export function Live2DSettingsSection() {
 					</div>
 					<div className="lv-set-help">润色时作为你角色的口吻参考；留空则只做通用润色。</div>
 				</div>
+				)}
 			</div>
 		</div>
 	);

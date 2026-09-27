@@ -161,11 +161,12 @@ export interface PluginConfig {
 	/** Emotion tag → model expression name/index map. */
 	emotionMap: Record<string, number | string>;
 	/**
-	 * Third-person mode: the user's input is first polished into the player
-	 * persona's spoken line (optional), spoken by the player's own avatar
-	 * (own model + voice), and only then answered by the AI's avatar.
+	 * Live stage mode: "first" (input straight to the agent, one avatar),
+	 * "third" (input polished + spoken by the player avatar first, two
+	 * avatars facing each other), or "call" (input straight to the agent;
+	 * the player avatar mirrors the user in a small video-call window).
 	 */
-	thirdPerson: boolean;
+	liveMode: "first" | "third" | "call";
 	/** The player avatar's model (a catalog entry name); empty = voice only. */
 	playerModelSelection: string;
 	/**
@@ -274,7 +275,7 @@ export const DEFAULT_CONFIG: PluginConfig = {
 	idleGaze: true,
 	gyroParallax: false,
 	emotionMap: { ...DEFAULT_EMOTION_MAP },
-	thirdPerson: false,
+	liveMode: "first",
 	playerModelSelection: "",
 	playerVoiceId: "ed3a1c523b524870a85a5a76cb1e0c3d",
 	playerPolish: true,
@@ -316,6 +317,13 @@ export function loadConfig(): PluginConfig {
 		if (raw.speechLanguage === undefined && config.sttLanguage === "zh") {
 			config.sttLanguage = "auto";
 		}
+		// thirdPerson → liveMode migration: pre-call-mode configs carried a
+		// boolean; map it once (any later save persists liveMode) and strip
+		// the legacy key so it does not ride along in every future save.
+		if (raw.liveMode === undefined && (raw as { thirdPerson?: unknown }).thirdPerson === true) {
+			config.liveMode = "third";
+		}
+		delete (config as unknown as Record<string, unknown>).thirdPerson;
 		return config;
 	} catch {
 		return structuredClone(DEFAULT_CONFIG);

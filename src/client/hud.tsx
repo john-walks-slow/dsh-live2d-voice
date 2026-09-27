@@ -6,7 +6,7 @@
  */
 
 import type { MicState } from "./mic.js";
-import type { LanguageOption, VoicePreset } from "./types.js";
+import type { LanguageOption, LiveMode, VoicePreset } from "./types.js";
 import type { ModelCatalog, ModelProviderGroup, ModelSelection } from "./types.js";
 import type { LookParams } from "./model.js";
 import type { BehaviorTuning } from "./behavior.js";
@@ -53,11 +53,11 @@ export interface HudProps {
 	currentModel?: string;
 	currentModelGroup: string;
 	onPickModelGroup: (id: string) => void;
-	/** Third-person mode: the player's own avatar + voice speaks the user's line first. */
-	thirdPerson: boolean;
-	/** Polish/translate the user's input into the player persona's line. */
+	/** Live stage mode: first = the AI faces you; third = stage duo (the player avatar speaks the polished line); call = video-call PiP self-view. */
+	liveMode: LiveMode;
+	/** Polish/translate the user's input into the player persona's line (third only). */
 	playerPolish: boolean;
-	onToggleThirdPerson: () => void;
+	onSetLiveMode: (mode: LiveMode) => void;
 	onTogglePlayerPolish: () => void;
 	/** The player avatar's current model (undefined = none selected). */
 	currentPlayerModel?: string;
@@ -463,21 +463,28 @@ export function Hud(props: HudProps) {
 							</>
 						)}
 
-						{/* 第三人称模式：玩家的台词先由玩家的化身说出 */}
-						<h4>第三人称</h4>
-						<div className="lv-switch-row">
-							<span>第三人称模式</span>
-							<button
-								type="button"
-								role="switch"
-								aria-checked={props.thirdPerson}
-								className={`lv-switch${props.thirdPerson ? " lv-on" : ""}`}
-								onClick={props.onToggleThirdPerson}
-							>
-								<span className="lv-switch-knob" />
-							</button>
+						{/* 舞台模式：第一人称 / 第三人称 / 视频通话 */}
+						<h4>舞台模式</h4>
+						<div className="lv-mode-seg" role="radiogroup" aria-label="舞台模式">
+							{([
+								{ id: "first", label: "第一人称", hint: "角色直接面对你" },
+								{ id: "third", label: "第三人称", hint: "双人舞台剧，台词先润色再由你的化身说出" },
+								{ id: "call", label: "视频通话", hint: "你的化身在小窗中实时跟随你，语音直达不润色" },
+							] as Array<{ id: LiveMode; label: string; hint: string }>).map((opt) => (
+								<button
+									key={opt.id}
+									type="button"
+									role="radio"
+									aria-checked={props.liveMode === opt.id}
+									className={`lv-mode-seg-btn${props.liveMode === opt.id ? " lv-on" : ""}`}
+									title={opt.hint}
+									onClick={() => props.onSetLiveMode(opt.id)}
+								>
+									{opt.label}
+								</button>
+							))}
 						</div>
-						{props.thirdPerson && (
+						{props.liveMode !== "first" && (
 							<>
 								{props.models.length > 1 && (
 									<>
@@ -495,36 +502,45 @@ export function Hud(props: HudProps) {
 										</select>
 									</>
 								)}
-								<div className="lv-look-hint">玩家音色</div>
-								<select
-									className="lv-model-select"
-									value={props.currentPlayerVoiceId}
-									onChange={(e) => {
-										const hit = props.presets.find((p) => p.voiceId === e.target.value);
-										if (hit) props.onPickPlayerVoice(hit);
-									}}
-								>
-									{props.presets.map((preset) => (
-										<option key={preset.id} value={preset.voiceId}>
-											{preset.label}
-										</option>
-									))}
-								</select>
-								{props.currentPlayerVoiceId === props.currentVoiceId && (
-									<div className="lv-look-hint">玩家音色与 AI 相同，建议换一个更好分辨</div>
+								{props.liveMode === "third" && (
+									<>
+										<div className="lv-look-hint">玩家音色</div>
+										<select
+											className="lv-model-select"
+											value={props.currentPlayerVoiceId}
+											onChange={(e) => {
+												const hit = props.presets.find((p) => p.voiceId === e.target.value);
+												if (hit) props.onPickPlayerVoice(hit);
+											}}
+										>
+											{props.presets.map((preset) => (
+												<option key={preset.id} value={preset.voiceId}>
+													{preset.label}
+												</option>
+											))}
+										</select>
+										{props.currentPlayerVoiceId === props.currentVoiceId && (
+											<div className="lv-look-hint">玩家音色与 AI 相同，建议换一个更好分辨</div>
+										)}
+										<div className="lv-switch-row">
+											<span>台词润色 / 翻译</span>
+											<button
+												type="button"
+												role="switch"
+												aria-checked={props.playerPolish}
+												className={`lv-switch${props.playerPolish ? " lv-on" : ""}`}
+												onClick={props.onTogglePlayerPolish}
+											>
+												<span className="lv-switch-knob" />
+											</button>
+										</div>
+									</>
 								)}
-								<div className="lv-switch-row">
-									<span>台词润色 / 翻译</span>
-									<button
-										type="button"
-										role="switch"
-										aria-checked={props.playerPolish}
-										className={`lv-switch${props.playerPolish ? " lv-on" : ""}`}
-										onClick={props.onTogglePlayerPolish}
-									>
-										<span className="lv-switch-knob" />
-									</button>
-								</div>
+								{props.liveMode === "call" && (
+									<div className="lv-look-hint">
+										视频通话模式：小窗化身跟随你的麦克风口型与视线，说话内容原样直达角色，不润色、不代播。
+									</div>
+								)}
 							</>
 						)}
 
@@ -749,7 +765,7 @@ export function Hud(props: HudProps) {
 											// drive position parallax, so the angle + roll gains are forced to 0 —
 											// disable the sliders instead of showing values that silently do nothing.
 											const stageAngleOff =
-												props.thirdPerson &&
+												props.liveMode === "third" &&
 												Boolean(props.currentPlayerModel) &&
 												(slider.key === "camAngleGain" || slider.key === "gyroAngleGain" || slider.key === "camRollGain" || slider.key === "gyroRollGain");
 											const signed = SIGNED_LOOK_KEYS.has(slider.key);

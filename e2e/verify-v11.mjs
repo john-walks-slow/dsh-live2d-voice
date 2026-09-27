@@ -34,7 +34,7 @@ const sleep = (ms) => page.waitForTimeout(ms);
 const ev = (fn, ...args) => page.evaluate(fn, ...args);
 
 try {
-  await page.goto('http://127.0.0.1:4188/?token=e2etest', { waitUntil: 'domcontentloaded', timeout: 30000 });
+  await page.goto(process.env.E2E_URL ?? 'http://127.0.0.1:4188/?token=e2etest', { waitUntil: 'domcontentloaded', timeout: 30000 });
   await sleep(9000);
   // COLD AGENT, VIEW-FIRST: open an existing session (history → Live2D tab
   // exists, agent cold after the instance restart), open the Live2D tab

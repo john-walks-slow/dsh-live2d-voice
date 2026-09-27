@@ -117,8 +117,10 @@ function liveSection(config: PluginConfig): string {
 		// graceful fallback if motion inspection fails
 	}
 
-	if (config.thirdPerson) {
+	if (config.liveMode === "third") {
 		lines.push("- 当前为第三人称模式：用户的消息由其角色化身说出（可能已经过润色或翻译），请把它当作角色扮演中对方的台词来回应。");
+	} else if (config.liveMode === "call") {
+		lines.push("- 当前为视频通话模式：用户正在和你的角色视频通话，用户的消息就是 TA 本人直接说出的话；回复会被朗读并驱动你的角色形象，就像通话画面对面的对话一样。");
 	}
 	const language = speechLanguageInstruction(config.speechLanguage, config.subtitleLanguage);
 	if (language) lines.push(`- ${language}`);

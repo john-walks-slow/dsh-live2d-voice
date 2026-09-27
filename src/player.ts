@@ -100,9 +100,10 @@ export class PlayerPipeline {
 
 	private async process(sessionId: string, text: string, mode: "queue" | "steer"): Promise<void> {
 		const config = this.deps.resolveSession(sessionId);
-		// Third-person flipped off before this task ran → plain first-person
-		// submit (the input must still reach the agent).
-		if (!config.thirdPerson) {
+		// Mode moved off third-person before this task ran (first-person and
+		// video-call both submit raw) → plain submit (the input must still
+		// reach the agent).
+		if (config.liveMode !== "third") {
 			await this.submitToAgent(sessionId, text, mode);
 			return;
 		}

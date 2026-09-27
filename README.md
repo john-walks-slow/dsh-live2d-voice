@@ -17,6 +17,7 @@ DSH 插件：在会话视图里新增 **Live2D** tab——Live2D 角色随对话
 - 🚪 **独立入口**（v1.3.0，v1.4.1 起 GUI 的 Live2D 界面有"独立入口"按钮直达）：`/live2d-voice/app?session=<id>`——无 GUI 界面的单会话角色页，自带全部能力（语音/字幕/翻译/设置/全屏/实验特性）；冷会话自动经会话控制器恢复（带完整 preset），支持 steer 插话
 - 🎨 **deepseek娘**（v1.3.0 内容）：AI 生成贴图重皮的角色模型（基座 haru，gemini 整图重绘 + alpha 回贴 + UV 覆盖校验），参数驱动与基座逐位一致；见模型库 CATALOG.md
 - 🎭 **第三人称模式**（v1.5.0）：开启后玩家也有自己的角色与音色——双角色同台（左玩家、右 AI）；输入先经润色/翻译层（可选）变成玩家角色的台词，由玩家皮套先念出（TTS + 口型 + 字幕「你」徽章），AI 皮套再回应
+- 📹 **视频通话模式**（v1.6.0）：`liveMode: "call"`——AI 角色居中大画面，你的化身以可拖动小窗（PiP）同屏：口型实时跟随麦克风、头/眼跟随前置摄像头视线追踪；输入原样直达 AI（不润色、不代播），像一场真的视频通话
 - ⌨ **键盘输入**：在 Live2D 页直接对话（走 GUI 会话通道，冷会话自动创建/resume agent）
 - ⚙ **音色快切**：HUD 内置 5 个预设音色，即选即生效
 - 🔇 **静音开关**：只看口型不听声
@@ -77,10 +78,12 @@ pnpm install && sv restart dsh   # 重启 dsh 生效
   // 例："无论用户说什么语言，总是用日语自然交流。用户会看到字幕翻译。"
   "speechPrompt": "",
 
-  // ── 第三人称模式（v1.5.0）──
-  // 总开关：开启后输入由玩家化身先说出（润色 → 玩家 TTS → AI 回应）
-  "thirdPerson": false,
-  // 玩家角色（多模型目录中的角色名；空 = 无形象，仅语音"画外音"）
+  // ── 舞台模式（v1.6.0）──
+  // first = 单角色（默认）| third = 双角色舞台剧（玩家化身先念台词，见下方 player* 字段）
+  // call = 视频通话：输入直达 AI，玩家化身小窗实时跟随你的口型与视线
+  // 旧配置 thirdPerson: true 加载时自动迁移为 "third"
+  "liveMode": "first",
+  // 玩家化身角色（third 的左侧角色 / call 的小窗；多模型目录中的角色名；空 = third 仅语音"画外音"、call 无小窗）
   "playerModelSelection": "",
   // 玩家音色（Fish Audio 预设任选；与 AI 同音色时 ⚙ 会提示换一个）
   "playerVoiceId": "ed3a1c523b524870a85a5a76cb1e0c3d",
@@ -119,8 +122,8 @@ pnpm install && sv restart dsh   # 重启 dsh 生效
 | `gyroParallax` | `false` | 实验性：陀螺仪视差（DeviceOrientation → 头部/身体/眼球角度 + 位置偏移；开启时校准正中姿势） |
 | `emotionMap` | 9 情绪默认表 | 标签 → 表情索引/名称（neutral/joy/sappiness/sadness/anger/surprise/fear/disgust/shy） |
 | `speechPrompt` | `""` | 自定义指令，仅语音模式生效（HUD ⚙ 里也能编辑） |
-| `thirdPerson` | `false` | 第三人称模式总开关（⚙ 面板与系统设置可切，写回配置）；开启后输入由玩家化身先说出 |
-| `playerModelSelection` | `""` | 玩家角色（多模型目录中的角色名）；空 = 无形象仅语音"画外音"，未选模型也可开模式 |
+| `liveMode` | `"first"` | 舞台模式（v1.6.0，⚙ 面板与系统设置的三段选择器可切，写回配置）：`first` 单角色（默认）/ `third` 双角色舞台剧（玩家化身先念）/ `call` 视频通话（输入直达 AI，化身小窗跟随）；旧配置 `thirdPerson: true` 自动迁移为 `"third"` |
+| `playerModelSelection` | `""` | 玩家化身角色（`third` 的左侧角色 / `call` 的小窗化身；多模型目录中的角色名）；空 = third 无形象"画外音"模式、call 无小窗，未选模型也可开模式 |
 | `playerVoiceId` | 元气少年音 | 玩家音色（Fish Audio 参考音色 id，预设任选；与 AI 音色相同时 ⚙ 提示换一个） |
 | `playerPolish` | `true` | 润色/翻译层：把输入改写成玩家角色的台词（按 `playerPrompt` 人设与 `playerSpeechLanguage`）；关闭 = 原文直念 |
 | `playerSpeechLanguage` | `"zh"` | 玩家角色说话语言（润色目标语言；`auto` = 不限） |
@@ -177,6 +180,14 @@ cd ~/.dsh/live2d-voice-models
 - 未选玩家模型也可开启：无形象的"画外音"模式（润色/语音/字幕照常，仅无口型与形象）
 - 玩家台词播放中再次开口（键盘或语音）会打断当前播放，barge-in 语义与第一人称一致；AI 回应中插话同样切断 AI 语音
 
+视频通话模式（v1.6.0）：
+
+- ⚙ 面板或系统设置把舞台模式切到「视频通话」后：AI 角色回到居中大画面（取景与第一人称一致），你的化身出现在一个可拖动的小窗（PiP）里
+- 小窗化身实时"演你"：🎙 监听中口型随麦克风电平开合；开启视线追踪时头/眼/身体朝你人脸在摄像头画面中的方向转动
+- 小窗整窗可拖动，松手自动吸附到最近的角落；不选玩家模型则没有小窗（纯 AI 大画面通话）
+- 输入原样直达 AI——不润色、不由化身代播（这是与第三人称的核心区别），AI 回复照常 TTS 朗读并驱动大画面角色
+- 旧配置 `thirdPerson: true` 加载时自动迁移为 `liveMode: "third"`，行为不变
+
 语音输入细节：
 
 - 识别延迟（流式模式，默认）：**边说边出字**（开口 ≈1s 出首字、实时跟进），说完 ≈0.6s 出定稿并自动提交；`asrMode: nostream` 时为 说完话 0.5s（VAD 判停）+ 识别约 1.3s
@@ -230,6 +241,7 @@ cd ~/.dsh/live2d-voice-models
 - 浏览器→host 上行走 WebSocket（每句一连接）：Chromium 的 `ReadableStream` fetch body 只支持 HTTP/2（HTTP/1.1 下 `ERR_ALPN_NEGOTIATION_FAILED`），而 harness webserver 是 HTTP/1.1
 - 字幕翻译是 host 侧一次性 `ctx.llm.stream` 调用（复用会话的 provider/model，无 sessionId/purpose 故不会被本插件 tap 回环）；每会话串行队列、最多积压 2 句，超出丢最旧——字幕时效优先；译文经 SSE `subtitle-translation` 按 `lineId` 回贴
 - 第三人称管线（v1.5.0）：输入 POST `/live2d-voice/player-line` → host 侧每会话串行队列（润色 = 无 sessionId 的一次性 `ctx.llm.stream` → 玩家表情 → Fish TTS(playerVoiceId)）→ SSE 事件带 `speaker:"player"`（事件名全部复用，缺省 = assistant，向后兼容）→ **玩家台词 TTS 合成完成后才向 agent 提交**，音频事件严格先玩家后 AI；双模型共享单个 Pixi Application（Cubism WebGLManager 是全局单例持 gl 指针，双 WebGL context 会互相抢占致先挂载模型渲染空白）
+- 视频通话模式（v1.6.0）：输入路径与第一人称完全一致（无润色/代播，`submitText` 仅 `third` 走 player-line）；玩家模型挂共享 Pixi Application 的 `StageLayout.window` 小窗（Graphics 圆角矩形 mask 裁剪 + DOM 覆盖层窗框/名牌/拖拽），口型由 mic RMS 包络驱动（攻快收慢），视线追踪开启时头/眼朝向人脸方向；look 位移通道对小窗归零防滑出 mask
 
 ## 开发
 
@@ -244,7 +256,8 @@ node e2e/verify-phase3.mjs   # Phase 3 翻译/多模型/workspace 19 项（需 /
 node e2e/verify-v11.mjs      # v1.1.0 全屏/视线追踪资产/MediaPipe 加载/摄像头工具 10 项（需 --use-fake-device-for-media-stream）
 node e2e/verify-soak.mjs     # 长时闲置 soak（默认 6 分钟，SOAK_MINUTES 可调）
 node e2e/verify-standalone.mjs # 独立入口 12 项（无参引导/挂载/键盘提交/冷会话恢复/语音回路）
-node e2e/verify-third-person.mjs # 第三人称模式 28 项（配置面/双模型同台/全链路 SSE/日志/中→日润色/关闭兜底）
+node e2e/verify-third-person.mjs # 第三人称模式 35 项（配置面/双模型同台/全链路 SSE/日志/中→日润色/关闭兜底）
+node e2e/verify-video-call.mjs   # 视频通话模式 29 项（三态切换/PiP 小窗/拖拽吸附/口型跟随/输入直达/提示词注入）
 
 > 语音/Phase 3 脚本默认硬编码本机 playwright-core（/root/projects/camoufox-mcp/node_modules）与 chromium 路径；`E2E_URL`/`E2E_CFG` 环境变量可覆盖实例地址与配置文件。
 ```

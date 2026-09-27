@@ -16,7 +16,7 @@
  * CubismModel.setParameterValueById — both are routed through setParam().
  */
 
-import { Application } from "pixi.js";
+import { Application, Graphics } from "pixi.js";
 import { Live2DModel as Live2DModelCubism4 } from "pixi-live2d-display-lipsyncpatch/cubism4";
 import { Live2DModel as Live2DModelCubism2 } from "pixi-live2d-display-lipsyncpatch/cubism2";
 import { logger } from "./logger.js";
@@ -115,6 +115,27 @@ export interface StageLayout {
 	scaleGain: number;
 	/** Resting horizontal gaze bias (-1..1): 0 = face the viewer, negative = look left. Third-person gives the two avatars opposing biases so they face each other. */
 	faceBiasX: number;
+	/**
+	 * Video-call self-view window: the model is fill-fitted into a small
+	 * rounded rect (clipped by a Pixi mask) instead of standing on the
+	 * stage. Position/size are fractions of the container so window and
+	 * DOM chrome survive resizes; the DOM overlay (drag/snap/chrome) is
+	 * owned by the view, which feeds the same spec back via setLayout.
+	 */
+	window?: StageWindow;
+}
+
+/** The video-call self-view window spec (fractions of the stage container). */
+export interface StageWindow {
+	/** Top-left corner, as fractions of container width/height (0..1). */
+	x: number;
+	y: number;
+	/** Window width as a fraction of the container width. */
+	w: number;
+	/** width/height ratio (CSS aspect-ratio compatible, e.g. 0.75 = 3:4 portrait). */
+	aspectRatio: number;
+	/** Corner radius in px (matches the DOM chrome's border-radius). */
+	radius: number;
 }
 
 export function isCubismCoreLoaded(): boolean {
@@ -243,6 +264,16 @@ export async function mountModel(
 	}
 	app.stage.addChild(model as never);
 
+	// Video-call self-view: the model lives inside a small rounded-rect
+	// window (mask in stage coordinates; the DOM chrome overlay in the view
+	// draws the visible frame and owns the drag/snap gestures).
+	let windowMask: Graphics | null = null;
+	if (stageLayout.window) {
+		windowMask = new Graphics();
+		app.stage.addChild(windowMask);
+		(model as unknown as { mask: Graphics | null }).mask = windowMask;
+	}
+
 	let camInput: { dx: number; dy: number } | null = null;
 	let gyroInput: { dx: number; dy: number } | null = null;
 	// Exponential smoothing toward the targets — the old model.focus() path
@@ -340,6 +371,20 @@ export async function mountModel(
 	let lastNormalHeight = 0;
 
 	const applyTransform = () => {
+		// Window mode (video-call PiP): the window owns the geometry — user
+		// pan/zoom gestures move the stage camera, not the framed avatar.
+		// Only the per-model key is written; the shared lvTransform stays
+		// owned by the stage model so call-mode gesture assertions on it
+		// keep working.
+		if (stageLayout.window) {
+			model.scale.set(baseScale);
+			model.position.set(baseX, baseY);
+			if (tag) {
+				const key = `lv${tag}Transform`;
+				if (container.dataset[key] !== "0,0,1.000") container.dataset[key] = "0,0,1.000";
+			}
+			return;
+		}
 		model.scale.set(baseScale * userScale);
 		const lookX = camSm.dx * lookParams.camPanGain + gyroSm.dx * lookParams.gyroPanGain;
 		const lookY = camSm.dy * lookParams.camPanGain + gyroSm.dy * lookParams.gyroPanGain;
@@ -376,6 +421,25 @@ export async function mountModel(
 			height = lastNormalHeight;
 		}
 		const internal = model.internalModel;
+		if (stageLayout.window) {
+			// Fill-fit (cover) into the PiP window, anchored near its top so
+			// the avatar's head stays in frame; the mask crops the overflow.
+			const win = stageLayout.window;
+			const winX = width * win.x;
+			const winY = height * win.y;
+			const winW = width * win.w;
+			const winH = winW / win.aspectRatio;
+			baseScale = Math.max(winW / internal.originalWidth, winH / internal.originalHeight) * stageLayout.scaleGain;
+			model.anchor.set(0.5, 0.5);
+			baseX = winX + winW / 2;
+			baseY = winY + winH * 0.1 + (internal.originalHeight * baseScale) / 2;
+			if (windowMask) {
+				const radius = Math.min(win.radius, winW / 2, winH / 2);
+				windowMask.clear().beginFill(0xffffff).drawRoundedRect(winX, winY, winW, winH, radius).endFill();
+			}
+			applyTransform();
+			return;
+		}
 		baseScale = Math.min(width / internal.originalWidth, height / internal.originalHeight) * 0.98 * stageLayout.scaleGain;
 		model.anchor.set(0.5, 0.5);
 		baseX = width * stageLayout.xFraction;
@@ -815,6 +879,17 @@ export async function mountModel(
 			stage.removeEventListener("wheel", onWheel);
 			stage.removeEventListener("dblclick", onDblClick);
 			observer.disconnect();
+			if (windowMask) {
+				// Detach the mask before destroying the model, then dispose
+				// it on the shared stage (owner destroy also covers it via
+				// children, but explicit removal keeps shared mode clean).
+				(model as unknown as { mask: Graphics | null }).mask = null;
+				try {
+					app.stage.removeChild(windowMask);
+					windowMask.destroy();
+				} catch {}
+				windowMask = null;
+			}
 			try {
 				if (model.parent) {
 					model.parent.removeChild(model as never);
