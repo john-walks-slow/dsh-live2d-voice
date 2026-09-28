@@ -4,15 +4,19 @@ DSH 插件：Live2D 实时语音会话视图。源码 `src/`（host）+ `src/cli
 
 ## 必读规范
 
-- **e2e 测试**：`docs/references/260927-e2e-testing.md` —— 分层（light 零 API / heavy 真实 API）、零 API boot、真实 API 门槛。动 e2e 或跑测试前必读。
+- **e2e 测试规范**：`docs/references/260927-e2e-testing.md` —— 业务模块化隔离运行、真实 API 严格孤立、零 API boot、e2e-tester 验收与固化双轨制。任何测试前必读。
 
 ## 开发循环
 
 ```bash
-npm install    # ⚠ 可能挪空 node_modules（见 references 文档"技术要点"）
+npm install          # ⚠ 可能挪空 node_modules（见 references 文档"技术要点"）
 npm run typecheck
 npm run build
-npm run e2e:light   # 默认验证层（零 API）
+
+# 模块化测试（修改哪个模块只测哪个模块，严禁全量陪跑）：
+node e2e/run.mjs <module>    # 如: node e2e/run.mjs gaze / fullscreen / boot
+# 单点套件测试：
+node e2e/run.mjs verify-boot
 ```
 
 e2e 实例：隔离 home + acquire-port 动态端口，见 dsh-e2e skill。
