@@ -78,7 +78,7 @@ function prunePreStepMessages(
 				? m.content.filter((c) => c?.type === "text").map((c) => c.text ?? "").join("")
 				: "";
 		// Keep our own speech guidance — it is the reason the session is lean
-		if (m?.source?.plugin === "dsh-live2d-voice") return true;
+		if (m?.source?.kind === "dsh-live2d-voice") return true;
 		// Strip the entire <available_skills> block (~7.5 KB; useless for live chat)
 		if (text.includes("<available_skills>")) {
 			removedBytes += text.length;

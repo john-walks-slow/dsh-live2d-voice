@@ -153,8 +153,7 @@ function createPluginMessage(text: string) {
 		role: "user",
 		content: [{ type: "text", text }],
 		source: {
-			kind: "plugin",
-			plugin: "dsh-live2d-voice",
+			kind: "dsh-live2d-voice",
 			form: "instructions",
 			summary: "Live2D 语音模式指令",
 		},
@@ -200,7 +199,7 @@ export function applySpeechInjection(ctx: Context, deps: SystemPromptDeps): () =
 				const sessionId = sessionKeyOf(agent);
 				if (!sessionId) return decision;
 				// Already injected for this batch (e.g. multi-agent fan-out) — never duplicate.
-				if (messages.some((m) => (m as { source?: { plugin?: string } })?.source?.plugin === "dsh-live2d-voice")) {
+				if (messages.some((m) => (m as { source?: { kind?: string } })?.source?.kind === "dsh-live2d-voice")) {
 					return decision;
 				}
 				const config = deps.resolveSession(sessionId);
