@@ -1,6 +1,6 @@
 {
 	"name": "dsh-live2d-voice",
-	"version": "1.6.0",
+	"version": "1.6.1",
 	"description": "Live2D session view with realtime voice: continuous voice input, streaming TTS, subtitle translation, multi-model catalog, standalone entry / Live2D 实时语音会话视图：连续语音输入、流式 TTS、字幕翻译、多模型目录、独立入口",
 	"type": "module",
 	"main": "./lib/index.js",
