@@ -166,16 +166,35 @@ export interface TouchLookChannel {
 	onTouchLook(vector: { dx: number; dy: number } | null): void;
 }
 
-export async function mountModel(
-	container: HTMLElement,
-	modelUrl: string,
-	getMouth: () => number,
-	onContextLost?: () => void,
-	layout?: Partial<StageLayout>,
-	shared?: SharedStage,
-	tag?: string,
-	touchLook?: TouchLookChannel,
-): Promise<Live2DHandle> {
+/** Arguments for {@link mountModel}. Named fields replace the positional list
+ * so a swapped pair of same-typed options cannot compile. */
+export interface MountModelOptions {
+	/** Element the canvas is attached to (and the model is centred in). */
+	container: HTMLElement;
+	modelUrl: string;
+	/** Mouth openness for lip sync (0..1), sampled every frame. */
+	getMouth: () => number;
+	/** Fired when the WebGL context is lost or restored; remount from here. */
+	onContextLost?: () => void;
+	layout?: Partial<StageLayout>;
+	/** Shared stage (third-person / call mode) — omit to own the stage. */
+	shared?: SharedStage;
+	/** Per-model dataset key suffix ("Ai" / "Player") for dual-model stages. */
+	tag?: string;
+	/** Touch-mode gaze feed (finger / hover position). */
+	touchLook?: TouchLookChannel;
+}
+
+export async function mountModel({
+	container,
+	modelUrl,
+	getMouth,
+	onContextLost,
+	layout,
+	shared,
+	tag,
+	touchLook,
+}: MountModelOptions): Promise<Live2DHandle> {
 	// Owner mode creates (and later destroys) its own application; shared
 	// mode reuses one — the model is just added to that stage and its
 	// destroy never touches the application or canvas.

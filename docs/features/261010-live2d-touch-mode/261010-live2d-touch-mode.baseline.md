@@ -8,9 +8,9 @@
 
 | 产物 | sha256 |
 |---|---|
-| `lib/client.js` | `7de27bcd233e8d6ca19f9f63584d5c129f178e50e01cf22ff91513af145f0c82` |
+| `lib/client.js` | `c9fd192492b79e7cac3d59db475abc20ff15c2f73c7eb339b3c26ade6047a222` |
 | `lib/index.js` | `ba7c4c692bee4f97f0f3eaf4dae72b545fa3d0e2ecf25ffbae3d0d117d975fc7` |
-| `lib/standalone.js` | `2b6b27f1cf22301bc2e6df492a255ff2ef5a7c886c189d84951bc0184abc393d` |
+| `lib/standalone.js` | `39a3ef2cb886303d06fd949bb3d2c545146c16972474f3eeb0f6100652dcc5e3` |
 
 **2026-10-10 更新（手势诊断契约）**：客户端新增两个诊断字段（只动 client 侧，`lib/index.js` 未变，
 **无需重启 dsh，刷新页面即拿到新 bundle**）：
@@ -20,6 +20,16 @@
   即 `max(current, reserve) >= 2`。**这是精确信号**：队列管理器的 `getCurrentPriority()` 是另一个对象、
   在本构建里恒为 0（源码判定见 `docs/issues/261010-motion-priority-signal/`）。
   e2e 因此改成"等它归零 → **单次**滑动"，不再重试（实测分布 `1 次 ×7`）。
+
+### 产物 sha256 变更历史（不覆盖旧值——旧值代表"那一版曾被验证过"）
+
+| 时间 / commit | client.js | standalone.js | index.js | 变更 |
+|---|---|---|---|---|
+| 2026-10-10 05:58（合并 `91d44b5`） | `677b75f752456cbd…` | `7e306672f9162de3…` | `ba7c4c692bee4f97…` | 触摸模式 + flick 首次上线（真机验收基线） |
+| 2026-10-10 06:5x（`479bb81`） | `c72ae8ae38889d71…` | `4bba35d4880c8b48…` | 未变 | 新增 `lvGestureSeq`（因果归因） |
+| 2026-10-10 07:0x（`23f1333`） | （同上一条之后再次变更） | （同上） | 未变 | 新增 `lvMotionBusy`（先为粗信号） |
+| 2026-10-10 07:2x（`503aaaf`） | `7de27bcd233e8d6c…` | `2b6b27f1cf22301b…` | 未变 | `lvMotionBusy` 换成精确信号（MotionState 优先级），e2e 删重试 |
+| 2026-10-10 07:3x（本次：**① commit 见下**） | `c9fd192492b79e7c…` | `39a3ef2cb886303d…` | `ba7c4c692bee4f97…` | `mountModel` 参数对象化（纯重构）+ 门槛 3 红路取证 |
 
 独立重算：
 

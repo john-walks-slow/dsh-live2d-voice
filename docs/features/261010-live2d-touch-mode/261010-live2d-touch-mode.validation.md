@@ -210,3 +210,7 @@ NEW 的尝试次数分布：1, 2, 2, 2, 2, 2, 2, 2, 2, 2
 - **旧信号删干净**：`src/client/model.ts` 里已无 `getCurrentPriority()` / `queueManager` 判忙路径（仅注释里留了"为什么不用它"）。
 
 复跑：`verify-touch-mode 39/39`（分布 `1 次 ×8`）、`verify-tap 11/11`。
+
+**门槛 3 的红路已补（升级为已验证）**：把 `handleSwipe` 成功分支里的 DOM 契约写入临时注掉（`if (false) container.dataset.lvGesture = value;`），
+重跑同一套件 → **32/39，手势相关 7 条全部转红**（T4a/T4b/T4c/T5/T6a/T6b/T18 都读不到契约值），恢复后 39/39。
+这证明"e2e 观察的契约确实只由那次成功返回写入"——不再只是静态推理。红路注入是**临时**的，未提交（`src/client/model.ts` 已从备份恢复并重跑绿灯）。

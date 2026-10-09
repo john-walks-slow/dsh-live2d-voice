@@ -537,23 +537,23 @@ const TOUCH_LOOK_DECAY_MS = 450;
 		setStatus("loading");
 		logger.info(`Mounting Live2D model: ${modelInfo?.name || "unknown"}`);
 
-		const mountPromise = mountModel(
-			stageRef.current,
-			url,
-			() => {
+		const mountPromise = mountModel({
+			container: stageRef.current,
+			modelUrl: url,
+			getMouth: () => {
 				engineRef.current?.tick();
 				return engineRef.current?.mouthValue("assistant") ?? 0;
 			},
-			() => {
+			onContextLost: () => {
 				// WebGL context lost or restored: reload model
 				logger.warn("WebGL context lost callback triggered, requesting model reload");
 				reloadModel();
 			},
-			dual ? { xFraction: 0.72, scaleGain: 0.8, faceBiasX: AI_FACE_BIAS } : undefined,
-			sharedStageRef.current ?? undefined,
-			"Ai",
-			touchLookChannelRef.current,
-		);
+			layout: dual ? { xFraction: 0.72, scaleGain: 0.8, faceBiasX: AI_FACE_BIAS } : undefined,
+			shared: sharedStageRef.current ?? undefined,
+			tag: "Ai",
+			touchLook: touchLookChannelRef.current,
+		});
 
 		mountPromise
 			.then((mounted) => {
@@ -642,22 +642,22 @@ const TOUCH_LOOK_DECAY_MS = 450;
 			micMouth += (target - micMouth) * (target > micMouth ? 0.4 : 0.16);
 			return micMouth;
 		};
-		const mountPromise = mountModel(
-			stageRef.current,
-			url,
-			inWindow ? mouthFromMic : () => engineRef.current?.mouthValue("player") ?? 0,
-			() => {
+		const mountPromise = mountModel({
+			container: stageRef.current,
+			modelUrl: url,
+			getMouth: inWindow ? mouthFromMic : () => engineRef.current?.mouthValue("player") ?? 0,
+			onContextLost: () => {
 				// Player model context loss: remount via the same effect.
 				logger.warn("Player model WebGL context lost, remounting");
 				setModelInfo((prev) => (prev ? { ...prev, player: prev.player ? { ...prev.player } : prev.player } : prev));
 			},
-			inWindow
+			layout: inWindow
 				? { window: pipWindowOf(pipPosRef.current), scaleGain: 1, faceBiasX: 0 }
 				: { xFraction: 0.28, scaleGain: 0.8, faceBiasX: PLAYER_FACE_BIAS },
-			stage,
-			"Player",
-			touchLookChannelRef.current,
-		);
+			shared: stage,
+			tag: "Player",
+			touchLook: touchLookChannelRef.current,
+		});
 		mountPromise
 			.then((mounted) => {
 				if (cancelled) {
