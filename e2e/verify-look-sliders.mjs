@@ -2,8 +2,8 @@
 /**
  * Signed look-gain sliders e2e — against the e2e instance (:4188).
  *
- * T1 surface: 摄像头 / 陀螺仪 groups each expose three rows (转头 / 旋转 /
- *    位移增益); 整体幅度 keeps its three non-signed amplitude rows.
+ * T1 surface: 摄像头 / 陀螺仪 groups each expose four rows (转头 / 眼球 /
+ *    旋转 / 位移增益); 整体幅度 keeps its three non-signed amplitude rows.
  * T2 signed ranges: every gain slider spans negative→positive (min < 0) and
  *    carries the lv-signed class that draws the zero notch; amplitude
  *    sliders stay unsigned; every gain slider explains itself in a tooltip.
@@ -18,7 +18,7 @@ import pw from '/root/projects/camoufox-mcp/node_modules/playwright-core/index.j
 const { chromium } = pw;
 
 const url = process.env.E2E_URL ?? `http://127.0.0.1:${process.env.DSH_E2E_PORT}/?token=${process.env.DSH_E2E_TOKEN || 'e2etest'}`;
-const STORE = 'lv-look-params-v1';
+const STORE = 'lv-look-params-v2';
 const LOOK_GROUPS = ['摄像头', '陀螺仪', '整体幅度'];
 const SHOT = (n) => `/tmp/lvlook-${n}.png`;
 const results = [];
@@ -154,21 +154,21 @@ try {
   check('T0b', await openLookPanel(), '⚙ popover + 详细参数 open');
   await sleep(800);
   let rows = await readSliders();
-  check('T0c', rows.length === 9, `${rows.length}/9 look slider rows rendered`);
+  check('T0c', rows.length === 11, `${rows.length}/11 look slider rows rendered`);
 
   console.log('=== T1 surface ===');
   const cam = rows.filter((r) => r.group === '摄像头');
   const gyro = rows.filter((r) => r.group === '陀螺仪');
   const amp = rows.filter((r) => r.group === '整体幅度');
-  check('T1a', cam.length === 3, `摄像头 rows = ${JSON.stringify(labelsOf(cam))}`);
-  check('T1b', gyro.length === 3, `陀螺仪 rows = ${JSON.stringify(labelsOf(gyro))}`);
-  check('T1c', labelsOf(cam).join(',') === '转头增益,旋转增益,位移增益', '摄像头 order 转头/旋转/位移');
-  check('T1d', labelsOf(gyro).join(',') === '转头增益,旋转增益,位移增益', '陀螺仪 order 转头/旋转/位移');
+  check('T1a', cam.length === 4, `摄像头 rows = ${JSON.stringify(labelsOf(cam))}`);
+  check('T1b', gyro.length === 4, `陀螺仪 rows = ${JSON.stringify(labelsOf(gyro))}`);
+  check('T1c', labelsOf(cam).join(',') === '转头增益,眼球增益,旋转增益,位移增益', '摄像头 order 转头/眼球/旋转/位移');
+  check('T1d', labelsOf(gyro).join(',') === '转头增益,眼球增益,旋转增益,位移增益', '陀螺仪 order 转头/眼球/旋转/位移');
   check('T1e', amp.length === 3 && labelsOf(amp).join(',') === '最大转头角度,最大位移,最大侧倾', `整体幅度 unchanged = ${JSON.stringify(labelsOf(amp))}`);
 
   console.log('=== T2 signed ranges ===');
   const gains = rows.filter((r) => /增益/.test(r.label));
-  check('T2a', gains.length === 6 && gains.every((r) => r.min < 0), `6 gain sliders, all min<0 (${gains.map((r) => r.min).join(',')})`);
+  check('T2a', gains.length === 8 && gains.every((r) => r.min < 0), `8 gain sliders, all min<0 (${gains.map((r) => r.min).join(',')})`);
   check('T2b', gains.every((r) => r.signed), 'gains carry lv-signed (zero notch)');
   check('T2c', amp.every((r) => r.min >= 0 && !r.signed), 'amplitude sliders stay unsigned');
   check('T2d', gains.every((r) => r.tip.length > 0), 'every gain slider has a tooltip (dual mode: the 对视停用 note)');
@@ -176,8 +176,8 @@ try {
   console.log('=== T3 third-person stage ===');
   if (dual) {
     const off = rows.filter((r) => r.disabled);
-    check('T3a', off.length === 4, `4 head-facing gains disabled (${off.map((r) => r.label).join('/')})`);
-    check('T3b', off.every((r) => /转头增益|旋转增益/.test(r.label)), 'the new 旋转增益 joins 转头增益 in the 对视停用 set');
+    check('T3a', off.length === 6, `6 head-facing gains disabled (${off.map((r) => r.label).join('/')})`);
+    check('T3b', off.every((r) => /转头增益|眼球增益|旋转增益/.test(r.label)), '眼球 + 旋转 join 转头增益 in the 对视停用 set');
     check('T3c', rows.filter((r) => r.group !== '整体幅度' && /位移增益/.test(r.label)).every((r) => !r.disabled), '位移增益 stays live in dual mode');
   } else {
     check('T3a', rows.every((r) => !r.disabled), 'single model: no gain disabled');
@@ -206,7 +206,7 @@ try {
   check('T4d', st.camPanGain === -0.5, `camPanGain persisted = ${st.camPanGain}`);
   check('T4e', st.camRollGain === -1.5, `camRollGain persisted = ${st.camRollGain}`);
   check('T4f', pick(rows, '摄像头', '旋转增益')?.shown === '-1.5', `negative roll renders with the sign (${pick(rows, '摄像头', '旋转增益')?.shown})`);
-  check('T4g', panBounds?.min === -1 && rollBounds?.min === -2, `ranges: 位移 -1..1 (min=${panBounds?.min}), 旋转 -2..2 (min=${rollBounds?.min})`);
+  check('T4g', panBounds?.min === -3 && rollBounds?.min === -2, `ranges: 位移 -3..3 (min=${panBounds?.min}), 旋转 -2..2 (min=${rollBounds?.min})`);
   const rollTip = pick(rows, '陀螺仪', '旋转增益')?.tip ?? '';
   check('T4h', /AngleZ|侧倾/.test(rollTip), `roll tooltip names ParamAngleZ / 侧倾 (${rollTip})`);
   await shot('02-negative-gains');
@@ -217,7 +217,7 @@ try {
   const st2 = await stored();
   rows = await readSliders();
   check('T5a', st2.camRollGain === 1 && st2.gyroRollGain === 1, `标准 preset restores both roll gains (${st2.camRollGain}/${st2.gyroRollGain})`);
-  check('T5b', st2.camPanGain === 0.2 && st2.camAngleGain === 1 && st2.gyroAngleGain === 0.55, '标准 preset restores the legacy gains too');
+  check('T5b', st2.camPanGain === -2 && st2.gyroPanGain === -2 && st2.camAngleGain === 0.6 && st2.camEyeGain === 0.4, '标准 preset restores the new default gains');
   check('T5c', pick(rows, '陀螺仪', '旋转增益')?.shown === '+1', `positive roll gain renders with an explicit + (${pick(rows, '陀螺仪', '旋转增益')?.shown})`);
 
   // Restore whatever the e2e instance was configured with before the run.

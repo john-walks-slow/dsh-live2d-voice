@@ -11,7 +11,7 @@ import type { ConvViewProps } from "@deepseek-ai/dsh-client-ui-conversation/clie
 import { fetchConfig, fetchModelInfo, fetchModelCatalog, fetchModelSelection, openStream, postMessage, postPlayerLine, recognizeUtterance, saveConfig, selectModel, postCameraResult, startAsrUpload, type AsrUpload } from "./api.js";
 import { SpeechEngine } from "./engine.js";
 import { Hud } from "./hud.js";
-import { isCubismCoreLoaded, mountModel, createLive2DStage, DEFAULT_LOOK_PARAMS, compute3dTransform, type Live2DHandle, type LookParams, type SharedStage, type StageWindow } from "./model.js";
+import { isCubismCoreLoaded, mountModel, createLive2DStage, DEFAULT_LOOK_PARAMS, type Live2DHandle, type LookParams, type SharedStage, type StageWindow } from "./model.js";
 import { MicCapture, type MicState } from "./mic.js";
 import { GazeTracker, capturePhoto, loadSavedCalibration, saveCalibration, type GazeCalibration } from "./gaze.js";
 import { TiltParallax } from "./tilt.js";
@@ -95,7 +95,9 @@ export type SubmitPrompt = (
 type ViewProps = ConvViewProps & { submitPrompt?: SubmitPrompt; standalone?: boolean };
 
 /** localStorage key for persisted look params (sliders / presets). */
-const LOOK_PARAMS_STORE = "lv-look-params-v1";
+// v2: the look gains changed from blend weights to signed amplitudes and the
+// head/eye channels split — v1 values mean something else entirely now.
+const LOOK_PARAMS_STORE = "lv-look-params-v2";
 
 /** Restore persisted look params, falling back to defaults. */
 function loadLookParams(): LookParams {
@@ -463,12 +465,12 @@ export function Live2DView(props: ViewProps) {
 	const AI_FACE_BIAS = -0.6;
 	const PLAYER_FACE_BIAS = 0.6;
 	// In third-person the avatars must not turn toward the user: zero the
-	// head/body angle and roll gains and keep only the positional parallax so
-	// camera/gyro still add depth. Single-model (first / call) keeps the
-	// user's params — the character looks at you.
+	// head/body angle, eye and roll gains and keep only the positional
+	// parallax so camera/gyro still add depth. Single-model (first / call)
+	// keeps the user's params — the character looks at you.
 	const stageLookParams = (): LookParams =>
 		modelInfo?.liveMode === "third" && Boolean(modelInfo?.player?.url)
-			? { ...lookParamsRef.current, camAngleGain: 0, gyroAngleGain: 0, camRollGain: 0, gyroRollGain: 0 }
+			? { ...lookParamsRef.current, camAngleGain: 0, gyroAngleGain: 0, camEyeGain: 0, gyroEyeGain: 0, camRollGain: 0, gyroRollGain: 0 }
 			: lookParamsRef.current;
 	// The call-mode PiP avatar MIMICS the user: keep the full head/roll gains
 	// so it visibly follows your movement, but zero the positional pan so the
@@ -839,12 +841,9 @@ export function Live2DView(props: ViewProps) {
 	}, [gyroParallax]);
 
 	// Look loop: while camera gaze or gyro tilt is active, drive the model
-	// every frame from the latest cam/gyro vectors, and apply unified stage 3D transform.
+	// every frame from the latest cam/gyro vectors.
 	useEffect(() => {
 		let raf = 0;
-		const camSm = { dx: 0, dy: 0 };
-		const gyroSm = { dx: 0, dy: 0 };
-		const LERP = 0.18;
 
 		const tick = () => {
 			const cam = gazeRef.current?.active ? camLookRef.current : null;
@@ -862,48 +861,10 @@ export function Live2DView(props: ViewProps) {
 				playerModelRef.current?.setLook(cam, gyro);
 			}
 
-			const targetCam = cam ?? { dx: 0, dy: 0 };
-			const targetGyro = gyro ?? { dx: 0, dy: 0 };
-			camSm.dx += (targetCam.dx - camSm.dx) * LERP;
-			camSm.dy += (targetCam.dy - camSm.dy) * LERP;
-			gyroSm.dx += (targetGyro.dx - gyroSm.dx) * LERP;
-			gyroSm.dy += (targetGyro.dy - gyroSm.dy) * LERP;
-
-			// Unified stage-level 3D perspective transform (single writer)
-			const stageCanvas = stageRef.current?.querySelector("canvas");
-			if (stageCanvas) {
-				const params = lookParamsRef.current;
-				const settling =
-					cam !== null ||
-					gyro !== null ||
-					Math.abs(camSm.dx) + Math.abs(camSm.dy) + Math.abs(gyroSm.dx) + Math.abs(gyroSm.dy) > 0.005;
-				const t3d = settling
-					? compute3dTransform(
-						params.transform3dCamGain,
-						params.transform3dGyroGain,
-						params.transform3dRange,
-						camSm,
-						gyroSm,
-						cam !== null || Math.abs(camSm.dx) + Math.abs(camSm.dy) > 0.002,
-						gyro !== null || Math.abs(gyroSm.dx) + Math.abs(gyroSm.dy) > 0.002,
-					)
-					: null;
-				if (t3d) {
-					if (stageCanvas.style.transform !== t3d.css) stageCanvas.style.transform = t3d.css;
-				} else if (stageCanvas.style.transform) {
-					stageCanvas.style.transform = "";
-
-				}
-			}
-
 			raf = window.requestAnimationFrame(tick);
 		};
 		raf = window.requestAnimationFrame(tick);
-		return () => {
-			window.cancelAnimationFrame(raf);
-			const stageCanvas = stageRef.current?.querySelector("canvas");
-			if (stageCanvas) stageCanvas.style.transform = "";
-		};
+		return () => window.cancelAnimationFrame(raf);
 	}, []);
 
 	// SSE stream

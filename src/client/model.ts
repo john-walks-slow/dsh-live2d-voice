@@ -22,7 +22,6 @@ import { Live2DModel as Live2DModelCubism2 } from "pixi-live2d-display-lipsyncpa
 import { logger } from "./logger.js";
 import {
 	mixLookChannel,
-	compute3dTransform,
 	type LookVector,
 	type LookParams,
 	DEFAULT_LOOK_PARAMS,
@@ -30,7 +29,7 @@ import {
 } from "./look-math.js";
 
 export type { LookParams };
-export { DEFAULT_LOOK_PARAMS, LOOK_PRESETS, compute3dTransform };
+export { DEFAULT_LOOK_PARAMS, LOOK_PRESETS };
 
 export interface Live2DHandle {
 	setExpression(expression: number | string): void;
@@ -420,16 +419,18 @@ export async function mountModel(
 			const lx = mixSigned(lookParams.camAngleGain, lookParams.gyroAngleGain, camSm, "dx");
 			const ly = mixSigned(lookParams.camAngleGain, lookParams.gyroAngleGain, camSm, "dy");
 			const lz = mixSigned(lookParams.camRollGain, lookParams.gyroRollGain, camSm, "dx");
+			// Eyes carry their own gain pair: the gaze can stay subtler than the
+			// head turn (or lead it) instead of always sharing the head mix.
+			const ex = mixSigned(lookParams.camEyeGain, lookParams.gyroEyeGain, camSm, "dx");
+			const ey = mixSigned(lookParams.camEyeGain, lookParams.gyroEyeGain, camSm, "dy");
 			const ar = lookParams.angleRange;
 			const rr = lookParams.rollRange;
-			const bias = stageLayout.faceBiasX;
 
 			const bzGain = lookParams.bodyZGain ?? 0.4;
-			const browGain = lookParams.browGain ?? 0.25;
-			const formGain = lookParams.eyeBallFormGain ?? 0;
 			// Third-person base face angle (bias ±0.6 → ±13.2°) stays decoupled
 			// from angleRange so smaller dynamic head turns don't flatten the stage
 			const faceBiasAngle = stageLayout.faceBiasX * 22;
+			const clamp1 = (v: number) => Math.max(-1, Math.min(1, v));
 
 			const angles: Array<[string, number]> = [
 				[LOOK_IDS.angleX, faceBiasAngle + lx * ar],
@@ -438,15 +439,9 @@ export async function mountModel(
 				[LOOK_IDS.bodyX, (faceBiasAngle + lx * ar) * 0.5],
 				[LOOK_IDS.bodyY, ly * ar * 0.5],
 				[LOOK_IDS.bodyZ, lz * rr * bzGain],
-				[LOOK_IDS.eyeX, Math.max(-1, Math.min(1, stageLayout.faceBiasX + lx))],
-				[LOOK_IDS.eyeY, Math.max(-1, Math.min(1, ly))],
-				[LOOK_IDS.browLY, Math.max(-1, Math.min(1, ly * browGain))],
-				[LOOK_IDS.browRY, Math.max(-1, Math.min(1, ly * browGain))],
+				[LOOK_IDS.eyeX, clamp1(stageLayout.faceBiasX + ex)],
+				[LOOK_IDS.eyeY, clamp1(ey)],
 			];
-			if (formGain !== 0) {
-				// Pure dynamic look shift — no static stage bias so avatars don't stay deformed
-				angles.push([LOOK_IDS.eyeBallForm, Math.max(-1, Math.min(1, lx * formGain))]);
-			}
 			for (const [id, v] of angles) setParam(id, v);
 			applyTransform();
 		}

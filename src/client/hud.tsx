@@ -117,9 +117,10 @@ export interface HudProps {
 
 /**
  * Look-parameter sliders grouped by source (camera / gyro / range). Every
- * *gain* is signed: a negative gain mirrors that channel (look away from
- * the user, lean the other way, parallax against the input), so the sliders
- * span negative→positive with the center at 0.
+ * gain is a signed amplitude multiplier: a negative gain mirrors that channel
+ * (look away from the user, lean the other way, parallax against the input),
+ * 0 switches the source off, and small values scale the motion down linearly
+ * — so the sliders span negative→positive with the center at 0.
  */
 const LOOK_SLIDER_GROUPS: ReadonlyArray<{
 	group: string;
@@ -128,41 +129,33 @@ const LOOK_SLIDER_GROUPS: ReadonlyArray<{
 	{
 		group: "摄像头",
 		sliders: [
-			{ key: "camAngleGain", label: "转头增益", min: -2, max: 2, step: 0.05, tip: "视线偏移在转头中的权重（与陀螺仪按权重混合）：0 = 该源不转头，负值 = 反向转头" },
-			{ key: "camRollGain", label: "旋转增益", min: -2, max: 2, step: 0.05, tip: "视线水平偏移在头部侧倾（ParamAngleZ）中的权重：0 = 不侧倾，负值 = 侧倾反向" },
-			{ key: "camPanGain", label: "位移增益", min: -1, max: 1, step: 0.05, tip: "视线偏移换算成模型整体平移的倍率（直接相乘）：负值 = 视差方向相反" },
+			{ key: "camAngleGain", label: "转头增益", min: -2, max: 2, step: 0.05, tip: "视线偏移驱动头 / 身体转动的振幅：0 = 不转头，负值 = 反向转头；可填很小的值（如 0.05）做极细微的跟随" },
+			{ key: "camEyeGain", label: "眼球增益", min: -2, max: 2, step: 0.05, tip: "视线偏移驱动眼球 (ParamEyeBallX/Y) 的振幅，与转头分开调：比转头小 = 眼神更含蓄，负值 = 眼球反向" },
+			{ key: "camRollGain", label: "旋转增益", min: -2, max: 2, step: 0.05, tip: "视线水平偏移在头部侧倾（ParamAngleZ）中的振幅：0 = 不侧倾，负值 = 侧倾反向" },
+			{ key: "camPanGain", label: "位移增益", min: -3, max: 3, step: 0.05, tip: "视线偏移换算成模型整体平移的倍率（直接相乘）：负值 = 视差方向相反" },
 		],
 	},
 	{
 		group: "陀螺仪",
 		sliders: [
-			{ key: "gyroAngleGain", label: "转头增益", min: -2, max: 2, step: 0.05, tip: "陀螺仪偏移在转头中的权重（与摄像头按权重混合）：0 = 该源不转头，负值 = 反向转头" },
-			{ key: "gyroRollGain", label: "旋转增益", min: -2, max: 2, step: 0.05, tip: "陀螺仪水平偏移在头部侧倾（ParamAngleZ）中的权重：0 = 不侧倾，负值 = 侧倾反向" },
-			{ key: "gyroPanGain", label: "位移增益", min: -1, max: 1, step: 0.05, tip: "陀螺仪偏移换算成模型整体平移的倍率（直接相乘）：负值 = 视差方向相反" },
+			{ key: "gyroAngleGain", label: "转头增益", min: -2, max: 2, step: 0.05, tip: "陀螺仪偏移驱动头 / 身体转动的振幅：0 = 不转头，负值 = 反向转头；可填很小的值" },
+			{ key: "gyroEyeGain", label: "眼球增益", min: -2, max: 2, step: 0.05, tip: "陀螺仪偏移驱动眼球 (ParamEyeBallX/Y) 的振幅，与转头分开调；负值 = 眼球反向" },
+			{ key: "gyroRollGain", label: "旋转增益", min: -2, max: 2, step: 0.05, tip: "陀螺仪水平偏移在头部侧倾（ParamAngleZ）中的振幅：0 = 不侧倾，负值 = 侧倾反向" },
+			{ key: "gyroPanGain", label: "位移增益", min: -3, max: 3, step: 0.05, tip: "陀螺仪偏移换算成模型整体平移的倍率（直接相乘）：负值 = 视差方向相反" },
 		],
 	},
 	{
 		group: "整体幅度",
 		sliders: [
-			{ key: "angleRange", label: "最大转头角度", min: 2, max: 40, step: 1, tip: "转头角度上限（度），与转头增益相乘" },
+			{ key: "angleRange", label: "最大转头角度", min: 2, max: 40, step: 1, tip: "转头角度上限（度）= 增益 × 输入 × 本上限" },
 			{ key: "panRange", label: "最大位移", min: 0.02, max: 0.3, step: 0.01, tip: "平移占容器宽/高的比例上限，与位移增益相乘" },
 			{ key: "rollRange", label: "最大侧倾", min: 0, max: 20, step: 1, tip: "侧倾角上限（度），与旋转增益相乘" },
-		],
-	},
-	{
-		group: "3D 空间变换",
-		sliders: [
-			{ key: "transform3dRange", label: "3D透视角度", min: 0, max: 30, step: 1, tip: "舞台整体 3D CSS 透视旋转最大角度（度）" },
-			{ key: "transform3dCamGain", label: "视线 3D 增益", min: -2, max: 2, step: 0.05, tip: "视线驱动 3D 透视变换的权重：负值 = 反向透视" },
-			{ key: "transform3dGyroGain", label: "陀螺仪 3D 增益", min: -2, max: 2, step: 0.05, tip: "陀螺仪驱动 3D 透视变换的权重：负值 = 反向透视" },
 		],
 	},
 	{
 		group: "扩展可动性",
 		sliders: [
 			{ key: "bodyZGain", label: "身体侧倾联动", min: -1, max: 1, step: 0.05, tip: "头部侧倾时身体 Z 轴旋转 (ParamBodyAngleZ) 的联动增益" },
-			{ key: "browGain", label: "眉毛上下联动", min: -1, max: 1, step: 0.05, tip: "视线垂直看上下时眉毛 (ParamBrowLY/RY) 的微动联动增益" },
-			{ key: "eyeBallFormGain", label: "眼球形变联动", min: -1, max: 1, step: 0.05, tip: "视线移动时眼球形态 (ParamEyeBallForm) 的微动增益" },
 		],
 	},
 ];
@@ -181,22 +174,30 @@ const SIGNED_LOOK_KEYS: ReadonlySet<keyof LookParams> = new Set([
 	"camAngleGain",
 	"camRollGain",
 	"camPanGain",
+	"camEyeGain",
 	"gyroAngleGain",
 	"gyroRollGain",
 	"gyroPanGain",
-	"transform3dCamGain",
-	"transform3dGyroGain",
+	"gyroEyeGain",
 	"bodyZGain",
-	"browGain",
-	"eyeBallFormGain",
 ]);
+
+/**
+ * Trim a gain/amplitude to the shortest text that still tells tiny values
+ * apart: 0.005 must not render as "0.01" (261010 — the 2-decimal rounding hid
+ * exactly the subtle settings the sliders exist for).
+ */
+function trimNumber(value: number): string {
+	const abs = Math.abs(value);
+	const digits = abs === 0 ? 0 : abs < 0.01 ? 6 : abs < 1 ? 3 : 2;
+	return String(Number(value.toFixed(digits)));
+}
 
 /** Compact display for slider values (0.20 → 0.2, 22 → 22°, +0.55). */
 function formatLookValue(key: keyof LookParams, value: number): string {
-	if (key === "angleRange" || key === "rollRange" || key === "transform3dRange") return `${Math.round(value)}°`;
-	const rounded = Math.round(value * 100) / 100;
-	if (SIGNED_LOOK_KEYS.has(key)) return rounded > 0 ? `+${rounded}` : String(rounded);
-	return String(rounded);
+	if (key === "angleRange" || key === "rollRange") return `${Math.round(value)}°`;
+	const text = trimNumber(value);
+	return SIGNED_LOOK_KEYS.has(key) && value > 0 ? `+${text}` : text;
 }
 
 /** Direct number input allowing keyboard typing (including minus signs and decimals) without getting prematurely wiped. */
@@ -208,7 +209,7 @@ function LookParamInput(props: {
 	onChange: (val: number) => void;
 }) {
 	const [text, setText] = useState<string | null>(null);
-	const displayed = text !== null ? text : String(Math.round(props.value * 100) / 100);
+	const displayed = text !== null ? text : trimNumber(props.value);
 
 	return (
 		<input
@@ -640,7 +641,7 @@ export function Hud(props: HudProps) {
 							{!props.eyeTracking && !props.gyroParallax && (
 								<div className="lv-look-hint">开启视线追踪或陀螺仪视差后生效</div>
 							)}
-							<div className="lv-look-hint">转头 / 旋转 / 位移增益均可为负：负值 = 与输入方向相反，0 = 该源不参与</div>
+							<div className="lv-look-hint">转头 / 眼球 / 旋转 / 位移增益均可为负：负值 = 与输入方向相反，0 = 该源不参与；填很小的值可获得极细微的跟随</div>
 							<div className="lv-look-presets">
 								{LOOK_PRESETS.map((preset) => (
 									<button
@@ -666,15 +667,17 @@ export function Hud(props: HudProps) {
 								LOOK_SLIDER_GROUPS.map((group) => (
 									<div key={group.group} className="lv-slider-group">
 										<div className="lv-slider-group-title">{group.group}</div>
-																				{group.sliders.map((slider) => {
+										{group.sliders.map((slider) => {
 											// Third-person stage: characters face each other and camera/gyro only
-											// drive position parallax, so the head angle + roll gains are forced to 0 —
-											// disable the sliders instead of showing values that silently do nothing.
-											// (3D stage perspective transform stays active like position parallax).
+											// drive position parallax, so the head angle / eye / roll gains are
+											// forced to 0 — disable the sliders instead of showing values that
+											// silently do nothing.
 											const stageAngleOff =
 												props.liveMode === "third" &&
 												Boolean(props.currentPlayerModel) &&
-												(slider.key === "camAngleGain" || slider.key === "gyroAngleGain" || slider.key === "camRollGain" || slider.key === "gyroRollGain");
+												(slider.key === "camAngleGain" || slider.key === "gyroAngleGain" ||
+													slider.key === "camEyeGain" || slider.key === "gyroEyeGain" ||
+													slider.key === "camRollGain" || slider.key === "gyroRollGain");
 											const signed = SIGNED_LOOK_KEYS.has(slider.key);
 											return (
 												<label key={slider.key} className="lv-slider-row">
@@ -690,7 +693,7 @@ export function Hud(props: HudProps) {
 														step={slider.step}
 														value={Math.max(slider.min, Math.min(slider.max, props.lookParams[slider.key]))}
 														disabled={stageAngleOff}
-														title={stageAngleOff ? "第三人称对视模式下转头/旋转增益固定为 0（视线输入只做位置视差）" : slider.tip}
+														title={stageAngleOff ? "第三人称对视模式下转头/眼球/旋转增益固定为 0（视线输入只做位置视差）" : slider.tip}
 														onChange={(event) =>
 															props.onLookParamsChange({ [slider.key]: Number(event.target.value) })
 														}
