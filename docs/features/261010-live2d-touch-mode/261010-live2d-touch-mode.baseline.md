@@ -80,7 +80,17 @@ $ sed -n 1944p lib/index.js
 
 （①b 的 `""` 就是 `DEFAULT_CONFIG.modelSelection`——坏文件里那行 `"hiyori"` 已被顶替并落盘。）
 
-### 3.2 残余风险的处置决定
+### 3.2 已知风险（带跟踪入口，不是"候选"）
+
+| 风险 | 复现 | 影响 | 处置 |
+|---|---|---|---|
+| **torn JSON → 整份配置回默认 → 下次 save 落盘** | `DSH_HOME=/tmp/lv-cfg-probe node /tmp/lv-cfg-probe/load-contract.mjs`（① 段）——写坏 JSON 后 `loadConfig()` 返回全默认，随后任意一次 `saveConfig` 把"全默认"写回磁盘 | 不是丢一个键，是**整个配置面**静默回默认且原值不可恢复；根因是 `saveConfig` 非原子写（直接覆盖，无 tmp+rename） | **本轮不修**（动 src 破冻结/改基线），跟踪入口：[`docs/issues/261010-config-load-path-risks/261010-config-load-path-risks.troubleshoot.md`](../../issues/261010-config-load-path-risks/261010-config-load-path-risks.troubleshoot.md) |
+| **`apiKeys` 静默丢元素** | 同脚本 ② 段：`['k1',null,'',123,'k2',{}]` → `["k1","k2"]`；非数组 → `[]` | 一次坏写静默清空用户 key（无提示、无日志） | 同上（同一 issue 记录，含建议修法） |
+| 读-写窗口（并发 patch 撞进同一读→写窗口） | 无法稳定复现（微秒级） | 并发写可能被覆盖 | **接受，不修**（所有设置保存路径共有） |
+
+处置决定与理由写在 issue 文件里；冻结期结束后如需修复，按该文件"建议修法"四条走（原子写 + 解析失败不吞异常 + `apiKeys` warn + shape 校验）。
+
+### 3.3 残余风险的处置决定
 
 - (a) **读路径的默认值填充/强转/非法值回退**：已按上表枚举 + 三条实测覆盖，不再写"未知"。其中 `apiKeys` 静默清空与外层 try/catch 的"torn → 全默认 → 下次 save 落盘"是真实风险，但**本轮决定不修**（要动 `src/`，破冻结、改线上基线；且属既有行为，非本次引入）——记为后续 issue 候选。
 - (b) **读-写窗口**（并发 patch 撞进同一读→写窗口）：也是既有性质，**接受，不修**。
