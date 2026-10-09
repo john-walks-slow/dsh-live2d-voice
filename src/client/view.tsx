@@ -741,15 +741,24 @@ export function Live2DView(props: ViewProps) {
 		const tick = () => {
 			const interval = Math.max(0, idleInterval);
 			if (interval > 0 && !audioPlayingRef.current && modelRef.current) {
+				const defs = modelRef.current.getMotions();
+				// Prefer the "Idle" group; fall back to "" (default for many ripped
+				// models, e.g. the whole game-ripped batch). Those fallback clips are
+				// short game performances rather than long idle loops, so the 20s
+				// default reads as a statue — tighten the cadence for them only, and
+				// keep the user's setting as the ceiling.
+				const idleGroup = defs.find((m) => m.group === "Idle") ? "Idle" : "";
+				const effective = idleGroup === "Idle" ? interval : Math.min(interval, 6);
+				// Diagnostic contract (e2e): the cadence actually in force.
+				const stageEl = stageRef.current;
+				if (stageEl && stageEl.dataset.lvIdleInterval !== String(effective)) stageEl.dataset.lvIdleInterval = String(effective);
 				const sinceInteraction = (Date.now() - lastInteractionRef.current) / 1000;
-				if (sinceInteraction >= interval) {
-					const defs = modelRef.current.getMotions();
-					// Prefer the "Idle" group; fall back to "" (default for many ripped models).
-					const idleGroup = defs.find((m) => m.group === "Idle") ? "Idle" : "";
+				if (sinceInteraction >= effective) {
 					const idlePool = defs.filter((m) => m.group === idleGroup);
 					if (idlePool.length > 0) {
 						const pick = idlePool[Math.floor(Math.random() * idlePool.length)];
-						void modelRef.current.playMotion(pick);
+						// Ambient playback must yield to the user and to real motions.
+						void modelRef.current.playMotion(pick, "idle");
 					}
 					lastInteractionRef.current = Date.now();
 				}
@@ -764,12 +773,16 @@ export function Live2DView(props: ViewProps) {
 
 	// Wire audio start/end to the playing flag.
 	useEffect(() => {
+		// currentSpeaker() always names someone (it defaults to "assistant"), so
+		// it cannot answer "is audio playing now" — using it latched the flag to
+		// true forever and the idle scheduler never ran. speaking() reflects the
+		// actual playback sources.
 		const wire = window.setInterval(() => {
-			const speaking = engineRef.current?.currentSpeaker();
-			if (speaking !== undefined && !audioPlayingRef.current) {
+			const speaking = engineRef.current?.speaking() ?? false;
+			if (speaking && !audioPlayingRef.current) {
 				audioPlayingRef.current = true;
 				lastInteractionRef.current = Date.now();
-			} else if (speaking === undefined && audioPlayingRef.current) {
+			} else if (!speaking && audioPlayingRef.current) {
 				audioPlayingRef.current = false;
 				lastAudioEndRef.current = Date.now();
 			}

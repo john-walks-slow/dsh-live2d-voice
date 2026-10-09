@@ -37,9 +37,11 @@ export interface Live2DHandle {
 	/**
 	 * Play a motion defined in the model's settings file. Returns true on
 	 * success, false if the motion could not be started (missing group,
-	 * out-of-range index, etc.).
+	 * out-of-range index, etc.). Priority decides what it may interrupt:
+	 * "idle" yields to everything, "normal" (default) interrupts idle clips
+	 * only, "force" interrupts anything.
 	 */
-	playMotion(motion: { name: string; group: string; index: number }): Promise<boolean>;
+	playMotion(motion: { name: string; group: string; index: number }, priority?: "idle" | "normal" | "force"): Promise<boolean>;
 	/** Play a random motion from the named group (used by the idle scheduler). */
 	playRandomMotion(group: string, priority?: "idle" | "normal" | "force"): Promise<boolean>;
 	/** Read the motion catalog baked into the loaded model. */
@@ -189,11 +191,19 @@ export async function mountModel(
 		anchor: { set(x: number, y: number): void };
 		parent?: { removeChild(child: never): unknown } | null;
 		getBounds(skipUpdate?: boolean): { x: number; y: number; width: number; height: number };
+		/** Hit-test in stage coordinates; returns the hit area names (empty when none). */
+		hitTest?(x: number, y: number): string[];
 		internalModel: {
 			originalWidth: number;
 			originalHeight: number;
 			coreModel: unknown;
-			motionManager: { lipSyncIds?: string[] };
+			/** Declared HitAreas from the settings file (empty for most ripped models). */
+			hitAreas?: Record<string, unknown>;
+			motionManager: {
+				lipSyncIds?: string[];
+				/** Parsed motions per group; `Sound` is stripped at bind (see below). */
+				definitions?: Record<string, Array<{ Sound?: string }>>;
+			};
 			on(event: "beforeModelUpdate", listener: () => void): unknown;
 		};
 		expression(name: number | string): Promise<unknown>;
@@ -371,7 +381,11 @@ export async function mountModel(
 			_model?: { parameters?: { ids?: readonly string[] } };
 			_parameterIds?: readonly string[];
 		};
-		motionManager: { lipSyncIds?: string[] };
+		motionManager: {
+			lipSyncIds?: string[];
+			definitions?: Record<string, Array<{ Sound?: string }>>;
+		};
+		hitAreas?: Record<string, unknown>;
 		on(event: "beforeModelUpdate", listener: () => void): unknown;
 	};
 	/**
@@ -406,6 +420,17 @@ export async function mountModel(
 	const paramIdsJson = JSON.stringify(resolved);
 	if (tag) container.dataset[`lv${tag}ParamIds`] = paramIdsJson;
 	container.dataset.lvParamIds = paramIdsJson;
+	// The framework plays a motion's own `Sound` on every motion start — with
+	// motion sounds present (33 of the 37 references in the local library ship
+	// the file) an idle motion makes the avatar randomly speak recorded lines
+	// while a TTS turn is running. Audio is owned by the speech pipeline, so
+	// strip the references at bind time (no playback, no requests).
+	const motionDefinitions = internal.motionManager.definitions;
+	if (motionDefinitions) {
+		for (const list of Object.values(motionDefinitions)) {
+			for (const definition of list) if (definition?.Sound) delete definition.Sound;
+		}
+	}
 	const setParam = (id: string, value: number) => {
 		const core = internal.coreModel;
 		if (typeof core.setParamFloat === "function") core.setParamFloat(id, value);
@@ -496,6 +521,57 @@ export async function mountModel(
 	let lastSingleTouchX = 0;
 	let lastSingleTouchY = 0;
 
+	// Tap interaction: a press that neither travels beyond TAP_SLOP_PX nor
+	// stays longer than TAP_MAX_MS counts as a tap — everything else keeps the
+	// pan/zoom semantics. Only the avatar the press landed on responds, and
+	// only when the point actually hits it (declared HitAreas, or its visible
+	// bounds for the many models that ship without HitAreas).
+	const TAP_SLOP_PX = 8;
+	const TAP_MAX_MS = 500;
+	let press: { x: number; y: number; at: number; onModel: boolean; moved: boolean } | null = null;
+
+	/** Which motion group answers a tap on `area` (null = no declared areas). */
+	const tapGroupFor = (area: string | null): string | null => {
+		const groups = Object.keys(internal.motionManager.definitions ?? {});
+		const byName = (want: string) => groups.find((g) => g.toLowerCase() === want.toLowerCase()) ?? null;
+		return (area ? byName(`Tap${area}`) : null) ?? byName("Tap") ?? byName("TapBody");
+	};
+
+	/**
+	 * Handle a tap at stage coordinates. Writes `dataset.lvTap` (`area:group`)
+	 * only when a motion is actually started, so e2e can tell "responded" from
+	 * "no response" (blank space, no Tap group, or a motion already playing).
+	 */
+	const handleTap = (clientX: number, clientY: number): void => {
+		const rect = stage.getBoundingClientRect();
+		const x = clientX - rect.left;
+		const y = clientY - rect.top;
+		const names = typeof model.hitTest === "function" ? model.hitTest(x, y) : [];
+		let area: string | null = names[0] ?? null;
+		if (!area) {
+			// Models that declare HitAreas and miss: no response. Models without
+			// any declared area fall back to "did the tap land on the avatar".
+			if (Object.keys(internal.hitAreas ?? {}).length > 0) return;
+			const bounds = model.getBounds();
+			const inside = x >= bounds.x && x <= bounds.x + bounds.width && y >= bounds.y && y <= bounds.y + bounds.height;
+			if (!inside) return;
+		}
+		const group = tapGroupFor(area);
+		if (!group) return;
+		const list = internal.motionManager.definitions?.[group] ?? [];
+		if (list.length === 0) return;
+		const index = Math.floor(Math.random() * list.length);
+		void (model as unknown as { motion(group: string, index?: number, priority?: number): Promise<boolean> })
+			.motion(group, index, priorityValue("normal"))
+			.then((started) => {
+				if (!started) return;
+				const value = `${area ?? "body"}:${group}`;
+				if (tag) container.dataset[`lv${tag}Tap`] = value;
+				container.dataset.lvTap = value;
+			})
+			.catch(() => {});
+	};
+
 	const onPointerDown = (event: PointerEvent) => {
 		// Stop event from propagating to external gesture listeners
 		event.stopPropagation();
@@ -510,7 +586,9 @@ export async function mountModel(
 				lastSingleTouchX = event.clientX;
 				lastSingleTouchY = event.clientY;
 				gestures.dragOwner = hitAvatar(event);
+				press = { x: event.clientX, y: event.clientY, at: Date.now(), onModel: gestures.dragOwner === model, moved: false };
 			} else if (activeTouches.size === 2) {
+				press = null; // a second finger means pinch, never a tap
 				const points = [...activeTouches.values()];
 				lastPinchDist = Math.hypot(points[0].x - points[1].x, points[0].y - points[1].y);
 				lastPinchMidX = (points[0].x + points[1].x) / 2;
@@ -523,6 +601,9 @@ export async function mountModel(
 			lastMouseX = event.clientX;
 			lastMouseY = event.clientY;
 			gestures.dragOwner = event.button === 0 ? hitAvatar(event) : null;
+			press = event.button === 0
+				? { x: event.clientX, y: event.clientY, at: Date.now(), onModel: gestures.dragOwner === model, moved: false }
+				: null;
 			try {
 				stage.setPointerCapture(event.pointerId);
 			} catch {}
@@ -531,6 +612,8 @@ export async function mountModel(
 
 	const onPointerMove = (event: PointerEvent) => {
 		event.stopPropagation();
+
+		if (press && Math.hypot(event.clientX - press.x, event.clientY - press.y) > TAP_SLOP_PX) press.moved = true;
 
 		if (event.pointerType === "touch") {
 			if (activeTouches.has(event.pointerId)) {
@@ -590,6 +673,8 @@ export async function mountModel(
 
 	const onPointerUp = (event: PointerEvent) => {
 		event.stopPropagation();
+		const pending = press;
+		press = null;
 		try {
 			if (stage.hasPointerCapture(event.pointerId)) {
 				stage.releasePointerCapture(event.pointerId);
@@ -612,6 +697,12 @@ export async function mountModel(
 			isMousePanning = false;
 		}
 		gestures.dragOwner = null;
+		// pointercancel must not fire a tap, and a press that travelled or ran
+		// long is a drag/zoom, not a tap.
+		if (event.type === "pointerup" && pending && pending.onModel && !pending.moved
+			&& Date.now() - pending.at <= TAP_MAX_MS) {
+			handleTap(event.clientX, event.clientY);
+		}
 	};
 
 	const onWheel = (event: WheelEvent) => {
@@ -683,11 +774,11 @@ export async function mountModel(
 				logger.warn(`expression ${String(expression)} failed`, error);
 			});
 		},
-		async playMotion(motion) {
+		async playMotion(motion, priority) {
 			try {
 				return await (model as unknown as {
 					motion(group: string, index?: number, priority?: number): Promise<boolean>;
-				}).motion(motion.group, motion.index, 3);
+				}).motion(motion.group, motion.index, priorityValue(priority ?? "force"));
 			} catch (error) {
 				logger.warn(`motion ${motion.name} failed`, error);
 				return false;

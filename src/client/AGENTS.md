@@ -33,6 +33,10 @@
   - 写参数时序：`beforeModelUpdate` → `model.update()`（raw 消费参数重算 drawables）→ `loadParameters()`（恢复 motion 态）；draw 只读 drawables。绝对写入放 `beforeModelUpdate` 是正确位置（唇形同步/视线同款路径）。
   - `raw.drawables.vertexPositions` 是 per-drawable 的数组套数组，不是扁平 Float32Array。
   - VLM（modlens）对 13~30° 头部转向的判断不可靠（多次把明显转头判成"正面"）；视觉回归一律用受控 A/B 像素 diff（同一页面两状态截图 + PIL 阈值统计）。
+- **点击互动与拖动共存在同一套指针监听里**（model.ts）：`press` 记录起点/时刻/是否命中该化身，位移 >8px 或时长 >500ms 即判为拖动（`pointercancel` 不算点击）。命中判定用 `model.hitTest(x, y)`（**参数是 stage 坐标**，内部自行转模型坐标；库里的 Cubism4 wrapper 对未声明的 hit area 不会幻影命中），模型没声明 HitAreas 时回退可见包围盒；点空白**不响应**。Tap 动作按 `Tap<区域名>` → `Tap` → `TapBody` 找组，用 `NORMAL` 优先级播——框架的 `MotionState.reserve` 保证它只打断 `IDLE`（空闲）动作，不打断 `NORMAL`/`FORCE`。`dataset.lvTap`（`区域:组名`，仅在真的起播时写入）是 e2e 契约。
+- **动作音效必须在绑定时摘掉**：框架的 `MotionManager.startMotion` 会播放动作自带的 `Sound`（`getSoundFile(definition)`），本机模型库里 33/37 个音效文件真实存在 → 角色会随机说出模型附带的录音。`mountModel` 里删 `internalModel.motionManager.definitions[*][*].Sound`。
+- **判断"是否正在放音"不要用 `currentSpeaker()`**：它永远返回具体 speaker（默认 `assistant`），拿它当布尔会永久置真——空闲调度器曾因此完全失效（261010）。用 `engine.speaking()`（活跃 BufferSource）。
+- **空闲调度**：有 `Idle` 组按 `idleInterval`，没有则回退空名组并把间隔收紧到 `min(idleInterval, 6)`（拆包模型的空名动作是短片段，20s 一次像立牌）；空闲动作以 `IDLE` 优先级播，避免抢占用户/真实动作。契约 `dataset.lvIdleInterval`。
 - **运行时注入的 `<style>` 必须打 `data-plugin="dsh-live2d-voice"` 标**（styles.ts `injectLiveStyles` 已做）：宿主在 materialize 时机用 `claimStyles` 把未打标 style 认领给下一个 materialize 的插件，该插件 HMR 重载时会 `removeOwnedStyles` 连带删除——任何插件连续两次 rebuild 就能让本插件全部样式消失（260925 Live 按钮失样式 bug，回归 `e2e/verify-style-claim.mjs`）。新增任何 DOM 注入样式的路径时同样处理。
 - 字幕 DOM 类名（`.lv-sub-card` / `.lv-sub-old` / `.lv-sub-pending`）是 e2e 脚本的断言契约，改名或重构字幕结构时同步更新 `e2e/verify-*.mjs` 选择器。
 - audioSeq 字幕 hold 的 seq 空间**按 speaker 隔离**：assistant 与 player 的 seq 计数器各自每轮从 0 起，engine 的 `currentSeq(speaker)` 按 speaker 过滤——跨 speaker 比较 seq 会击穿 hold（字幕提前或立即释放）。

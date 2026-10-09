@@ -29,8 +29,8 @@ export const MODULES = {
 		],
 	},
 	gaze: {
-		description: '视线追踪、数学计算、参数解析与调节滑块',
-		suites: ['verify-look-math', 'verify-look-sliders', 'verify-param-ids'],
+		description: '视线追踪、数学计算、参数解析、点击互动与调节滑块',
+		suites: ['verify-look-math', 'verify-look-sliders', 'verify-param-ids', 'verify-tap'],
 	},
 	settings: {
 		description: '设置面板、模型与音色选项切换',
