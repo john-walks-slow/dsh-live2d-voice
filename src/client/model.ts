@@ -9,8 +9,8 @@
  * event, which fires each frame after motions/expressions applied their
  * parameters and right before the core model update — so writing the mouth
  * param there wins. Lip-sync parameter ids come from the model's LipSync
- * group, falling back to the standard id for the format
- * ("ParamMouthOpenY" moc3 / "PARAM_MOUTH_OPEN_Y" moc2).
+ * group, falling back to whichever of "ParamMouthOpenY" /
+ * "PARAM_MOUTH_OPEN_Y" the model actually declares.
  *
  * The old Cubism 2.1 core exposes setParamFloat(name, value) instead of
  * CubismModel.setParameterValueById — both are routed through setParam().
@@ -20,6 +20,7 @@ import { Application, Graphics } from "pixi.js";
 import { Live2DModel as Live2DModelCubism4 } from "pixi-live2d-display-lipsyncpatch/cubism4";
 import { Live2DModel as Live2DModelCubism2 } from "pixi-live2d-display-lipsyncpatch/cubism2";
 import { logger } from "./logger.js";
+import { resolveParamIds } from "./param-ids.js";
 import {
 	mixLookChannel,
 	type LookVector,
@@ -364,40 +365,47 @@ export async function mountModel(
 	// EventEmitter methods and the lipSyncIds field need a local structural
 	// view of the internal model.
 	const internal = model.internalModel as unknown as {
-		coreModel: { setParameterValueById?(id: string, value: number): void; setParamFloat?(id: string, value: number): void };
+		coreModel: {
+			setParameterValueById?(id: string, value: number): void;
+			setParamFloat?(id: string, value: number): void;
+			_model?: { parameters?: { ids?: readonly string[] } };
+			_parameterIds?: readonly string[];
+		};
 		motionManager: { lipSyncIds?: string[] };
 		on(event: "beforeModelUpdate", listener: () => void): unknown;
 	};
-	// Cubism 2 uses uppercase PARAM_* ids, Cubism 3+ uses camelCase — the
-	// cores are case-sensitive, so keep format-specific fallbacks.
-	const MOUTH_FALLBACK = kind === "moc2" ? "PARAM_MOUTH_OPEN_Y" : "ParamMouthOpenY";
-	const LOOK_IDS = kind === "moc2"
-		? {
-			angleX: "PARAM_ANGLE_X",
-			angleY: "PARAM_ANGLE_Y",
-			angleZ: "PARAM_ANGLE_Z",
-			bodyX: "PARAM_BODY_ANGLE_X",
-			bodyY: "PARAM_BODY_ANGLE_Y",
-			bodyZ: "PARAM_BODY_ANGLE_Z",
-			eyeX: "PARAM_EYE_BALL_X",
-			eyeY: "PARAM_EYE_BALL_Y",
-			eyeBallForm: "PARAM_EYE_BALL_FORM",
-			browLY: "PARAM_BROW_L_Y",
-			browRY: "PARAM_BROW_R_Y",
-		}
-		: {
-			angleX: "ParamAngleX",
-			angleY: "ParamAngleY",
-			angleZ: "ParamAngleZ",
-			bodyX: "ParamBodyAngleX",
-			bodyY: "ParamBodyAngleY",
-			bodyZ: "ParamBodyAngleZ",
-			eyeX: "ParamEyeBallX",
-			eyeY: "ParamEyeBallY",
-			eyeBallForm: "ParamEyeBallForm",
-			browLY: "ParamBrowLY",
-			browRY: "ParamBrowRY",
-		};
+	/**
+	 * True only when the loaded model really declares this parameter id.
+	 * Cubism 4 wrapper: the real id table (`_model.parameters.ids`), never
+	 * `getParameterIndex()` — unknown ids fall through to its side dictionary
+	 * and get a synthetic index (see src/client/AGENTS.md).
+	 * Cubism 2.1: no enumerable table at all, and its `getParamIndex()` also
+	 * hands out phantom indices for undeclared ids (measured on the bundled
+	 * core: the first unknown id comes back as index == real count), so moc2
+	 * skips probing and keeps the UPPER_SNAKE format default.
+	 */
+	const hasParam = (id: string): boolean => {
+		if (kind === "moc2") return false;
+		const core = internal.coreModel;
+		const ids = core._model?.parameters?.ids ?? core._parameterIds;
+		return Array.isArray(ids) ? ids.includes(id) : false;
+	};
+	// The file suffix does not decide the parameter spelling: many moc3 rigs
+	// (legacy ports, game assets) keep the Cubism 2.1 UPPER_SNAKE ids, and the
+	// cores are case-sensitive, so a hard-coded guess leaves those models
+	// silently undriven. Resolve once against the model's own parameter table
+	// (see param-ids.ts) — camelCase still wins when both exist, and a model
+	// declaring neither keeps the previous no-op behaviour.
+	const resolved = resolveParamIds(kind, hasParam);
+	const MOUTH_FALLBACK = resolved.mouth;
+	const LOOK_IDS = resolved.look;
+	// Diagnostic contract: which ids the drive actually targets. Third-person
+	// mode mounts both avatars into the same container, so the per-tag key is
+	// the stable one (same convention as lvTransform) and the shared key is
+	// only meaningful in single-model mode.
+	const paramIdsJson = JSON.stringify(resolved);
+	if (tag) container.dataset[`lv${tag}ParamIds`] = paramIdsJson;
+	container.dataset.lvParamIds = paramIdsJson;
 	const setParam = (id: string, value: number) => {
 		const core = internal.coreModel;
 		if (typeof core.setParamFloat === "function") core.setParamFloat(id, value);
@@ -758,6 +766,7 @@ export async function mountModel(
 			unregisterMount(model);
 			if (gestures.dragOwner === model) gestures.dragOwner = null;
 			if (tag) delete container.dataset[`lv${tag}Transform`];
+			if (tag) delete container.dataset[`lv${tag}ParamIds`];
 			try {
 				(model as unknown as { destroy: (options?: unknown) => void }).destroy({
 						children: true,

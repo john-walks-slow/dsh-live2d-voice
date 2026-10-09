@@ -28,7 +28,8 @@
 - **`dataset.lvTransform`（.lv-stage 上，"panX,panY,scale"）是 e2e 手势断言契约**：单模型模式由唯一写者写入、稳定可靠；双模型（第三人称）下两个模型每帧都写（last-writer-wins 竞态），区分「哪个模型动了」必须读 per-model 键 `dataset.lvAiTransform` / `dataset.lvPlayerTransform`（mountModel 第 7 参 tag 指定，view.tsx 传 "Ai"/"Player"），不可读共享 lvTransform。与字幕 DOM 类名同级：改 applyTransform/手势结构时同步更新 `e2e/verify-*.mjs` 断言；e2e 里拖动前先点 `.lv-pop-close` 关设置弹窗（弹窗是 stage 兄弟节点，会拦截指针）。
 - **视觉/参数断言的方法论**（260925 排查"angle 不渲染"半天的教训，实际是 VLM 误判）：
   - framework `getParameterValueById` 对不存在的 id 走侧字典（`_notExistParameterId`）照样返回值——readback ≠ 参数存在；判存在用 `coreModel._model.parameters.ids` 或 `strings xxx.moc3`。**`getParameterIndex(id)` 同理不能当存在性判断**（未命中同样落侧字典拿合成索引），`model.ts` 的 `hasParam` 一律走真实 id 表。
-  - 参数 ID 拼写**不由文件格式决定**：大量 moc3 模型（旧版移植、游戏拆包）沿用 Cubism 2.1 的 `PARAM_*` 大写命名，写错拼写是静默无效。统一走 `param-ids.ts` 的 `resolveParamIds(kind, has)` 按模型真实参数表解析；解析结果同时发布到 `container.dataset.lvParamIds`（诊断 + e2e 契约，回归 `e2e/verify-param-ids.mjs`）。
+  - 参数 ID 拼写**不由文件格式决定**：大量 moc3 模型（旧版移植、游戏拆包）沿用 Cubism 2.1 的 `PARAM_*` 大写命名，写错拼写是静默无效。统一走 `param-ids.ts` 的 `resolveParamIds(kind, has)` 按模型真实参数表解析；解析结果同时发布到 `container.dataset.lvParamIds`（双模型另发 per-tag `lv{Ai,Player}ParamIds`，回归 `e2e/verify-param-ids.mjs`）。
+  - **moc2 不做参数探测**：Cubism 2.1 core 没有可枚举的参数表，且它的 `getParamIndex()` 对未声明的 id 同样发放**幻影索引**（实测首个未知 id 返回的索引正好等于真实参数总数）——探测必然假阳性，会把大写模型写进 camelCase 幻影参数（261010 回归，`e2e/verify-param-ids.mjs` 的 zongzi 用例看住）。moc2 一律用格式默认的大写拼写。
   - 写参数时序：`beforeModelUpdate` → `model.update()`（raw 消费参数重算 drawables）→ `loadParameters()`（恢复 motion 态）；draw 只读 drawables。绝对写入放 `beforeModelUpdate` 是正确位置（唇形同步/视线同款路径）。
   - `raw.drawables.vertexPositions` 是 per-drawable 的数组套数组，不是扁平 Float32Array。
   - VLM（modlens）对 13~30° 头部转向的判断不可靠（多次把明显转头判成"正面"）；视觉回归一律用受控 A/B 像素 diff（同一页面两状态截图 + PIL 阈值统计）。
