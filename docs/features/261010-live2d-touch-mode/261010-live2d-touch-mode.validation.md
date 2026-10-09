@@ -124,11 +124,10 @@ e2e 覆盖的是机制与结构（20 条交互路径 + 5 条视觉度量），�
 | 项 | 触发条件 / 依赖 | 状态 |
 |---|---|---|
 | 真机手感四项（§八 第 2/3/5/6 条） | 需要真机（触摸屏）+ 一条鼠标环境 | 待验收；第 6 条**手机上做不了**：需容器 noVNC 桌面里的 Chromium 或经 pc-link 用 Windows 那台电脑，拿不到则记为**延后**（不算通过也不算失败） |
-| **"连续滑动偶发被拒"在真机上的可接受度** | 真机（真实帧率） | 待验收：e2e 里"滑一次没被接受"偶有发生（助手要第 2 次才成功），但 **headless 只有 ≈2 fps**（71 帧/页面生命周期），重试统计**不能外推到真机帧率**。请真机连续快划 10 次，记录需要重划几次、是否影响手感；可接受与否由验收人判定并留结论 |
+| **"连续滑动偶发被拒"在真机上的可接受度** | 真机（真实帧率） | 待验收（清单第 9 条）：产品设计上"动作还在播时新的 NORMAL 手势会被静默拒绝"，e2e 用精确信号规避了这一点（等空闲再滑，全部一次成功）；真机请连续快划 10 次，记录需要重划几次、是否影响手感。**headless ≈2 fps（71 帧/页面生命周期）**，不要在真机上外推 headless 的时序统计 |
 | ~~`dataset.lvGestureSeq`（src 侧"接受信号"）~~ | 已完成（`src/client/model.ts`，仅 client 侧改动） | **已落地**：手势真的起播时 `lvGestureSeq` 单调 +1，被拒绝的滑动不推进；e2e 助手改为断言"计数前进 **且** 值等于期望"，交叉核查指出的"陈旧值假通过"由此从结构上不可能（T14 实测 `seq 1→1`）。注意它解决的是**归因**，不是**即时性**——重试仍然存在，但每次尝试都必须有新的接受计数才算成功 |
-| `dataset.lvMotionBusy`（动作队列状态） | **已落地**（`src/client/model.ts`，与口型/视线同一个 `beforeModelUpdate` 钩子） | 语义：`"1"` = **有动作在播**（`isFinished()` 的反面）。**不是精确的"手势会被拒"信号**：本构建 `MotionManager` 起播不带优先级（`startMotion(motion, false, now)`），`getCurrentPriority()` 恒为 0（实测），无法把"会挡手势的 NORMAL/FORCE"与"会被打断的 IDLE"分开。e2e 用它做"等空闲"提示（上限 1.5s），判定仍由 `lvGestureSeq` 因果校验 |
-| "等队列空闲 → 单次滑动、彻底删掉重试" | 依赖上面那个精确信号（需要库侧支持或自己记录动作时长） | **未达成**：实测在只有"有动作在播"这个粗信号时，单次滑动仍会被偶发拒绝（T4b/T5 变红）。当前形态 = **短等待 + 有界重试（≤8 次）+ 每次尝试都必须推进 `lvGestureSeq`**；输出里会打印真实尝试次数（多为 1 次，个别 2 次），重试是可见的、不是隐藏的 |
-| 冷却(400ms) 与 动作播放中让位 的分离 | 同上（依赖 src 信号） | 待办：当前两者观测相同（都是"没有新手势起播"），T5 只能合并断言并注明边界 |
+| ~~`dataset.lvMotionBusy`（动作队列状态）~~ | **已完成**（`src/client/model.ts`，与口型/视线同一个 `beforeModelUpdate` 钩子） | `"1"` = **现在发 NORMAL 手势会被拒**。读 pixi `MotionManager.state.currentPriority/reservePriority`（NONE=0/IDLE=1/NORMAL=2/FORCE=3），`max(...) >= 2`。源码判定（含文件/行号与调用点）：`docs/issues/261010-motion-priority-signal/261010-motion-priority-signal.troubleshoot.md`。**注意**：队列管理器自身的 `getCurrentPriority()` 是另一个对象、恒为 0——我曾据此错误断言"库不带优先级"（与"钩子不触发"同型号的过度推断，已撤回） |
+| ~~"等队列空闲 → 单次滑动、彻底删掉重试"~~ | **已完成** | 拿到精确信号后，助手改为"等 `lvMotionBusy` 归零（上限 4s）→ **单次**滑动 → 值等于期望且 `lvGestureSeq` 前进"。实测分布 **`1 次 ×7`**（全部一次成功），T17 断言"应当全部为 1 次"；重试已删除（自检用例显式传 attempts 才 >1） |
 | 配置读路径风险（torn→全默认落盘、`apiKeys` 静默丢元素） | 冻结期结束、允许动 `src/config.ts` | 已定位/已复现/已记录：`docs/issues/261010-config-load-path-risks/261010-config-load-path-risks.troubleshoot.md`（含建议修法） |
 | 会话列表里的 ghost 空会话 `session-c50f4e5b` | 下次 dsh 自然重启 | 目录已移入备份，宿主内存里剩一条 `blank:true` 记录；不为此单独重启（与负责人确认） |
 
@@ -179,3 +178,15 @@ NEW 的尝试次数分布：1, 2, 2, 2, 2, 2, 2, 2, 2, 2
 更 canonical 的形态是"等动作队列空闲 → 单次滑动"（需要每帧发布队列状态，见 §十 未结项），
 在拿到该信号之前，助手用**有界重试 + `lvGestureSeq` 因果校验**替代"盲等"：
 每次尝试都必须有新的接受计数，否则不算成功。
+
+### 第二轮交叉核查：`getCurrentPriority()` 恒为 0 的根因（已定论）
+
+我一度写下"本构建 MotionManager 起播不带优先级，所以拿不到精确信号"。审阅者指出这与上一轮的错误同型号（把"我查的那条路不通"当成"没有这条路"）。独立源码判定（`docs/issues/261010-motion-priority-signal/`）结论：
+
+- **不是**调用点传错优先级：`Live2DModel.motion(group, index, priority)` → `MotionManager.startMotion(group, index, priority)`，我们的 `handleTap`/`handleSwipe`/`playMotion` 都按第三参正确传值；
+- `queueManager` 是 `CubismMotionQueueManager`，它的 `startMotion(motion, autoDelete, userTimeSeconds)` 第三参是时间、**不维护** priority——所以 `getCurrentPriority()` 恒为 0 属"查错对象"，不是"库不支持"；
+- 优先级实际在 `MotionManager.state`（`currentPriority` / `reservePriority`，`MotionState.reserve/start` 用它拒绝新动作）；
+
+**修法落地**：`dataset.lvMotionBusy = max(state.currentPriority, state.reservePriority) >= 2`，精确判断"NORMAL 会不会被拒"。拿到它之后重试被删除：助手改为"等空闲 → 单次滑动"，实测 `1 次 ×7` 全绿（`38/38`）。
+
+**这一轮的教训**（与上一轮同形，值得并列记下）：**"我查的那个接口没用" ≠ "这条路不存在"**；定位不到精确信号时，先穷举"接口/对象/时机"三种可能，再决定是否写成"需要上游支持"。

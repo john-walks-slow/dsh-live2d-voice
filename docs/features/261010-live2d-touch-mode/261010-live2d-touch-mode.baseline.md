@@ -8,17 +8,18 @@
 
 | 产物 | sha256 |
 |---|---|
-| `lib/client.js` | `877450732eab3712bc6e41692b66d5e83ecaa2ca341ffe10ab8d2468c889bedd` |
+| `lib/client.js` | `7de27bcd233e8d6ca19f9f63584d5c129f178e50e01cf22ff91513af145f0c82` |
 | `lib/index.js` | `ba7c4c692bee4f97f0f3eaf4dae72b545fa3d0e2ecf25ffbae3d0d117d975fc7` |
-| `lib/standalone.js` | `83bd53ca9d64b99e7e4a709239225f119ee26736166cba6465d323997fa30036` |
+| `lib/standalone.js` | `2b6b27f1cf22301bc2e6df492a255ff2ef5a7c886c189d84951bc0184abc393d` |
 
 **2026-10-10 更新（手势诊断契约）**：客户端新增两个诊断字段（只动 client 侧，`lib/index.js` 未变，
 **无需重启 dsh，刷新页面即拿到新 bundle**）：
 - `dataset.lvGestureSeq`：手势**真的起播**时单调 +1，被拒绝的滑动不推进 → e2e 的因果归因依据；
-- `dataset.lvMotionBusy`：`"1"` 表示**有动作在播**（`motionManager.isFinished()` 的反面）。**它是提示不是精确信号**：
-  本构建的 `MotionManager` 起播时不带优先级（`queueManager.startMotion(motion, false, now)`），
-  所以 `getCurrentPriority()` 恒为 0（实测），无法区分"会挡住手势的 NORMAL/FORCE"与"会被手势打断的 IDLE"。
-  e2e 只用它做"等空闲"的提示（上限 1.5s），判定仍走 `lvGestureSeq`。
+- `dataset.lvMotionBusy`：`"1"` = **现在发 NORMAL 手势会被拒**。读的是 pixi `MotionManager` 的
+  `state.currentPriority` / `state.reservePriority`（`MotionPriority`：NONE=0 / IDLE=1 / NORMAL=2 / FORCE=3），
+  即 `max(current, reserve) >= 2`。**这是精确信号**：队列管理器的 `getCurrentPriority()` 是另一个对象、
+  在本构建里恒为 0（源码判定见 `docs/issues/261010-motion-priority-signal/`）。
+  e2e 因此改成"等它归零 → **单次**滑动"，不再重试（实测分布 `1 次 ×7`）。
 
 独立重算：
 

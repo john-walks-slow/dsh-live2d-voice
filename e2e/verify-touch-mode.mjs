@@ -104,9 +104,8 @@ const clearGesture = () => page.evaluate(() => { delete document.querySelector('
 const gestureSeq = () => page.evaluate(() => document.querySelector('.lv-stage')?.dataset?.lvGestureSeq ?? null);
 /** 动作队列是否空闲（0=空闲）。手势在别的动作播放时会被框架静默拒绝，所以先等它空闲。 */
 const motionIdle = () => page.evaluate(() => document.querySelector('.lv-stage')?.dataset?.lvMotionBusy === '0');
-// 短上限：这个信号是"有动作在播"（含循环的空闲动作），不是"手势一定会被拒"；
-// 等不到就照发——NORMAL 手势本来就能打断 IDLE，真正被拒时由 seq 不前进暴露出来。
-const waitMotionIdle = async (capMs = 1500) => {
+// 精确信号：priority >= NORMAL 时 NORMAL 手势必被拒；等到归零再发（最多等 4s）。
+const waitMotionIdle = async (capMs = 4000) => {
   const deadline = Date.now() + capMs;
   while (Date.now() < deadline) {
     if (await motionIdle()) return true;
@@ -126,10 +125,11 @@ const waitMotionIdle = async (capMs = 1500) => {
  *   - 不重试：一次没被接受就是真的有问题（红），而不是被重试吞掉。
  */
 const swipeAttempts = [];
-const swipeOnce = async (fromX, fromY, dx, dy, expected, { attempts = 3, settleMs = 250, pointerType = 'touch', pointerId = 7 } = {}) => {
-  // 上限 3 次：正常情况 1 次即成（队列空闲），需要第 2 次说明当时有动作在播；
-  // 第 3 次仍不成就判红——留更大的上限只会把真实退化吞掉（见 validation §十）。
-  const cap = Number.isSafeInteger(attempts) ? Math.min(Math.max(attempts, 1), 3) : 3;
+const swipeOnce = async (fromX, fromY, dx, dy, expected, { attempts = 1, settleMs = 250, pointerType = 'touch', pointerId = 7, record = true } = {}) => {
+  // **单次滑动，不重试**：`lvMotionBusy` 现在读的是 MotionState 的
+  // currentPriority/reservePriority（精确的"NORMAL 会不会被拒"），先等它归零再发一次。
+  // 需要第 2 次的场景只应出现在故意走坏路径的自检里（显式传 attempts）。
+  const cap = Number.isSafeInteger(attempts) ? Math.min(Math.max(attempts, 1), 3) : 1;
   let value = null;
   let idle = false;
   let lastSeq0 = null;
@@ -148,11 +148,11 @@ const swipeOnce = async (fromX, fromY, dx, dy, expected, { attempts = 3, settleM
     // 因果判定：值等于期望 **且** 接受计数前进。被拒绝的滑动不推进计数，
     // 所以陈旧值/被丢弃的输入都不可能通过；重试是有界的，且每次都必须重新被接受。
     if (value === expected && seq1 !== null && seq1 !== seq0) {
-      swipeAttempts.push(used);
+      if (record) swipeAttempts.push(used);
       return { ok: true, value, attempts: used, idle, seq0, seq1 };
     }
   }
-  swipeAttempts.push(cap);
+  if (record) swipeAttempts.push(cap);
   return { ok: false, value, attempts: cap, idle, seq0: lastSeq0, seq1: lastSeq1 };
 };
 
@@ -475,7 +475,7 @@ PY`, { encoding: 'utf8' }).trim();
   // （放在 flick 段开头：它不会往动作队列里塞东西，不会污染后续触摸用例）
   // 注意：鼠标指针必须用**与触摸不同的 pointerId**——真实浏览器里 pointerId 全局唯一，
   // 复用同一个 id 会让测试自己制造出"触摸状态没释放"的假象（本轮先踩了这个坑）。
-  const mousePath = await swipeOnce(startX, startY, 160, 0, 'Right:FlickRight', { settleMs: 400, pointerType: 'mouse', pointerId: 21 });
+  const mousePath = await swipeOnce(startX, startY, 160, 0, 'Right:FlickRight', { settleMs: 400, pointerType: 'mouse', pointerId: 21, record: false });
   check('T15 坏路径必判红：鼠标滑动不产生手势（设计如此，计数不前进）',
     mousePath.ok === false && mousePath.value === null && mousePath.seq0 === mousePath.seq1,
     `ok=${mousePath.ok} 实际=${mousePath.value} seq ${mousePath.seq0}→${mousePath.seq1}`);
@@ -520,7 +520,7 @@ PY`, { encoding: 'utf8' }).trim();
 
   // T14 重试有硬上限 + 失败报真实状态；izumi 没有 FlickDown → 该期望永不出现。
   // 它在滑动时**会**真的起播 izumi 自带的手势动作（回退到 Shake），所以放在本段最后。
-  const impossible = await swipeOnce(startX, startY, 160, 0, 'Right:FlickDown', { settleMs: 400 });
+  const impossible = await swipeOnce(startX, startY, 160, 0, 'Right:FlickDown', { settleMs: 400, record: false });
   check('T14 不可能满足的期望必判红（值不等于期望即失败，绝不因为"看起来像"而通过）',
     impossible.ok === false && impossible.value !== 'Right:FlickDown',
     `ok=${impossible.ok} 实际=${impossible.value} seq ${impossible.seq0}→${impossible.seq1}`);
@@ -528,8 +528,8 @@ PY`, { encoding: 'utf8' }).trim();
   // T17 尝试次数分布：把"重试是否真的被用到、用到几次"变成可见数据（≤3 硬上限见助手）
   const dist = swipeAttempts.reduce((acc, n) => ({ ...acc, [n]: (acc[n] ?? 0) + 1 }), {});
   const distText = Object.entries(dist).sort((a, b) => a[0] - b[0]).map(([k, v]) => `${k} 次 ×${v}`).join(', ');
-  check('T17 手势尝试次数分布（≤3；>1 说明发起时队列非空闲）',
-    swipeAttempts.every((n) => n <= 3), `分布: ${distText}`);
+  check('T17 手势尝试次数分布（单次滑动设计：应当全部为 1 次）',
+    swipeAttempts.every((n) => n === 1), `分布: ${distText}`);
 
   check('T9 无页面错误', pageErrors.length === 0, pageErrors.slice(0, 2).join(' | '));
 } finally {

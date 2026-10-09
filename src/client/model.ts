@@ -465,15 +465,19 @@ export async function mountModel(
 		// clip would otherwise keep this at "1" forever). e2e waits for "0" and
 		// then swipes **once** instead of retrying blindly; this hook runs every
 		// frame (verified in the same run that measures head displacement).
-		// NOTE: this is "any motion is playing", not "a motion that would block a
-		// gesture". The precise version needs the playing motion's priority, and
-		// this build's MotionManager starts motions through
-		// `queueManager.startMotion(motion, false, now)` without a priority, so
-		// `getCurrentPriority()` stays 0 (measured) — recorded as a limitation
-		// instead of pretending the signal is exact. e2e waits for "0" with a
-		// short cap and judges acceptance by the sequence counter anyway.
-		const queue = internal.motionManager as unknown as { isFinished?(): boolean };
-		const busy = queue.isFinished?.() === false ? "1" : "0";
+		// Exact "would a NORMAL gesture be refused right now" signal: the pixi
+		// MotionManager keeps MotionState.currentPriority/reservePriority
+		// (MotionPriority.NONE=0, IDLE=1, NORMAL=2, FORCE=3) and refuses a new
+		// motion with priority <= the reserved one. The Cubism queue manager's
+		// own getCurrentPriority() is a different object and stays 0 here, which
+		// is why the signal is read from MotionState
+		// (docs/issues/261010-motion-priority-signal/).
+		// e2e waits for "0" and then swipes ONCE — no retry.
+		const motionManager = internal.motionManager as unknown as {
+			state?: { currentPriority?: number; reservePriority?: number };
+		};
+		const priority = Math.max(motionManager.state?.currentPriority ?? 0, motionManager.state?.reservePriority ?? 0);
+		const busy = priority >= 2 ? "1" : "0";
 		if (container.dataset.lvMotionBusy !== busy) container.dataset.lvMotionBusy = busy;
 		const value = getMouth();
 		const applied = value > 0.002 ? value : 0;
