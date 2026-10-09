@@ -12,7 +12,7 @@
  *   node e2e/run.mjs --list          # 查看所有业务模块与测试套件清单
  *   node e2e/run.mjs real-api        # 运行真实外部 API 套件（需确认成本与网络）
  */
-import { spawnSync } from 'node:child_process';
+import { execSync, spawnSync } from 'node:child_process';
 
 export const MODULES = {
 	boot: {
@@ -97,6 +97,49 @@ if (rawArg === 'light') {
 
 // 去重
 suitesToRun = [...new Set(suitesToRun)];
+
+/**
+ * 浏览器兜底清理（261010 教训：一次卡住的 e2e 留下 11 个 chromium，十一分钟零产出）。
+ * 只认「孤儿」——启动者已退出（ppid = 1）的 chromium 一定是残骸，杀掉不会误伤别人
+ * 正在跑的套件；模式串用 chrom[e] 规避 pkill/正则自伤。
+ */
+const CHROME_PATTERN = 'chrome-linux-arm64/chrom[e]';
+const MAX_RESIDENT_CHROMIUM = 6;
+const listChromium = () => {
+	try {
+		return execSync(`pgrep -f '${CHROME_PATTERN}' || true`, { encoding: 'utf8' })
+			.trim().split(/\s+/).filter(Boolean).map(Number);
+	} catch {
+		return [];
+	}
+};
+const parentOf = (pid) => {
+	try {
+		return Number(execSync(`ps -o ppid= -p ${pid}`, { encoding: 'utf8' }).trim());
+	} catch {
+		return -1;
+	}
+};
+const reapOrphanChromium = (label) => {
+	const orphans = listChromium().filter((pid) => parentOf(pid) === 1);
+	for (const pid of orphans) {
+		try { process.kill(pid, 'SIGKILL'); } catch { /* 已退出 */ }
+	}
+	if (orphans.length) console.log(`[e2e] ${label}: 清理 ${orphans.length} 个孤儿 chromium (${orphans.join(', ')})`);
+	return orphans.length;
+};
+
+reapOrphanChromium('启动前');
+const resident = listChromium().length;
+if (resident > MAX_RESIDENT_CHROMIUM) {
+	console.error(`[e2e] 常驻 chromium = ${resident} > 上限 ${MAX_RESIDENT_CHROMIUM}，疑似上一轮残留或有人在跑重活；先处理干净再跑：`);
+	console.error('      ps -o pid=,ppid=,etime=,args= -p $(pgrep -f \'chrome-linux-arm64/chrom[e]\' | tr "\n" "," | sed "s/,$//")');
+	process.exit(3);
+}
+for (const sig of ['SIGINT', 'SIGTERM']) {
+	process.on(sig, () => { reapOrphanChromium(sig); process.exit(130); });
+}
+process.on('exit', () => reapOrphanChromium('退出'));
 
 console.log(`准备运行 ${suitesToRun.length} 个套件: ${suitesToRun.join(', ')}\n`);
 
