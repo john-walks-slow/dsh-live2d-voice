@@ -125,8 +125,11 @@ const waitMotionIdle = async (capMs = 1500) => {
  *     因此陈旧值不可能造成假通过（交叉核查指出的洞）；
  *   - 不重试：一次没被接受就是真的有问题（红），而不是被重试吞掉。
  */
-const swipeOnce = async (fromX, fromY, dx, dy, expected, { attempts = 4, settleMs = 250, pointerType = 'touch', pointerId = 7 } = {}) => {
-  const cap = Number.isSafeInteger(attempts) ? Math.min(Math.max(attempts, 1), 8) : 4;
+const swipeAttempts = [];
+const swipeOnce = async (fromX, fromY, dx, dy, expected, { attempts = 3, settleMs = 250, pointerType = 'touch', pointerId = 7 } = {}) => {
+  // 上限 3 次：正常情况 1 次即成（队列空闲），需要第 2 次说明当时有动作在播；
+  // 第 3 次仍不成就判红——留更大的上限只会把真实退化吞掉（见 validation §十）。
+  const cap = Number.isSafeInteger(attempts) ? Math.min(Math.max(attempts, 1), 3) : 3;
   let value = null;
   let idle = false;
   let lastSeq0 = null;
@@ -144,8 +147,12 @@ const swipeOnce = async (fromX, fromY, dx, dy, expected, { attempts = 4, settleM
     lastSeq1 = seq1;
     // 因果判定：值等于期望 **且** 接受计数前进。被拒绝的滑动不推进计数，
     // 所以陈旧值/被丢弃的输入都不可能通过；重试是有界的，且每次都必须重新被接受。
-    if (value === expected && seq1 !== null && seq1 !== seq0) return { ok: true, value, attempts: used, idle, seq0, seq1 };
+    if (value === expected && seq1 !== null && seq1 !== seq0) {
+      swipeAttempts.push(used);
+      return { ok: true, value, attempts: used, idle, seq0, seq1 };
+    }
   }
+  swipeAttempts.push(cap);
   return { ok: false, value, attempts: cap, idle, seq0: lastSeq0, seq1: lastSeq1 };
 };
 
@@ -517,6 +524,12 @@ PY`, { encoding: 'utf8' }).trim();
   check('T14 不可能满足的期望必判红（值不等于期望即失败，绝不因为"看起来像"而通过）',
     impossible.ok === false && impossible.value !== 'Right:FlickDown',
     `ok=${impossible.ok} 实际=${impossible.value} seq ${impossible.seq0}→${impossible.seq1}`);
+
+  // T17 尝试次数分布：把"重试是否真的被用到、用到几次"变成可见数据（≤3 硬上限见助手）
+  const dist = swipeAttempts.reduce((acc, n) => ({ ...acc, [n]: (acc[n] ?? 0) + 1 }), {});
+  const distText = Object.entries(dist).sort((a, b) => a[0] - b[0]).map(([k, v]) => `${k} 次 ×${v}`).join(', ');
+  check('T17 手势尝试次数分布（≤3；>1 说明发起时队列非空闲）',
+    swipeAttempts.every((n) => n <= 3), `分布: ${distText}`);
 
   check('T9 无页面错误', pageErrors.length === 0, pageErrors.slice(0, 2).join(' | '));
 } finally {
