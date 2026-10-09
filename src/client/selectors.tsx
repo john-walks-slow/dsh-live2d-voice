@@ -4,6 +4,8 @@ import type {
 	VoicePreset,
 	LanguageOption,
 } from "./types.js";
+import { resolveVoice } from "./api.js";
+import { VoiceLibrary } from "./voice-library.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 1. Live2DModelSelector: 分类与角色模型二级选择器
@@ -139,122 +141,72 @@ export function Live2DModelSelector({
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 2. VoicePresetSelector: 语言与音色二级选择器
+// 2. VoicePresetSelector: 当前音色行 + 音色库入口
 // ─────────────────────────────────────────────────────────────────────────────
 
-const DEFAULT_VOICE_LANGS: LanguageOption[] = [
-	{ id: "all", label: "全部语言" },
-	{ id: "zh", label: "中文" },
-	{ id: "ja", label: "日语" },
-	{ id: "en", label: "英语" },
-];
+/**
+ * 音色 id → 标题的模块级缓存。
+ *
+ * 目录里没有的 id（手填的、或从音色库选了但没进过当前窗口的）也要有个说得出口的名字，
+ * 不能一直显示 `6c777b9c…`。解析失败不是错误：仍可试听，只是回落短 id。
+ */
+const voiceTitles = new Map<string, string>();
 
 export interface VoicePresetSelectorProps {
-	presets: VoicePreset[];
+	/** 当前 voiceId（空 = 未设置）。 */
 	value?: string;
-	onChange: (preset: VoicePreset | null) => void;
-	voiceLanguages?: LanguageOption[];
-	currentLang?: string;
-	onLangChange?: (lang: string) => void;
-	allowEmpty?: boolean;
-	emptyLabel?: string;
+	onChange: (preset: VoicePreset) => void;
 	disabled?: boolean;
-	layout?: "stack" | "row";
-	className?: string;
 }
 
-export function VoicePresetSelector({
-	presets,
-	value,
-	onChange,
-	voiceLanguages,
-	currentLang,
-	onLangChange,
-	allowEmpty = false,
-	emptyLabel = "— 默认音色 —",
-	disabled = false,
-	layout = "stack",
-	className = "",
-}: VoicePresetSelectorProps) {
-	const langs = voiceLanguages && voiceLanguages.length > 0 ? voiceLanguages : DEFAULT_VOICE_LANGS;
+export function VoicePresetSelector({ value, onChange, disabled = false }: VoicePresetSelectorProps) {
+	const [open, setOpen] = useState(false);
+	const [title, setTitle] = useState(() => (value ? (voiceTitles.get(value) ?? "") : ""));
 
-	// 若未提供外部受控 currentLang，则内部自主维护
-	const [internalLang, setInternalLang] = useState("all");
-	const activeLang = currentLang ?? internalLang;
-
-	const handleLangChange = (newLang: string) => {
-		if (onLangChange) {
-			onLangChange(newLang);
-		} else {
-			setInternalLang(newLang);
+	useEffect(() => {
+		if (!value) {
+			setTitle("");
+			return;
 		}
-	};
+		const cached = voiceTitles.get(value);
+		if (cached) {
+			setTitle(cached);
+			return;
+		}
+		let alive = true;
+		resolveVoice(value)
+			.then((entry) => {
+				voiceTitles.set(value, entry.title);
+				if (alive) setTitle(entry.title);
+			})
+			.catch(() => {
+				if (alive) setTitle("");
+			});
+		return () => {
+			alive = false;
+		};
+	}, [value]);
 
-	const filteredPresets = useMemo(() => {
-		return presets.filter((preset) => {
-			if (activeLang === "all") return true;
-			const lang = (preset as VoicePreset & { lang?: string }).lang;
-			if (!lang) return activeLang === "zh";
-			return lang === activeLang;
-		});
-	}, [presets, activeLang]);
-
-	const currentPreset = presets.find((p) => p.voiceId === value);
-	const isInFiltered = filteredPresets.some((p) => p.voiceId === value);
-
-	const groupClass = layout === "row" ? "lv-select-group lv-select-group-row" : "lv-select-group";
+	const label = value ? title || `自定义音色 (${value.slice(0, 8)}…)` : "未设置";
 
 	return (
-		<div className={`${groupClass} ${className}`.trim()}>
-			{langs.length > 1 && (
-				<select
-					className="lv-model-select"
-					disabled={disabled}
-					value={activeLang}
-					onChange={(e) => handleLangChange(e.target.value)}
-					title="音色语言"
-				>
-					{langs.map((l) => (
-						<option key={l.id} value={l.id}>
-							{l.label}
-						</option>
-					))}
-				</select>
+		<div className="lv-voice-picker">
+			<button type="button" className="lv-voice-current" disabled={disabled} title="打开音色库" onClick={() => setOpen(true)}>
+				<span className="lv-voice-name">{label}</span>
+				<span className="lv-voice-hint">选择音色…</span>
+			</button>
+			{open && (
+				<VoiceLibrary
+					currentVoiceId={value}
+					onClose={() => setOpen(false)}
+					onPick={(entry) => {
+						// 先把标题写进缓存：父层的 value 更新后这里立刻显示真名而不是短 id
+						voiceTitles.set(entry.id, entry.title);
+						setOpen(false);
+						onChange({ id: entry.id, label: entry.title, voiceId: entry.id });
+					}}
+				/>
 			)}
-			<select
-				className="lv-model-select"
-				disabled={disabled}
-				value={value ?? ""}
-				onChange={(e) => {
-					const val = e.target.value;
-					if (!val) {
-						onChange(null);
-						return;
-					}
-					const hit = presets.find((p) => p.voiceId === val);
-					if (hit) {
-						onChange(hit);
-					} else {
-						// 针对手填或自定义的 32 位 ID 进行兜底（REC-04）
-						onChange({ id: val, label: `自定义 (${val.slice(0, 8)}…)`, voiceId: val });
-					}
-				}}
-				title="预设音色"
-			>
-				{allowEmpty && <option value="">{emptyLabel}</option>}
-				{/* 若当前值不在预设中，渲染自定义音色项（REC-04） */}
-				{value && !presets.some((p) => p.voiceId === value) && (
-					<option value={value}>自定义音色 ({value.slice(0, 8)}…)</option>
-				)}
-				{!isInFiltered && currentPreset && (
-					<option value={currentPreset.voiceId}>{currentPreset.label} (当前)</option>
-				)}
-				{filteredPresets.map((p) => (
-					<option key={p.id} value={p.voiceId}>
-						{p.label}
-					</option>
-				))}
-			</select>
 		</div>
 	);
 }

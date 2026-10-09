@@ -12,6 +12,8 @@
 - `look-math.ts` — 视线/陀螺仪混合的纯函数（`mixLookChannel`，带符号增益），可被 node 直接跑测试
 - `hud.tsx` — HUD 按钮与 ⚙ 快捷面板（音色/模型/语言/第三人称等）
 - `settings-section.tsx` — 系统设置里的插件设置卡
+- `voice-library.tsx` — 音色库浮层：检索/试听/选用 Fish 公共音色（portal 到 `document.body`）
+- `selectors.tsx` — 模型/音色/LLM 三类选择器（音色选择器 = 当前音色行 + 音色库入口）
 - `subtitle.tsx` / `styles.ts` — 字幕渲染与全部样式
 - `api.ts` / `types.ts` — host 路由调用与共享类型（`Speaker` 等）
 
@@ -42,3 +44,4 @@
 - audioSeq 字幕 hold 的 seq 空间**按 speaker 隔离**：assistant 与 player 的 seq 计数器各自每轮从 0 起，engine 的 `currentSeq(speaker)` 按 speaker 过滤——跨 speaker 比较 seq 会击穿 hold（字幕提前或立即释放）。
 - **第三人称对视世界观**：双模型是"舞台剧"，两角色基准朝向对方（faceBiasX ±0.6 → ±13.2°（faceBiasAngle 固定 22°，与 angleRange 解耦））、仿佛不知道玩家存在；视线/陀螺仪输入在 dual 下只做 panRange 位置视差（camAngleGain/gyroAngleGain/camEyeGain/gyroEyeGain/camRollGain/gyroRollGain 归零，HUD 对应滑条禁用并标注"对视停用"），不驱动转头看用户；单模型模式保持"角色看你"不变。改 look 管线时保住这个分界。
 - **look 增益是带符号振幅，不是混合权重**：`LookParams` 的八个增益（cam/gyro × 转头/眼球/旋转/位移）都是该源的**振幅倍率**：负值 = 该通道与输入反向，0 = 该源不参与，线性可缩放到极小（0.005 就是 0.5% 幅度）。`mixLookChannel` 直接把两路 `输入 × 增益` 相加并饱和到 ±1，`angleRange`/`rollRange`/`panRange` 仍是硬上限——**不要再退回「归一化权重」写法**：分母取增益绝对值会让单源时幅度被约掉（0.005 与 1 等效），这正是 261010 修掉的 bug。头身与眼球各有独立增益对（`camEyeGain`/`gyroEyeGain`），眼球不再被迫跟随转头幅度。物理位移走另一条路径（`applyTransform` 里 `camPanGain`/`gyroPanGain` 直接相乘、不饱和），滑条范围 -3..3 容纳默认 -2。新增 look 通道时同步 `LOOK_SLIDER_GROUPS`（正负范围 + `lv-signed` 类 + tip）、`SIGNED_LOOK_KEYS`、第三人称停用集合，并跑 `e2e/verify-look-math.mjs`（纯数学）与 `e2e/verify-look-sliders.mjs`（面板契约）。
+- **portal 出去的浮层要自带 `.lv-vlib-scope`**：设计令牌（`--lv-*`）定义在 `.lv-root` 上，portal 到 `document.body` 的 DOM 不在该子树里，不加这个类就拿不到任何主题变量（浅色/深色都失效）。同时 `.lv-stage` 带 CSS transform，`position: fixed` 的浮层若留在它子树内会被 transform 劫持成相对定位——浮层一律 portal 到 body。

@@ -19,21 +19,24 @@ import type {
 	StreamHandlers,
 	SubtitlePayload,
 	SubtitleTranslationPayload,
-	VoicePreset,
+	VoiceEntry,
+	VoiceQuery,
+	VoiceWindow,
 } from "./types.js";
 import { logger } from "./logger.js";
 
 async function getJson<T>(url: string): Promise<T> {
 	const response = await fetch(url, { headers: { accept: "application/json" } });
-	if (!response.ok) throw new Error(`GET ${url} → HTTP ${response.status}`);
+	if (!response.ok) {
+		const body = (await response.json().catch(() => ({}))) as { message?: string };
+		throw new Error(body.message ?? `GET ${url} → HTTP ${response.status}`);
+	}
 	return (await response.json()) as T;
 }
 
-/**
- * Load the voice presets + the effective config. With a session id the
- * config carries the workspace overlay; without it the global layer.
- */
-export function fetchConfig(sessionId?: string): Promise<{ config: PublicConfig; presets: VoicePreset[]; voiceLanguages: LanguageOption[]; languages: LanguageOption[] }> {
+/** Load the voice presets + the effective config. With a session id the
+ * config carries the workspace overlay; without it the global layer. */
+export function fetchConfig(sessionId?: string): Promise<{ config: PublicConfig; languages: LanguageOption[] }> {
 	const query = sessionId ? `?session=${encodeURIComponent(sessionId)}` : "";
 	return getJson(`/live2d-voice/config${query}`);
 }
@@ -52,6 +55,47 @@ export async function saveConfig(patch: Partial<PublicConfig> & { apiKeys?: stri
 	});
 	if (!response.ok) throw new Error(`POST /live2d-voice/config → HTTP ${response.status}`);
 	return (await response.json()) as { config: PublicConfig };
+}
+
+/**
+ * One page of the Fish public voice library (100 entries per page).
+ *
+ * Conditions are AND, multiple tags are OR — the free tier opens a separate
+ * 1000-entry window per query, so filtering must happen upstream.
+ */
+export function fetchVoices(query: VoiceQuery): Promise<VoiceWindow> {
+	const params = new URLSearchParams();
+	if (query.title) params.set("q", query.title);
+	if (query.language) params.set("language", query.language);
+	for (const tag of query.tags ?? []) params.append("tag", tag);
+	if (query.page && query.page > 1) params.set("page", String(query.page));
+	if (query.refresh) params.set("refresh", "1");
+	const suffix = params.toString();
+	return getJson(`/live2d-voice/voices${suffix ? `?${suffix}` : ""}`);
+}
+
+/** Resolve one voice by id — the display name for a hand-filled voiceId. */
+export async function resolveVoice(voiceId: string): Promise<VoiceEntry> {
+	const body = await getJson<{ entry: VoiceEntry }>(`/live2d-voice/voices/${voiceId}`);
+	return body.entry;
+}
+
+/**
+ * Audition one voice. Resolves to an object URL the caller owns (revoke it
+ * when done) — the host answers with the author's pre-rendered sample when the
+ * voice has one, otherwise a synthesized WAV.
+ */
+export async function previewVoice(voiceId: string): Promise<string> {
+	const response = await fetch("/live2d-voice/voice-preview", {
+		method: "POST",
+		headers: { "content-type": "application/json" },
+		body: JSON.stringify({ voiceId }),
+	});
+	if (!response.ok) {
+		const body = (await response.json().catch(() => ({}))) as { message?: string };
+		throw new Error(body.message ?? `HTTP ${response.status}`);
+	}
+	return URL.createObjectURL(await response.blob());
 }
 
 export async function postMessage(sessionId: string, text: string, mode: "queue" | "steer" = "queue"): Promise<void> {

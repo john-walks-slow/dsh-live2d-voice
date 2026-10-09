@@ -43,7 +43,10 @@ await build({
 	target: "es2022",
 	minify: true,
 	sourcemap: false,
-	external: ["react", "react-dom/*", "react/jsx-runtime", "@deepseek-ai/*"],
+	// react-dom (bare) is required for createPortal; "react-dom/*" alone does
+	// not cover it, and bundling a second React DOM into the shell is not an
+	// option.
+	external: ["react", "react-dom", "react-dom/*", "react/jsx-runtime", "@deepseek-ai/*"],
 	logLevel: "info",
 });
 const body = await readFile(clientBundle, "utf8");

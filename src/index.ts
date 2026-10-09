@@ -10,7 +10,8 @@
  *     injected as a per-turn user plugin message (mnemon-style) only while the
  *     session's Live2D view is open — immune to preset `complete` semantics.
  *   - web routes (src/routes.ts): SSE hub, config, message submission, model
- *     assets, and the Cubism Core script injection.
+ *     assets, the Fish public voice library (search/preview), and the Cubism
+ *     Core script injection.
  *
  * Configuration lives in <DSH_HOME>/live2d-voice.json (src/config.ts), not in
  * cordis config, so the GUI can rewrite it at runtime.
@@ -18,6 +19,7 @@
 
 import type { Context } from "@deepseek-ai/cordis";
 import { loadConfig, resolveApiKeys, saveConfig } from "./config.js";
+import { VoiceCatalogService } from "./voice-catalog.js";
 import { SseHub } from "./events.js";
 import { applySpeechTap } from "./speech.js";
 import { SpeechModes, applySpeechInjection } from "./system-prompt.js";
@@ -62,7 +64,8 @@ export function apply(ctx: Context): () => void {
 	});
 	const cameraBridge = new CameraBridge(hub);
 	const disposeCameraTool = applyCameraTool(ctx, hub, cameraBridge);
-	const disposeRoutes = installRoutes(ctx, { hub, getConfig, resolveKeys: resolveApiKeys, saveConfig, cameraBridge, playerPipeline });
+	const voiceCatalog = new VoiceCatalogService(getConfig, resolveApiKeys);
+	const disposeRoutes = installRoutes(ctx, { hub, getConfig, resolveKeys: resolveApiKeys, saveConfig, cameraBridge, playerPipeline, voiceCatalog });
 
 	ctx.logger.info("dsh-live2d-voice: loaded (config: " + loadConfig().voiceId.slice(0, 8) + "… voice)");
 	return () => {

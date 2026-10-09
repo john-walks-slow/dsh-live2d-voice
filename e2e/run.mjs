@@ -33,8 +33,8 @@ export const MODULES = {
 		suites: ['verify-look-math', 'verify-look-sliders', 'verify-param-ids', 'verify-tap'],
 	},
 	settings: {
-		description: '设置面板、模型与音色选项切换',
-		suites: ['verify-settings-model'],
+		description: '设置面板、模型与音色库',
+		suites: ['verify-settings-model', 'verify-voice-library'],
 	},
 	styles: {
 		description: '样式注入与插件间 CSS 认领隔离',

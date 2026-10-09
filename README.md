@@ -20,7 +20,7 @@ DSH 插件：在会话视图里新增 **Live2D** tab——Live2D 角色随对话
 - 🎭 **第三人称模式**（v1.5.0）：开启后玩家也有自己的角色与音色——双角色同台（左玩家、右 AI）；输入先经润色/翻译层（可选）变成玩家角色的台词，由玩家皮套先念出（TTS + 口型 + 字幕「你」徽章），AI 皮套再回应
 - 📹 **视频通话模式**（v1.6.0）：`liveMode: "call"`——AI 角色居中大画面，你的化身以可拖动小窗（PiP）同屏：口型实时跟随麦克风、头/眼跟随前置摄像头视线追踪；输入原样直达 AI（不润色、不代播），像一场真的视频通话
 - ⌨ **键盘输入**：在 Live2D 页直接对话（走 GUI 会话通道，冷会话自动创建/resume agent）
-- ⚙ **音色快切**：HUD 内置 5 个预设音色，即选即生效
+- 🔊 **音色库**：⚙ 面板与系统设置里的音色入口直连 Fish Audio 公共音色库——关键词全库检索、按语言/标签筛选、逐条试听（优先放作者预渲染样本，零配额），选中即写回 `voiceId`
 - 🔇 **静音开关**：只看口型不听声
 
 ## 安装
@@ -36,14 +36,14 @@ pnpm install && sv restart dsh   # 重启 dsh 生效
 
 ## 配置
 
-配置文件：`<DSH_HOME>/live2d-voice.json`（如 `~/.dsh/live2d-voice.json`）。保存后刷新页面即生效（音色也可在 HUD 里直接切换，会写回该文件）。
+配置文件：`<DSH_HOME>/live2d-voice.json`（如 `~/.dsh/live2d-voice.json`）。保存后刷新页面即生效（音色也可在 ⚙ / 系统设置的**音色库**里挑，会写回该文件）。
 
 ```jsonc
 {
   // 角色模型目录：包含 .model3.json 的文件夹（Cubism 4）
   "modelPath": "/root/.dsh/live2d-voice-models/haru",
 
-  // Fish Audio 音色 id（见下方预设表）
+  // Fish Audio 音色 id（界面里从音色库挑；下方预设表是默认值与示例）
   "voiceId": "0c7771ca5910484e8a4933068017fcee",
 
   // TTS 模型名
@@ -86,7 +86,7 @@ pnpm install && sv restart dsh   # 重启 dsh 生效
   "liveMode": "first",
   // 玩家化身角色（third 的左侧角色 / call 的小窗；多模型目录中的角色名；空 = third 仅语音"画外音"、call 无小窗）
   "playerModelSelection": "",
-  // 玩家音色（Fish Audio 预设任选；与 AI 同音色时 ⚙ 会提示换一个）
+  // 玩家音色（音色库任选；与 AI 同音色时 ⚙ 会提示换一个）
   "playerVoiceId": "ed3a1c523b524870a85a5a76cb1e0c3d",
   // 润色/翻译层：把输入改写成玩家角色的台词（失败自动回退原文）
   "playerPolish": true,
@@ -109,7 +109,7 @@ pnpm install && sv restart dsh   # 重启 dsh 生效
 | --- | --- | --- |
 | `modelPath` | `""` | 必填。两种形态：目录直接放一个或多个 `.model3.json`（多文件时同样出现 ⚙ 切换器）；或放多个角色子目录（每个一级子目录一个 `.model3.json`）。为空时页面显示配置引导，也不会注入任何提示词；可覆盖于 workspaces（资产路由多根解析） |
 | `modelSelection` | `""` | 多模型目录下当前选中的角色名（空 = 第一个） |
-| `voiceId` | rem | Fish Audio 参考音色 id |
+| `voiceId` | rem | Fish Audio 参考音色 id；界面上通过**音色库**挑选（全库检索 + 试听），也可手填任意 32 位 id |
 | `ttsModel` | `s2.1-pro-free` | Fish Audio TTS 模型 |
 | `apiKeys` | `[]` | 内联 key 列表（优先于 `apiKeyFile`） |
 | `apiKeyFile` | `""` | key 文件路径（每行一个 key 或 JSON 数组） |
@@ -125,7 +125,7 @@ pnpm install && sv restart dsh   # 重启 dsh 生效
 | `speechPrompt` | `""` | 自定义指令，仅语音模式生效（HUD ⚙ 里也能编辑） |
 | `liveMode` | `"first"` | 舞台模式（v1.6.0，⚙ 面板与系统设置的三段选择器可切，写回配置）：`first` 单角色（默认）/ `third` 双角色舞台剧（玩家化身先念）/ `call` 视频通话（输入直达 AI，化身小窗跟随）；旧配置 `thirdPerson: true` 自动迁移为 `"third"` |
 | `playerModelSelection` | `""` | 玩家化身角色（`third` 的左侧角色 / `call` 的小窗化身；多模型目录中的角色名）；空 = third 无形象"画外音"模式、call 无小窗，未选模型也可开模式 |
-| `playerVoiceId` | 元气少年音 | 玩家音色（Fish Audio 参考音色 id，预设任选；与 AI 音色相同时 ⚙ 提示换一个） |
+| `playerVoiceId` | 元气少年音 | 玩家音色（Fish Audio 参考音色 id，音色库任选；与 AI 音色相同时 ⚙ 提示换一个） |
 | `playerPolish` | `true` | 润色/翻译层：把输入改写成玩家角色的台词（按 `playerPrompt` 人设与 `playerSpeechLanguage`）；关闭 = 原文直念 |
 | `playerSpeechLanguage` | `"zh"` | 玩家角色说话语言（润色目标语言；`auto` = 不限） |
 | `playerPrompt` | `""` | 玩家人设，润色提示词的一部分（语气/口癖/自称等） |
@@ -136,7 +136,7 @@ pnpm install && sv restart dsh   # 重启 dsh 生效
 
 > **预设兼容**：语音模式指令以**用户消息注入**（`agent/pre-step` 向组装消息追加一条 role:user 的插件消息，参考 dsh-mnemon 的注入方式）而非 systemPrompt section——不受任何 preset 的 `complete: true` 语义影响，`chat` 等极简预设下同样生效。注入消息带 `source: {kind:"plugin", plugin:"dsh-live2d-voice"}` 标识，会话日志可见。
 
-内置音色预设（HUD ⚙ 里可直接切换）：
+内置音色预设（`voiceId` 的默认值、也是文档示例；界面里换音色走**音色库**，不再局限于这张表）：
 
 | 预设 | voiceId |
 | --- | --- |
@@ -166,6 +166,19 @@ cd ~/.dsh/live2d-voice-models
 3. AI 说话时直接开口即可**打断**（barge-in 立即静音角色并转向你的新输入）；正在生成回复时的新语音会以 steer 模式插队
 4. 表情/口型/字幕随回复自动驱动；🔇 静音、💬 字幕开关、⛶ 全屏、⚙ 音色/模型/语言/视线追踪
 5. 全屏 + 语音监听时屏幕保持常亮——适合把一台旧手机常驻 Live2D 页当角色终端；长时间静默挂机无内存增长，说话即响应
+
+### 音色库（检索 + 试听 + 选用）
+
+Live2D ⚙ 面板的「角色音色」行、系统设置 →「Live2D 角色与语音」→ ② 语音合成里的音色行，点开都是同一个音色库：
+
+1. **打开即是热门榜**（全局热门窗口第一页 100 条，按 Fish 的 score 排序）；首屏 1~4 秒（宿主缓存 12 小时，之后同条件查询瞬时返回）。
+2. **搜索框搜全库**——关键词直接发给 Fish 的标题检索（如「雷姆」秒回 13 条），能搜到热门榜之外的音色。
+3. **语言 / 标签筛选**：全部 / 中文 / 日语 / 英语 / 韩语；动漫 / 角色 / 女声 / 男声 / 旁白 / 讲故事。条件之间是「且」，多个标签之间是「或」（Fish 的多 tag 就是并集，且**大小写敏感**）。
+4. **试听**：优先播放音色作者预渲染的样本（音色母语、零 TTS 配额、点了就响）；约 2% 没上传样本的音色才现场用官方示例文本合成（此时消耗一次 TTS）。再点一次或点别的行会停掉当前试听。
+5. **选用**：写回 `voiceId`（玩家音色行则写 `playerVoiceId`），面板关闭、立即生效。列表底部「显示更多」继续追加下一页 100 条。
+6. 目录外的 id（手填的、或从别处拷来的）在音色行上会显示成**解析出的音色标题**而不是一串 hex；内置 25 条精选音色的中文名（如「温柔女仆 · 雷姆」）由本地预设表直接给出，不占用上游请求。
+
+音色库依赖宿主侧的 Fish 出网（与 TTS 同一套 key 与代理）：Key 未配置或上游不可达时，面板顶部会显示真实错误信息，不会静默给一个空列表。
 
 角色与字幕（v0.3.0）：
 

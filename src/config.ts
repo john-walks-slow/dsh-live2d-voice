@@ -12,7 +12,13 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, statSy
 import { join, basename } from "node:path";
 import { homedir } from "node:os";
 
-/** Recommended Fish Audio voice presets (same table as the fish-audio skill). */
+/**
+ * Curated Fish Audio voices: 25 sound-alikes verified by synthesis.
+ *
+ * Not a UI list any more (the GUI browses the public library now, see
+ * voice-catalog.ts) — they back the deployment default `voiceId` and the
+ * README preset table.
+ */
 export const VOICE_PRESETS = [
 	{ id: "rem", label: "温柔女仆 · 雷姆", voiceId: "0c7771ca5910484e8a4933068017fcee", lang: "ja" },
 	{ id: "maid", label: "元气女仆", voiceId: "abf4fa2e25634b41aadc4e0ef9ddaea5", lang: "ja" },
@@ -44,13 +50,6 @@ export const VOICE_PRESETS = [
 	// 英语 / VTuber
 	{ id: "filian", label: "英语 VTuber · Filian", voiceId: "39d029582e9743e29f7c9e31fc3149e7", lang: "en" },
 	{ id: "neuro-sama", label: "AI 声 · Neuro-sama", voiceId: "b2b2d0fa88ee44d789da28ebbd97421e", lang: "en" },
-] as const;
-
-export const VOICE_LANGUAGES = [
-	{ id: "all", label: "全部语言" },
-	{ id: "zh", label: "中文" },
-	{ id: "ja", label: "日本語" },
-	{ id: "en", label: "English" },
 ] as const;
 
 export interface PluginConfig {

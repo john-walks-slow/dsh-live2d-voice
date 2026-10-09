@@ -69,6 +69,39 @@ export interface VoicePreset {
 	lang?: string;
 }
 
+/** One voice in the Fish public library. */
+export interface VoiceEntry {
+	id: string;
+	title: string;
+	description: string;
+	languages: string[];
+	tags: string[];
+	/** Upstream like count — the library's popularity signal. */
+	likes: number;
+	/** Cover path relative to the Fish CDN; "" when absent. */
+	cover: string;
+}
+
+/** One page of a voice-library query window. */
+export interface VoiceWindow {
+	entries: VoiceEntry[];
+	/** Upstream match count for the query (up to the free tier's 1000). */
+	total: number;
+	page: number;
+	hasMore: boolean;
+}
+
+/** Library query: conditions are AND, multiple tags are OR (Fish's union). */
+export interface VoiceQuery {
+	/** Whole-library title keyword. */
+	title?: string;
+	/** ISO 639-1 lowercase code. */
+	language?: string;
+	tags?: string[];
+	page?: number;
+	refresh?: boolean;
+}
+
 export interface LanguageOption {
 	id: string;
 	label: string;

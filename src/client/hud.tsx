@@ -47,11 +47,7 @@ export interface HudProps {
 	    pulse animation — the halo only plays while the user is talking. */
 	micLoud: boolean;
 	asrConfigured: boolean;
-	presets: VoicePreset[];
 	languages: LanguageOption[];
-	voiceLanguages: LanguageOption[];
-	currentVoiceLang: string;
-	onPickVoiceLang: (id: string) => void;
 	currentVoiceId: string;
 	currentSttLanguage: string;
 	/** Live2D model catalog */
@@ -471,13 +467,8 @@ export function Hud(props: HudProps) {
 									<>
 										<div className="lv-look-hint">玩家音色</div>
 										<VoicePresetSelector
-											presets={props.presets}
 											value={props.currentPlayerVoiceId}
-											onChange={(p) => {
-												if (p) props.onPickPlayerVoice(p);
-											}}
-											voiceLanguages={props.voiceLanguages}
-											layout="stack"
+											onChange={(preset) => props.onPickPlayerVoice(preset)}
 										/>
 										{props.currentPlayerVoiceId === props.currentVoiceId && (
 											<div className="lv-look-hint">玩家音色与 AI 相同，建议换一个更好分辨</div>
@@ -515,17 +506,7 @@ export function Hud(props: HudProps) {
 
 						{/* 音色快切：二级下拉（语言 → 音色） */}
 						<h4>角色音色</h4>
-						<VoicePresetSelector
-							presets={props.presets}
-							value={props.currentVoiceId}
-							onChange={(p) => {
-								if (p) props.onPickVoice(p);
-							}}
-							voiceLanguages={props.voiceLanguages}
-							currentLang={props.currentVoiceLang}
-							onLangChange={props.onPickVoiceLang}
-							layout="stack"
-						/>
+						<VoicePresetSelector value={props.currentVoiceId} onChange={(preset) => props.onPickVoice(preset)} />
 
 						{/* 识别语言快切 */}
 						<h4>识别语言</h4>

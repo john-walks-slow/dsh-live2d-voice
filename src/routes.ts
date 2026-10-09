@@ -8,10 +8,14 @@
  *                                           interim/final text over SSE
  *   POST /live2d-voice/asr/recognize?lang=.. one buffered utterance of 16k
  *                                           PCM in (octet-stream), text out
- *   GET  /live2d-voice/config[?session=..]   sanitized config + voice presets
- *                                           (with session: the workspace-
- *                                            overlaid effective config)
+ *   GET  /live2d-voice/config[?session=..]   sanitized config (with session:
+ *                                           the workspace-overlaid effective
+ *                                           config)
  *   POST /live2d-voice/config                update config fields (global)
+ *   GET  /live2d-voice/voices?language=&tag=&q=&page=  Fish public voice library,
+ *                                           one 100-entry page per window query
+ *   GET  /live2d-voice/voices/<32hex>        single voice by id (display name)
+ *   POST /live2d-voice/voice-preview         audition audio for one voice
  *   POST /live2d-voice/message               submit a user message to a session
  *   POST /live2d-voice/session               create (or idempotently adopt) a session
  *   GET  /live2d-voice/sessions              visible session list for the picker
@@ -40,9 +44,12 @@ import type {} from "@deepseek-ai/dsh-api-session-controller";
 import { WebSocketServer } from "ws";
 import { createUserMessage, type ContentBlock } from "@deepseek-ai/dsh-llm";
 import type { SessionId } from "@deepseek-ai/dsh-session";
-import { LANGUAGE_OPTIONS, VOICE_PRESETS, VOICE_LANGUAGES, resolveModelCatalog, resolveModelSelection, resolveSessionConfig, GROUP_LABELS, extractModelMotions, type ModelMotion, type ModelEntry, type PluginConfig } from "./config.js";
+import { LANGUAGE_OPTIONS, resolveModelCatalog, resolveModelSelection, resolveSessionConfig, GROUP_LABELS, extractModelMotions, type ModelMotion, type ModelEntry, type PluginConfig } from "./config.js";
 import type { SseHub } from "./events.js";
 import { loadVolcCredentials, recognizeUtterance, StreamingAsrSession } from "./asr.js";
+import { synthesize, PCM_SAMPLE_RATE } from "./tts.js";
+import { previewText, VoiceCatalogService } from "./voice-catalog.js";
+import { pcmToWav } from "./wav.js";
 
 const BODY_MAX_BYTES = 64 * 1024;
 /** 16kHz s16le mono ≈ 32KB/s — 2MB ≈ one minute of speech, far above the client's 20s cap. */
@@ -51,6 +58,11 @@ const PCM_MAX_BYTES = 2 * 1024 * 1024;
 const PCM_MIN_BYTES = 3200;
 const MODELS_PREFIX = "/live2d-voice/models";
 const GAZE_PREFIX = "/live2d-voice/gaze";
+const VOICES_PREFIX = "/live2d-voice/voices";
+/** Fish reference ids are 32-hex; anything else cannot be synthesized. */
+const VOICE_ID_RE = /^[0-9a-f]{32}$/;
+/** Upstream metadata/audio fetch bound for previews (samples are a few hundred KB). */
+const PREVIEW_TIMEOUT_MS = 30_000;
 const FACE_LANDMARKER_URL = "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task";
 const FACE_LANDMARKER_MAX_BYTES = 16 * 1024 * 1024;
 const CORE_SCRIPT_PATH = "/live2d-voice/core/live2dcubismcore.min.js";
@@ -70,11 +82,52 @@ export interface RouteDeps {
 	cameraBridge: { deliver(requestId: string, shot: { dataUrl: string; width: number; height: number } | null): boolean };
 	/** Third-person player pipeline (POST /live2d-voice/player-line). */
 	playerPipeline: { submit(sessionId: string, text: string, mode: "queue" | "steer"): void };
+	/** Fish Audio public voice catalog (voice library routes). */
+	voiceCatalog: VoiceCatalogService;
 }
 
 function writeJson(res: ServerResponse, status: number, body: unknown): void {
 	res.writeHead(status, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
 	res.end(JSON.stringify(body));
+}
+
+/** Binary response for voice previews (mp3 sample or synthesized WAV). */
+function writeAudio(res: ServerResponse, status: number, contentType: string, body: Buffer): void {
+	res.writeHead(status, { "content-type": contentType, "content-length": String(body.length), "cache-control": "no-store" });
+	res.end(body);
+}
+
+function errorMessage(error: unknown): string {
+	return error instanceof Error ? error.message : String(error);
+}
+
+/**
+ * Preview audio for one voice.
+ *
+ * The author's pre-rendered sample wins: it is the voice's native language,
+ * costs no TTS quota, and starts instantly (≈2% of the library has none).
+ * Otherwise synthesize the example text — the official `default_text` when
+ * upstream has one, else a line in the voice's own language. Deliberately not
+ * the speech pipeline's path: that one translates into the show's language,
+ * and a preview should audition the voice itself.
+ */
+async function voicePreview(deps: RouteDeps, voiceId: string): Promise<{ contentType: string; body: Buffer }> {
+	const sample = await deps.voiceCatalog.sample(voiceId);
+	if (sample.audio) {
+		const response = await fetch(sample.audio, { signal: AbortSignal.timeout(PREVIEW_TIMEOUT_MS) });
+		if (!response.ok) throw new Error(`sample download HTTP ${response.status}`);
+		return {
+			contentType: response.headers.get("content-type") ?? "audio/mpeg",
+			body: Buffer.from(await response.arrayBuffer()),
+		};
+	}
+	const config = deps.getConfig();
+	const chunks: Buffer[] = [];
+	await synthesize(
+		{ text: sample.text || previewText(sample.languages), voiceId, model: config.ttsModel, apiKeys: deps.resolveKeys(config) },
+		(chunk) => void chunks.push(chunk),
+	);
+	return { contentType: "audio/wav", body: pcmToWav(Buffer.concat(chunks), PCM_SAMPLE_RATE) };
 }
 
 async function readJsonBody(req: IncomingMessage, maxBytes = BODY_MAX_BYTES): Promise<Record<string, unknown>> {
@@ -309,8 +362,6 @@ export function installRoutes(ctx: Context, deps: RouteDeps): (() => void) | und
 					: global;
 				writeJson(res, 200, {
 					config: publicConfig(config, deps.resolveKeys(global).length),
-					presets: VOICE_PRESETS,
-					voiceLanguages: VOICE_LANGUAGES,
 					languages: LANGUAGE_OPTIONS,
 				});
 				return;
@@ -376,6 +427,76 @@ export function installRoutes(ctx: Context, deps: RouteDeps): (() => void) | und
 				.catch((error: unknown) => {
 					writeJson(res, 400, { code: "bad_config", message: error instanceof Error ? error.message : String(error) });
 				});
+		} })
+	);
+
+	// Fish public voice library: paginated query windows + single-voice resolve.
+	disposers.push(
+		webServer.register({ kind: "prefix", path: VOICES_PREFIX, handler: (req, res) => {
+			if (req.method !== "GET") {
+				writeJson(res, 405, { code: "method_not_allowed" });
+				return;
+			}
+			const url = new URL(req.url ?? "/", "http://localhost");
+			const rest = (req.url ?? "").split("?")[0]!.slice(VOICES_PREFIX.length).replace(/^\/+/, "");
+
+			if (rest) {
+				if (!VOICE_ID_RE.test(rest)) {
+					writeJson(res, 400, { code: "bad_voice_id", message: "音色 id 必须是 32 位 hex" });
+					return;
+				}
+				void deps.voiceCatalog
+					.resolve(rest)
+					.then((entry) => writeJson(res, 200, { entry }))
+					.catch((error: unknown) => writeJson(res, 404, { code: "voice_not_found", message: errorMessage(error) }));
+				return;
+			}
+
+			const language = (url.searchParams.get("language") ?? "").trim();
+			const tags = url.searchParams.getAll("tag").map((tag) => tag.trim()).filter(Boolean);
+			const title = (url.searchParams.get("q") ?? "").trim();
+			const page = Number.parseInt(url.searchParams.get("page") ?? "1", 10);
+			if (language && !/^[a-z]{2}(-[a-z]{2})?$/i.test(language)) {
+				writeJson(res, 400, { code: "bad_language", message: "语言码形如 zh / en / ja" });
+				return;
+			}
+			if (tags.length > 4 || tags.some((tag) => tag.length > 40)) {
+				writeJson(res, 400, { code: "bad_tags", message: "最多 4 个标签，每个不超过 40 字符" });
+				return;
+			}
+			if (title.length > 60) {
+				writeJson(res, 400, { code: "bad_query", message: "关键词不超过 60 字符" });
+				return;
+			}
+			void deps.voiceCatalog
+				.list(
+					{ language: language || undefined, tags, title: title || undefined },
+					Number.isFinite(page) ? page : 1,
+					url.searchParams.get("refresh") === "1",
+				)
+				.then((result) => writeJson(res, 200, result))
+				.catch((error: unknown) => writeJson(res, 502, { code: "voice_catalog_failed", message: errorMessage(error) }));
+		} })
+	);
+
+	// Voice preview audio (author sample when it exists, else synthesized WAV).
+	disposers.push(
+		webServer.register({ kind: "exact", path: "/live2d-voice/voice-preview", handler: (req, res) => {
+			if (req.method !== "POST") {
+				writeJson(res, 405, { code: "method_not_allowed" });
+				return;
+			}
+			void readJsonBody(req)
+				.then(async (body) => {
+					const voiceId = typeof body.voiceId === "string" ? body.voiceId.trim() : "";
+					if (!VOICE_ID_RE.test(voiceId)) {
+						writeJson(res, 400, { code: "bad_voice_id", message: "音色 id 必须是 32 位 hex" });
+						return;
+					}
+					const { contentType, body: audio } = await voicePreview(deps, voiceId);
+					writeAudio(res, 200, contentType, audio);
+				})
+				.catch((error: unknown) => writeJson(res, 502, { code: "voice_preview_failed", message: errorMessage(error) }));
 		} })
 	);
 

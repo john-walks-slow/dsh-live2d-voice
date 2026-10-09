@@ -161,10 +161,7 @@ export function Live2DView(props: ViewProps) {
 		setToast(text);
 	};
 
-	const [presets, setPresets] = useState<VoicePreset[]>([]);
 	const [languages, setLanguages] = useState<LanguageOption[]>([]);
-	const [voiceLanguages, setVoiceLanguages] = useState<LanguageOption[]>([]);
-	const [voiceLang, setVoiceLang] = useState("all");
 	const [idleInterval, setIdleInterval] = useState(20);
 	const [voiceId, setVoiceId] = useState("");
 	const [apiKeyCount, setApiKeyCount] = useState(-1);
@@ -362,10 +359,8 @@ export function Live2DView(props: ViewProps) {
 
 	useEffect(() => {
 		fetchConfig(sessionId)
-			.then(({ config, presets, languages: langs, voiceLanguages: vlangs }) => {
-				setPresets(presets);
+			.then(({ config, languages: langs }) => {
 				if (langs) setLanguages(langs);
-				if (vlangs) setVoiceLanguages(vlangs);
 				setVoiceId(config.voiceId);
 				setApiKeyCount(config.apiKeyCount);
 				setSpeechPrompt(config.speechPrompt);
@@ -1815,11 +1810,7 @@ export function Live2DView(props: ViewProps) {
 				onToggleGyroParallax={() => void toggleGyroParallax()}
 				lookParams={lookParams}
 				onLookParamsChange={changeLookParams}
-				presets={presets}
 				languages={languages}
-				voiceLanguages={voiceLanguages}
-				currentVoiceLang={voiceLang}
-				onPickVoiceLang={(id) => setVoiceLang(id)}
 				currentVoiceId={voiceId}
 				currentSttLanguage={sttLanguage}
 				models={modelInfo?.models ?? []}

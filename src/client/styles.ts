@@ -8,7 +8,8 @@ const CSS = `
 /* ==========================================================================
    1. Design Tokens & Semantic Variables Layer
    ========================================================================== */
-.lv-root {
+.lv-root,
+.lv-vlib-scope {
 	/* Palette mapped to DSH host aliases */
 	--lv-fg:            var(--dsw-alias-label-primary, #0f1115);
 	--lv-fg-2:          var(--dsw-alias-label-secondary, #61666b);
@@ -39,7 +40,13 @@ const CSS = `
 	/* Dynamic bottom clearance: now that host composer & task overlays are hidden,
 	   keep clean breathing room at the bottom of the viewport/stage. */
 	--lv-chrome-bottom: 20px;
+}
 
+/* The design tokens above are shared; the layout role belongs to the stage root
+   only. The voice library portals out of the stage (so the stage's CSS
+   transform cannot hijack its fixed positioning) and carries .lv-vlib-scope to
+   pick up the same tokens without the stage's positioning. */
+.lv-root {
 	position: absolute;
 	inset: 0;
 	overflow: hidden;
@@ -52,6 +59,7 @@ const CSS = `
 
 /* Dark mode adjustments */
 body[data-ds-dark-theme] .lv-root,
+body[data-ds-dark-theme] .lv-vlib-scope,
 .lv-root.lv-dark {
 	--lv-fg:            var(--dsw-alias-label-primary, #f9fafb);
 	--lv-fg-2:          var(--dsw-alias-label-secondary, #9ca3af);
@@ -1486,6 +1494,318 @@ body[data-ds-dark-theme] .lv-model-select option,
 }
 .lv-live-entry svg {
 	flex: none;
+}
+
+/* ==========================================================================
+   Voice library: current-voice row + the full-screen Fish catalog picker
+   ========================================================================== */
+.lv-voice-picker {
+	width: 100%;
+}
+.lv-voice-current {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 8px;
+	width: 100%;
+	padding: 7px 10px;
+	border-radius: 8px;
+	border: 1px solid var(--lv-border);
+	background: var(--lv-surface);
+	color: var(--lv-fg);
+	font-family: inherit;
+	font-size: 13px;
+	text-align: left;
+	cursor: pointer;
+}
+.lv-voice-current:hover {
+	border-color: var(--lv-accent);
+}
+.lv-voice-current:disabled {
+	opacity: 0.55;
+	cursor: default;
+}
+.lv-voice-name {
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+.lv-voice-hint {
+	flex: none;
+	font-size: 12px;
+	color: var(--lv-accent);
+}
+
+.lv-vlib-mask {
+	position: fixed;
+	inset: 0;
+	z-index: 2147483100;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	padding: 24px;
+	background: rgba(0, 0, 0, 0.45);
+	font-family: var(--lv-font);
+}
+.lv-vlib {
+	display: flex;
+	flex-direction: column;
+	width: min(720px, 100%);
+	height: min(760px, 100%);
+	overflow: hidden;
+	border-radius: 14px;
+	background: var(--lv-surface);
+	color: var(--lv-fg);
+	box-shadow: 0 18px 50px rgba(0, 0, 0, 0.35);
+	font-size: 13px;
+}
+.lv-vlib-head {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 10px 12px;
+	border-bottom: 1px solid var(--lv-border);
+}
+.lv-vlib-search {
+	flex: 1;
+	min-width: 0;
+	padding: 8px 10px;
+	border-radius: 8px;
+	border: 1px solid var(--lv-border);
+	background: transparent;
+	color: inherit;
+	font-family: inherit;
+	font-size: 13px;
+}
+.lv-vlib-search:focus {
+	outline: none;
+	border-color: var(--lv-accent);
+}
+.lv-vlib-close {
+	flex: none;
+	width: 30px;
+	height: 30px;
+	border-radius: 8px;
+	border: 1px solid var(--lv-border);
+	background: transparent;
+	color: inherit;
+	font-size: 18px;
+	line-height: 1;
+	cursor: pointer;
+}
+.lv-vlib-close:hover {
+	background: var(--lv-hover);
+}
+.lv-vlib-filters {
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+	padding: 8px 12px;
+	border-bottom: 1px solid var(--lv-border);
+}
+.lv-vlib-chips {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 6px;
+}
+.lv-vlib-chip {
+	padding: 3px 10px;
+	border-radius: 999px;
+	border: 1px solid var(--lv-border);
+	background: transparent;
+	color: inherit;
+	font-family: inherit;
+	font-size: 12px;
+	white-space: nowrap;
+	cursor: pointer;
+}
+.lv-vlib-chip:hover {
+	background: var(--lv-hover);
+}
+.lv-vlib-chip.lv-on {
+	border-color: var(--lv-accent);
+	background: var(--lv-accent-soft);
+	color: var(--lv-accent);
+	font-weight: 600;
+}
+.lv-vlib-status {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 8px;
+	padding: 6px 12px;
+	font-size: 12px;
+	color: var(--lv-fg-2);
+}
+.lv-vlib-refresh {
+	padding: 2px 8px;
+	border-radius: 6px;
+	border: 1px solid var(--lv-border);
+	background: transparent;
+	color: inherit;
+	font-family: inherit;
+	font-size: 12px;
+	cursor: pointer;
+}
+.lv-vlib-refresh:hover:not(:disabled) {
+	background: var(--lv-hover);
+}
+.lv-vlib-refresh:disabled {
+	opacity: 0.5;
+	cursor: default;
+}
+.lv-vlib-error {
+	margin: 0 12px 6px;
+	padding: 8px 10px;
+	border-radius: 8px;
+	background: color-mix(in srgb, var(--lv-danger) 12%, transparent);
+	color: var(--lv-danger);
+	font-size: 12px;
+}
+.lv-vlib-list {
+	flex: 1;
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+	padding: 6px 8px 12px;
+	overflow-y: auto;
+	-webkit-overflow-scrolling: touch;
+}
+.lv-vlib-row {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	padding: 8px;
+	border-radius: 10px;
+	border: 1px solid transparent;
+}
+.lv-vlib-row:hover {
+	background: var(--lv-hover);
+}
+.lv-vlib-row.lv-current {
+	border-color: var(--lv-accent);
+}
+.lv-vlib-cover {
+	position: relative;
+	flex: none;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	width: 44px;
+	height: 44px;
+	overflow: hidden;
+	border-radius: 8px;
+	background: var(--lv-accent-soft);
+}
+.lv-vlib-cover img {
+	position: absolute;
+	inset: 0;
+	width: 100%;
+	height: 100%;
+	object-fit: cover;
+}
+.lv-vlib-initial {
+	font-size: 16px;
+	font-weight: 700;
+	color: var(--lv-accent);
+}
+.lv-vlib-info {
+	flex: 1;
+	min-width: 0;
+}
+.lv-vlib-title {
+	display: block;
+	font-size: 13px;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+.lv-vlib-desc {
+	display: -webkit-box;
+	-webkit-line-clamp: 2;
+	-webkit-box-orient: vertical;
+	overflow: hidden;
+	margin: 2px 0 0;
+	font-size: 12px;
+	color: var(--lv-fg-2);
+}
+.lv-vlib-meta {
+	margin: 2px 0 0;
+	font-size: 11px;
+	color: var(--lv-fg-3);
+}
+.lv-vlib-actions {
+	flex: none;
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+}
+.lv-vlib-btn {
+	padding: 4px 10px;
+	border-radius: 6px;
+	border: 1px solid var(--lv-border);
+	background: transparent;
+	color: inherit;
+	font-family: inherit;
+	font-size: 12px;
+	cursor: pointer;
+}
+.lv-vlib-btn:hover:not(:disabled) {
+	background: var(--lv-hover);
+}
+.lv-vlib-btn.lv-primary {
+	border-color: var(--lv-accent);
+	background: var(--lv-accent);
+	color: #fff;
+}
+.lv-vlib-btn.lv-primary:hover:not(:disabled) {
+	background: color-mix(in srgb, var(--lv-accent) 85%, #000);
+}
+.lv-vlib-btn:disabled {
+	opacity: 0.5;
+	cursor: default;
+}
+.lv-vlib-empty {
+	padding: 28px 12px;
+	text-align: center;
+	color: var(--lv-fg-3);
+}
+.lv-vlib-more {
+	margin: 8px auto 0;
+	padding: 6px 16px;
+	border-radius: 999px;
+	border: 1px dashed var(--lv-border);
+	background: transparent;
+	color: inherit;
+	font-family: inherit;
+	font-size: 12px;
+	cursor: pointer;
+}
+.lv-vlib-more:hover:not(:disabled) {
+	background: var(--lv-hover);
+}
+.lv-vlib-more:disabled {
+	opacity: 0.5;
+	cursor: default;
+}
+
+@media (max-width: 600px) {
+	.lv-vlib-mask {
+		padding: 0;
+	}
+	.lv-vlib {
+		width: 100%;
+		height: 100%;
+		border-radius: 0;
+	}
+	.lv-vlib-cover {
+		width: 38px;
+		height: 38px;
+	}
+	/* 窄屏把两个按钮并排，一行省下 ~28px 竖向空间 */
+	.lv-vlib-actions {
+		flex-direction: row;
+	}
 }
 `;
 

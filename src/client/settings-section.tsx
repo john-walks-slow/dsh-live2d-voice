@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
-import type { PublicConfig, VoicePreset, LanguageOption, ModelCatalog, ModelProviderGroup, ModelCatalogModel, LiveMode } from "./types.js";
+import type { PublicConfig, LanguageOption, ModelCatalog, ModelProviderGroup, ModelCatalogModel, LiveMode } from "./types.js";
 import { fetchConfig, saveConfig, fetchModelCatalog } from "./api.js";
 import {
 	IconRefresh,
@@ -256,8 +256,6 @@ body[data-ds-dark-theme] .lv-set-wrap .lv-model-select optgroup {
 
 export function Live2DSettingsSection() {
 	const [config, setConfig] = useState<PublicConfig | null>(null);
-	const [presets, setPresets] = useState<VoicePreset[]>([]);
-	const [voiceLanguages, setVoiceLanguages] = useState<LanguageOption[]>([]);
 	const [models, setModels] = useState<{ name: string; label?: string; kind?: "moc2" | "moc3"; group?: string; groupLabel?: string; url: string }[]>([]);
 	const [loading, setLoading] = useState(true);
 	const [statusMsg, setStatusMsg] = useState<{ type: "success" | "warn"; text: string } | null>(null);
@@ -290,10 +288,8 @@ export function Live2DSettingsSection() {
 	const loadAll = useCallback(() => {
 		setLoading(true);
 		fetchConfig()
-			.then((data: { config: PublicConfig; presets: VoicePreset[]; languages: LanguageOption[]; voiceLanguages?: LanguageOption[] }) => {
+			.then((data: { config: PublicConfig; languages: LanguageOption[] }) => {
 				setConfig(data.config);
-				setPresets(data.presets || []);
-				if (data.voiceLanguages) setVoiceLanguages(data.voiceLanguages);
 				setModelPath(data.config.modelPath || "");
 				setVoiceId(data.config.voiceId || "");
 				setTtsModel(data.config.ttsModel || "s2.1-pro-free");
@@ -489,23 +485,15 @@ export function Live2DSettingsSection() {
 				<div className="lv-set-field">
 					<label className="lv-set-label">全局默认音色 (voiceId)</label>
 					<VoicePresetSelector
-						presets={presets}
 						value={voiceId}
-						onChange={(p) => {
-							const next = p?.voiceId ?? "";
-							setVoiceId(next);
-							handleSave({ voiceId: next });
+						onChange={(preset) => {
+							setVoiceId(preset.voiceId);
+							handleSave({ voiceId: preset.voiceId });
 						}}
-						voiceLanguages={voiceLanguages}
-						layout="row"
 					/>
 					{voiceId && (
 						<div className="lv-set-help" style={{ marginTop: "6px" }}>
-							当前默认音色：<code>{voiceId}</code>
-							{(() => {
-								const cur = presets.find((p) => p.voiceId === voiceId);
-								return cur ? ` (${cur.label})` : "";
-							})()}
+							当前默认音色 id：<code>{voiceId}</code>
 						</div>
 					)}
 				</div>
@@ -848,15 +836,11 @@ export function Live2DSettingsSection() {
 				<div className="lv-set-field">
 					<label className="lv-set-label">玩家音色 (playerVoiceId)</label>
 					<VoicePresetSelector
-						presets={presets}
 						value={playerVoiceId}
-						onChange={(p) => {
-							const next = p?.voiceId ?? "";
-							setPlayerVoiceId(next);
-							handleSave({ playerVoiceId: next });
+						onChange={(preset) => {
+							setPlayerVoiceId(preset.voiceId);
+							handleSave({ playerVoiceId: preset.voiceId });
 						}}
-						voiceLanguages={voiceLanguages}
-						layout="row"
 					/>
 					<div className="lv-set-help" style={{ marginTop: "6px" }}>
 						{playerVoiceId === voiceId && (
