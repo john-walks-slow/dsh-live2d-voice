@@ -197,11 +197,16 @@ NEW 的尝试次数分布：1, 2, 2, 2, 2, 2, 2, 2, 2, 2
   `max(...) >= 2` 恒为假 → 等归零瞬间返回 → **整条链照样全绿**。因此新增 **T18 正向对照**：动作播放期间必须观测到
   `lvMotionBusy === "1"`（至少一次采样），播完后必须回到 `"0"`，观测不到即红。实测：
   `武装=Right:FlickRight 采样前若干=1 见到1=true 之后回0=true`。这条把"源码级结论"变成了"经验证据"。
-- **等待超时 = 失败**：`swipeOnce` 在 `waitMotionIdle()` 超时（4s）时直接返回 `ok=false, reason='idle-timeout'`，
-  不再"继续往下走"。删掉重试之后，静默退化没有藏身处。
+- **等待超时 = 失败**（**源码核对，未经验证**）：`swipeOnce` 在 `waitMotionIdle()` 超时（4s）时返回
+  `ok=false, reason='idle-timeout'`，不再继续往下走。**这条只是代码事实：我没有跑过"超时→红"的红路用例**
+  （要造"队列 4s 不空闲"需要比现有模型更长的动作或人为阻塞，未做）。不要把它当观测结论。
 - **权威信号是返回值，不是采样**：`model.motion(...)` 声明为 `Promise<boolean>`（`types/index.d.ts:1771`），
-  产品代码已用它——只有真正起播才写 `lvGestureSeq`。所以 e2e 的判定本质是返回值判定，`lvMotionBusy` 只是**发滑动前的提示**。
-  理由写在 `docs/issues/261010-motion-priority-signal/`。
+  产品代码在 `handleSwipe` 里用它做闸门。**"e2e 的判定因此等价于返回值判定"这个说法依赖一个前提，已单独 grep 确认**：
+  `dataset.lvGesture` 全仓**唯一写入点**是 `model.ts:673`（该闸门内的成功分支），`lvGestureSeq` 的写入点只有
+  `model.ts:677`（同一分支）与 `:1002`（destroy 时删除），**没有任何读方**。所以在"唯一写入点"这个前提下，
+  测试观察到的 DOM 契约只可能来自那次调用的成功返回——这是**源码级证据链**，不是话术；
+  但链路本身仍是静态核对（未做运行时注入反证）。`lvMotionBusy` 只是**发滑动前的提示**，不承担判定职责。
+  完整理由：`docs/issues/261010-motion-priority-signal/`。
 - **旧信号删干净**：`src/client/model.ts` 里已无 `getCurrentPriority()` / `queueManager` 判忙路径（仅注释里留了"为什么不用它"）。
 
 复跑：`verify-touch-mode 39/39`（分布 `1 次 ×8`）、`verify-tap 11/11`。

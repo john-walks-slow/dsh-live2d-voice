@@ -112,3 +112,20 @@ const normalWouldBeRejected =
 `dataset.lvMotionBusy` 因此降级为**发滑动之前的提示**（等它归零再发，避免明知会被拒还发），
 并且必须带**正向对照**（`e2e/verify-touch-mode.mjs` T18：动作播放期间必须观测到 `"1"`、播完回 `"0"`），
 否则"读错对象/字段名对不上 → 恒 0 → 全绿"这类假绿无法被发现。
+
+## 写入点核实（"DOM 契约等价于返回值判定"这一说法的前提）
+
+grep 结果（`src/` 全量，排除文档）：
+
+```
+$ grep -n "lvGesture\b" src/client/model.ts
+673:				container.dataset.lvGesture = value;          # handleSwipe 的成功分支（唯一写入点）
+$ grep -rn "lvGestureSeq" src/
+470:  (注释)
+677:				container.dataset.lvGestureSeq = String(++gestureSeq);   # 同一分支
+1002:			delete container.dataset.lvGestureSeq;                   # destroy 清理
+```
+
+无任何读方。**前提成立**：e2e 观察到的 `lvGesture`/`lvGestureSeq` 只可能由 `.then((started) => …)`
+的成功返回触发 ⇒ 判定链路等价于返回值判定。边界：这是**静态证据**（未做"删掉该分支后测试应变红"的反证），
+因此文档里写作"在唯一写入点前提下成立"，不写成"本质就是"。
