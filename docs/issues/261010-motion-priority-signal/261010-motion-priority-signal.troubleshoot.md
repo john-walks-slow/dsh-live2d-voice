@@ -99,3 +99,16 @@ const normalWouldBeRejected =
 
 - 本次未启动 e2e 或浏览器实测，遵守只读/不重启要求；静态打包产物、生成声明和产品调用链已足以排除“priority 从产品调用点传错位”。
 - 若运行时确实看到 `queueManager.getCurrentPriority()` 返回数字 0，而非 `undefined`，需要确认页面实际加载的 bundle 是否就是本工作区安装包的 `cubism4` 产物，或是否存在额外的 monkey patch/其他库实例；安装包静态代码中当前 Cubism 4 `queueManager` 没有该方法。
+
+## 为什么 e2e 不直接用 `motion()` 的返回值判定
+
+`Live2DModel.motion(group, index, priority)` 的声明就是 `Promise<boolean>`（`types/index.d.ts:1771`；
+`startMotion` 同，`:827`），**true = 真的起播、false = 被拒**，这是权威信号。
+
+产品代码已经在用它：`handleSwipe` 的 `.then((started) => { if (!started) return; … })` —— 只有真正起播才写
+`dataset.lvGesture` / `lvGestureSeq`。所以 e2e 的判定（`值 == 期望 且 lvGestureSeq 前进`）**本质就是返回值判定**，
+只是绕了一层 DOM 契约（测试无法替产品调用 `model.motion`）。
+
+`dataset.lvMotionBusy` 因此降级为**发滑动之前的提示**（等它归零再发，避免明知会被拒还发），
+并且必须带**正向对照**（`e2e/verify-touch-mode.mjs` T18：动作播放期间必须观测到 `"1"`、播完回 `"0"`），
+否则"读错对象/字段名对不上 → 恒 0 → 全绿"这类假绿无法被发现。

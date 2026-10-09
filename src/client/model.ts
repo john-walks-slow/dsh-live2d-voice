@@ -465,13 +465,12 @@ export async function mountModel(
 		// clip would otherwise keep this at "1" forever). e2e waits for "0" and
 		// then swipes **once** instead of retrying blindly; this hook runs every
 		// frame (verified in the same run that measures head displacement).
-		// Exact "would a NORMAL gesture be refused right now" signal: the pixi
-		// MotionManager keeps MotionState.currentPriority/reservePriority
-		// (MotionPriority.NONE=0, IDLE=1, NORMAL=2, FORCE=3) and refuses a new
-		// motion with priority <= the reserved one. The Cubism queue manager's
-		// own getCurrentPriority() is a different object and stays 0 here, which
-		// is why the signal is read from MotionState
-		// (docs/issues/261010-motion-priority-signal/).
+		// Hint for "would a NORMAL gesture be refused right now" (not the
+		// authority — that is `motion()`'s Promise<boolean>, surfaced to tests as
+		// lvGestureSeq advancing). Read from pixi's MotionState
+		// (MotionPriority.NONE=0, IDLE=1, NORMAL=2, FORCE=3); the Cubism queue
+		// manager's own getCurrentPriority() is a different object that stays 0
+		// (source ruling: docs/issues/261010-motion-priority-signal/).
 		// e2e waits for "0" and then swipes ONCE — no retry.
 		const motionManager = internal.motionManager as unknown as {
 			state?: { currentPriority?: number; reservePriority?: number };

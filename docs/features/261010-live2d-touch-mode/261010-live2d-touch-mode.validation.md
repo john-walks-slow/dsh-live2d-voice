@@ -190,3 +190,18 @@ NEW 的尝试次数分布：1, 2, 2, 2, 2, 2, 2, 2, 2, 2
 **修法落地**：`dataset.lvMotionBusy = max(state.currentPriority, state.reservePriority) >= 2`，精确判断"NORMAL 会不会被拒"。拿到它之后重试被删除：助手改为"等空闲 → 单次滑动"，实测 `1 次 ×7` 全绿（`38/38`）。
 
 **这一轮的教训**（与上一轮同形，值得并列记下）：**"我查的那个接口没用" ≠ "这条路不存在"**；定位不到精确信号时，先穷举"接口/对象/时机"三种可能，再决定是否写成"需要上游支持"。
+
+**第三轮跟进（门槛项，均已落地）**：
+
+- **内部状态类断言必须带正向对照**。`lvMotionBusy` 来自内部 `state.currentPriority/reservePriority`，若读错对象/字段名对不上，
+  `max(...) >= 2` 恒为假 → 等归零瞬间返回 → **整条链照样全绿**。因此新增 **T18 正向对照**：动作播放期间必须观测到
+  `lvMotionBusy === "1"`（至少一次采样），播完后必须回到 `"0"`，观测不到即红。实测：
+  `武装=Right:FlickRight 采样前若干=1 见到1=true 之后回0=true`。这条把"源码级结论"变成了"经验证据"。
+- **等待超时 = 失败**：`swipeOnce` 在 `waitMotionIdle()` 超时（4s）时直接返回 `ok=false, reason='idle-timeout'`，
+  不再"继续往下走"。删掉重试之后，静默退化没有藏身处。
+- **权威信号是返回值，不是采样**：`model.motion(...)` 声明为 `Promise<boolean>`（`types/index.d.ts:1771`），
+  产品代码已用它——只有真正起播才写 `lvGestureSeq`。所以 e2e 的判定本质是返回值判定，`lvMotionBusy` 只是**发滑动前的提示**。
+  理由写在 `docs/issues/261010-motion-priority-signal/`。
+- **旧信号删干净**：`src/client/model.ts` 里已无 `getCurrentPriority()` / `queueManager` 判忙路径（仅注释里留了"为什么不用它"）。
+
+复跑：`verify-touch-mode 39/39`（分布 `1 次 ×8`）、`verify-tap 11/11`。

@@ -138,6 +138,12 @@ const swipeOnce = async (fromX, fromY, dx, dy, expected, { attempts = 1, settleM
     // 先等队列空闲（上限 1.5s）：这个信号是"有动作在播"（含循环的空闲动作），
     // 只作提示，不作判定——真正被拒时由下面的 seq 不前进暴露出来。
     idle = await waitMotionIdle();
+    if (!idle) {
+      // 门槛：等不到队列空闲就是失败，不能"继续往下走"——否则重试去掉之后
+      // 静默退化只是换了个藏身处（见 validation §十一）。
+      if (record) swipeAttempts.push(cap);
+      return { ok: false, value: null, attempts: cap, idle, reason: 'idle-timeout', seq0: null, seq1: null };
+    }
     const seq0 = await gestureSeq();
     lastSeq0 = seq0;
     await clearGesture();
@@ -485,6 +491,29 @@ PY`, { encoding: 'utf8' }).trim();
   // 手势被正确地拒绝，于是看起来像"手势坏了"。这里先双击复位再继续。
   await page.evaluate(() => document.querySelector('.lv-stage').dispatchEvent(new MouseEvent('dblclick', { bubbles: true })));
   await page.waitForTimeout(500);
+
+  // T18 正向对照（门槛）：`lvMotionBusy` 必须**被观测到**为 1（动作播放期间）并回到 0。
+  // 没有这条，"state 读错对象/字段名对不上"会让 max(...) 恒为 0，整条链照样全绿。
+  const busySamples = [];
+  const readBusy = () => page.evaluate(() => document.querySelector('.lv-stage')?.dataset?.lvMotionBusy ?? null);
+  const armedForBusy = await swipeOnce(startX, startY, 160, 0, 'Right:FlickRight');
+  const busyDeadline = Date.now() + 4000;
+  while (Date.now() < busyDeadline) {
+    const b = await readBusy();
+    busySamples.push(b);
+    if (b === '1') break;
+    await page.waitForTimeout(40);
+  }
+  const sawBusy = busySamples.includes('1');
+  let sawIdleAfter = false;
+  const idleDeadline = Date.now() + 10000;
+  while (Date.now() < idleDeadline) {
+    if ((await readBusy()) === '0') { sawIdleAfter = true; break; }
+    await page.waitForTimeout(60);
+  }
+  check('T18 正向对照：动作播放期间 lvMotionBusy=1，播完回 0',
+    armedForBusy.ok && sawBusy && sawIdleAfter,
+    `武装=${armedForBusy.value} 采样前若干=${busySamples.slice(0, 6).join(',')} 见到1=${sawBusy} 之后回0=${sawIdleAfter}`);
 
   // T5 防刷屏：一次被接受之后，**紧接着**（≤400ms 冷却窗口内）的反向滑动不得产生新手势；
   // 冷却窗口过去后，同样的滑动必须能被接受（正对照，证明上一条不是因为手势永久坏掉）。
