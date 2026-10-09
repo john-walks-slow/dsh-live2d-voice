@@ -35,3 +35,8 @@ e2e 实例：隔离 home + acquire-port 动态端口，见 dsh-e2e skill。
 ## 多 Agent 协作
 
 本仓库常有多 agent 并行修改。提交必须用 commit-own-changes 精确文件提交（worktree 内除外）；功能开发走 worktree（worktree-dev skill）。不要处理自己改动范围之外的变化。
+
+- **禁止 `git add -A` / `git add .`**：共享工作树里会把**别人未跟踪的草稿**一并带进历史。2026-10-10 就因此把 35 个
+  `docs/freeform/**` 草稿写进了未推送历史，事后只能取消跟踪（历史里仍留有它们）。提交一律按**文件/路径**精确 `add`。
+- **禁止提交 `docs/freeform/261010-luna-live2d/luna_sota_1_832x1216.png`**：AI 生成的二次元插图（非真人，不涉隐私），
+  但内容尺度不适合出现在公开插件仓库里。该文件当前未被跟踪，**不要提交它**。
