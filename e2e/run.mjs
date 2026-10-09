@@ -99,41 +99,57 @@ if (rawArg === 'light') {
 suitesToRun = [...new Set(suitesToRun)];
 
 /**
- * 浏览器兜底清理（261010 教训：一次卡住的 e2e 留下 11 个 chromium，十一分钟零产出）。
- * 只认「孤儿」——启动者已退出（ppid = 1）的 chromium 一定是残骸，杀掉不会误伤别人
- * 正在跑的套件；模式串用 chrom[e] 规避 pkill/正则自伤。
+ * 浏览器兜底清理（261010 教训：一次卡住的 e2e 留下 11 个 chromium、十一分钟零产出）。
+ *
+ * 回收条件必须**同时**成立，宁可留残骸也不误杀别人在跑的活服务：
+ *   1. 可执行文件是 playwright 缓存里的那个 chromium（本机只有 e2e/playwright 用它）；
+ *   2. 命令行带 `--remote-debugging-pipe`（playwright 的启动特征，不是常驻浏览器服务）；
+ *   3. `ppid == 1`（启动者已消失，说明是我们这轮留下的孤儿）；
+ *   4. 不在本进程启动时的基线集合里（别人的进程即使看着像孤儿也不碰）。
+ * 命中后先 SIGTERM，1 秒后仍活着才 SIGKILL。
+ * 环境假设：本机没有以 chromium 形式常驻的浏览器服务（sv/supervisord 里没有 chromium 项，
+ * 现存的 chromium 全部来自 playwright 启动）——若将来引入常驻浏览器服务，条件 1/2 需重审。
  */
 const CHROME_PATTERN = 'chrome-linux-arm64/chrom[e]';
-const MAX_RESIDENT_CHROMIUM = 6;
-const listChromium = () => {
+// 上限按**浏览器实例数**（root 进程）算，不按进程数：一个 chromium 会带 ~10 个 helper 进程。
+// 别人（其它 worktree）正在跑的浏览器也有 root，所以上限只做护栏、可用环境变量放宽。
+const MAX_RESIDENT_BROWSERS = Number(process.env.DSH_E2E_MAX_BROWSERS ?? 3);
+const chromiumProcs = () => {
 	try {
-		return execSync(`pgrep -f '${CHROME_PATTERN}' || true`, { encoding: 'utf8' })
-			.trim().split(/\s+/).filter(Boolean).map(Number);
+		const out = execSync(`ps -eo pid=,ppid=,args= | grep '${CHROME_PATTERN}' || true`, { encoding: 'utf8' });
+		return out.split('\n').map((line) => {
+			const m = line.trim().match(/^(\d+)\s+(\d+)\s+(.*)$/);
+			return m ? { pid: Number(m[1]), ppid: Number(m[2]), args: m[3] } : null;
+		}).filter(Boolean);
 	} catch {
 		return [];
 	}
 };
-const parentOf = (pid) => {
-	try {
-		return Number(execSync(`ps -o ppid= -p ${pid}`, { encoding: 'utf8' }).trim());
-	} catch {
-		return -1;
-	}
-};
+const isPlaywrightChromium = (p) =>
+	p.args.includes('chrome-linux-arm64/chrome') && p.args.includes('--remote-debugging-pipe');
+const BASELINE_CHROMIUM = new Set(chromiumProcs().map((p) => p.pid));
 const reapOrphanChromium = (label) => {
-	const orphans = listChromium().filter((pid) => parentOf(pid) === 1);
-	for (const pid of orphans) {
-		try { process.kill(pid, 'SIGKILL'); } catch { /* 已退出 */ }
+	const orphans = chromiumProcs().filter((p) =>
+		isPlaywrightChromium(p) && p.ppid === 1 && !BASELINE_CHROMIUM.has(p.pid));
+	for (const p of orphans) {
+		try { process.kill(p.pid, 'SIGTERM'); } catch { /* 已退出 */ }
 	}
-	if (orphans.length) console.log(`[e2e] ${label}: 清理 ${orphans.length} 个孤儿 chromium (${orphans.join(', ')})`);
+	if (!orphans.length) return 0;
+	execSync('sleep 1');
+	let killed = 0;
+	for (const p of orphans) {
+		try { process.kill(p.pid, 0); process.kill(p.pid, 'SIGKILL'); killed++; } catch { /* SIGTERM 已生效 */ }
+	}
+	console.log(`[e2e] ${label}: 回收 ${orphans.length} 个孤儿 chromium (${orphans.map((p) => p.pid).join(', ')})${killed ? `，其中 ${killed} 个需 SIGKILL` : ''}`);
 	return orphans.length;
 };
 
 reapOrphanChromium('启动前');
-const resident = listChromium().length;
-if (resident > MAX_RESIDENT_CHROMIUM) {
-	console.error(`[e2e] 常驻 chromium = ${resident} > 上限 ${MAX_RESIDENT_CHROMIUM}，疑似上一轮残留或有人在跑重活；先处理干净再跑：`);
-	console.error('      ps -o pid=,ppid=,etime=,args= -p $(pgrep -f \'chrome-linux-arm64/chrom[e]\' | tr "\n" "," | sed "s/,$//")');
+const residentRoots = chromiumProcs().filter((p) => isPlaywrightChromium(p) && !p.args.includes('--type=')).length;
+if (residentRoots > MAX_RESIDENT_BROWSERS) {
+	console.error(`[e2e] 常驻浏览器实例 = ${residentRoots} > 上限 ${MAX_RESIDENT_BROWSERS}（含别的 worktree 正在跑的那种）；先看清再跑：`);
+	console.error("      ps -eo pid=,ppid=,etime=,args= | grep 'chrom[e]-linux-arm64/chrome ' | grep -v -- '--type='");
+	console.error("      确认是别人在跑且本机内存够，可放宽：DSH_E2E_MAX_BROWSERS=6 node e2e/run.mjs <suite>");
 	process.exit(3);
 }
 for (const sig of ['SIGINT', 'SIGTERM']) {
