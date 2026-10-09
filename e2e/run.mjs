@@ -123,8 +123,11 @@ suitesToRun = [...new Set(suitesToRun)];
 	if (home) {
 		const missing = ['instance.json', 'instance.pid'].filter((f) => !existsSync(join(home, f)));
 		if (missing.length > 0) {
-			console.error(`✗ 环境错误：${home} 里缺少 ${missing.join('、')}——这是旧版残留 home，插件不会被加载。`);
-			console.error('  请在 worktree 里运行 e2e（dsh-e2e 会在那里建立当前版本的 home），不要在旧 home 上跑。');
+			// 观察到的事实 / 最可能的原因分开写：打错的 DSH_E2E_HOME 与旧版残留 home
+			// 症状一模一样，别把成因写死。
+			console.error(`✗ 环境错误：${home} 不是有效的 e2e 实例 home（缺少 ${missing.join('、')}）。`);
+			console.error('  观察到：该目录没有 dsh-e2e 实例元数据，插件不会被加载，插件路由会落进 web 的 SPA 兜底返回 HTML。');
+			console.error('  最可能的原因：在主检出目录下运行（那里的 .dsh-e2e-home 是旧版残留）；请在 worktree 里运行 e2e。');
 			process.exit(2);
 		}
 	}
