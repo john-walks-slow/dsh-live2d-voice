@@ -18,12 +18,21 @@
 cd /root/projects/dsh-live-mode && sha256sum lib/client.js lib/index.js lib/standalone.js
 ```
 
-`lib/index.js` 应含 host 侧修复（`touchMode` 白名单），`lib/client.js` 应含 `lvTouchLook`、`lvGesture`：
+`lib/index.js` 应含 host 侧修复（`touchMode` 白名单），`lib/client.js` 应含 `lvTouchLook`、`lvGesture`。
+下面每行都是**我原样跑过、输出贴在下面对应位置**的（规矩：标"可独立复核"的命令必须先自己跑一遍）：
 
 ```bash
-grep -c "if(typeof body.touchMode" lib/index.js        # ≥1
-grep -c "lvTouchLook" lib/client.js                     # ≥1
+$ grep -c "typeof body.touchMode" lib/index.js
+1
+$ grep -c "lvTouchLook" lib/client.js
+1
+$ grep -c "lvGesture" lib/client.js
+1
+$ sed -n 1944p lib/index.js
+        if (typeof body.touchMode === "boolean") patch.touchMode = body.touchMode;
 ```
+
+（第一版写的是 `grep -c "if(typeof body.touchMode"`——产物里 `if (` 与 `typeof` 之间有空格，照抄会得到 `0`，恰好导出"修复没进产物"的相反结论。已改。）
 
 判据来源（不是自证）：这些 sha256 由独立子代理在 `/tmp` 重新 `node build.mjs` 后逐字节复核（`cmp` 全 0），与工作树及提交 `91d44b5` 一致。
 
@@ -38,10 +47,44 @@ grep -c "lvTouchLook" lib/client.js                     # ≥1
 - 校验期间为验证 `touchMode` 持久化，对 `/root/.dsh/live2d-voice.json` 做过两次写入：`touchMode:true` → 再 `touchMode:false`（当前值 = 默认关）。
 - 写入路径语义：`src/config.ts:321` `saveConfig(patch)` = `{ ...loadConfig(), ...patch }`——**merge**（读-改-写），patch 由 `src/routes.ts` 从 body 白名单逐键构造，那两次 body 只带 `touchMode`。
 - **能证实的**：字段名与数量完整（33 个），我能独立对照的三个值（`modelSelection=hiyori`、`liveMode=first`、`apiKeys` 空数组）与用户既有设置一致；`touchMode` 已回到默认关。
-- **不能证实的**（不许写成强断言）：
-  1. 33 个字段"完整"只能排除**键被 strip**，排除不了**值被替换**——我**没有**写前快照，也没有跟 schema 默认值逐键比对，所以无法证明其余字段未被默认值顶替；此后再提到这点，措辞只能是"字段数量完整"，不是"用户的字段一个没少"。
-  2. 残余风险至少两类：(a) **load 路径**的默认值填充 / 类型强转 / 非法 enum 回退——发生在"读"的时刻并被原样落盘，是确定性可复现的行为，未被证否也未被观测到；(b) 读-写窗口（并发写撞进同一窗口，所有设置保存路径共有）。**不是**"仅为微秒级窗口"。
-- 当前配置文件 sha256 前缀：`ae59a5fb4e124977`（可作为后续基线）。
+- **不能证实的**（不许写成强断言）：33 个字段"完整"只能排除**键被 strip**，排除不了**值被替换**——我**没有**写前快照，也没有跟 schema 默认值逐键比对，所以无法证明其余字段未被默认值顶替；此后再提到这点，措辞只能是"字段数量完整"，不是"用户的字段一个没少"。
+
+### 3.1 `loadConfig()` 的读路径契约（可枚举，不是"未知"）
+
+`src/config.ts:285-316`。底子是 `{ ...structuredClone(DEFAULT_CONFIG), ...raw }`：**未显式处理的键原样透传、完全不校验**；缺失键静默用默认填充。会改写用户值的只有下面这几处：
+
+| 键 | 处理 | 后果 |
+|---|---|---|
+| （未列出的 ~29 个键） | 原样透传，无类型/shape 校验 | 值不会被替换；**但也拦不住坏值**（实测 `modelSelection: 123`、`voiceId: {"weird":true}` 原样读回） |
+| `idleInterval` | `typeof === "number"` 否则默认 | 字符串/`null` → 静默回落默认（实测 `"20"` → 默认 `20`，**不是**解析成 20） |
+| `touchMode` | `typeof === "boolean"` 否则默认 | 任何非布尔值 → 默认 `false` |
+| `workspaces` | `raw.workspaces ?? {}` | **无 shape 校验**：数组/字符串照样透传（实测 `[1,2]` 读回仍是 `[1,2]`） |
+| `apiKeys` | 必须是数组，且元素必须是"非空 string" | **最坏面**：一次坏写静默清空（实测 `['k1',null,'',123,'k2',{}]` → `["k1","k2"]`）；非数组 → `[]` |
+| `emotionMap` / `playerEmotionMap` | 与默认表 merge | 用户侧键一定保留，删不掉 |
+| `sttLanguage` | 仅当 `speechLanguage` 缺失且 `sttLanguage === "zh"` | **静默改写用户值**为 `"auto"`（phase 1→2 迁移，只发生一次） |
+| `thirdPerson` | 仅当 `liveMode` 缺失且 `thirdPerson === true` | 映射为 `liveMode="third"`，并从载入对象里删掉该键（实测：载入对象无 `thirdPerson`，随后 save 也不写它） |
+| **整个函数体外层 `try/catch`** | JSON 解析失败 → `catch` 返回**全默认** | **最严重**：文件一旦 torn，本次读回全默认，**且随后任意一次 `saveConfig` 都是 read-modify-write，会把这个"全默认"落盘**，原值不可恢复 |
+
+实测（`DSH_HOME=/tmp/lv-cfg-probe`，隔离目录，脚本 `/tmp/lv-cfg-probe/load-contract.mjs`，绝不碰线上配置）：
+
+```
+① 写坏的 JSON 确实无法解析
+① ①a loadConfig 未抛异常，返回 modelSelection="" touchMode=false 字段数=31
+① ①b 随后一次 save 落盘：modelSelection=""（原值已被默认值顶替）
+② apiKeys ['k1',null,'',123,'k2',{}] → ["k1","k2"]
+③ 透传 modelSelection=123 voiceId={"weird":true} speechPrompt="  keep  "
+④ idleInterval:"20"→20 touchMode:"yes"→false workspaces:[1,2]→[1,2] apiKeys:"..."→[]
+⑤ sttLanguage:"zh"（无 speechLanguage）→"auto"；thirdPerson:true（无 liveMode）→liveMode="third"，载入对象里 thirdPerson 存在? false
+⑤ 迁移后一次 save 落盘：liveMode="third"，文件里 thirdPerson 存在? false
+```
+
+（①b 的 `""` 就是 `DEFAULT_CONFIG.modelSelection`——坏文件里那行 `"hiyori"` 已被顶替并落盘。）
+
+### 3.2 残余风险的处置决定
+
+- (a) **读路径的默认值填充/强转/非法值回退**：已按上表枚举 + 三条实测覆盖，不再写"未知"。其中 `apiKeys` 静默清空与外层 try/catch 的"torn → 全默认 → 下次 save 落盘"是真实风险，但**本轮决定不修**（要动 `src/`，破冻结、改线上基线；且属既有行为，非本次引入）——记为后续 issue 候选。
+- (b) **读-写窗口**（并发 patch 撞进同一读→写窗口）：也是既有性质，**接受，不修**。
+- 两条都是**决定**，不是留洞；真机验收的归因基线以本文件为准。
 
 ## 四、验证保留物
 

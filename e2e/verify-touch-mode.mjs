@@ -315,6 +315,45 @@ PY`, { encoding: 'utf8' }).trim();
   check('T8d 松手回落连续（单帧无跳变）', maxStep <= 0.18, `maxStep=${maxStep.toFixed(4)} steps=${steps.map((v) => v.toFixed(3)).join(',')}`);
   check('T8d2 回落确实发生（末帧朝中位移动）', returned >= 0.05, `held=${held.toFixed(3)} last=${shots[shots.length - 1].toFixed(3)} 位移=${returned.toFixed(3)}`);
 
+  // T12 双击复位（清单第 4 条的机制面）：双指平移过之后双击 → 视图回到基准
+  await touch('pointerdown', 400, 350, 1);
+  await touch('pointerdown', 500, 350, 2);
+  for (let i = 1; i <= 6; i++) {
+    await touch('pointermove', 400 + i * 20, 350, 1);
+    await touch('pointermove', 500 + i * 20, 350, 2);
+  }
+  await touch('pointerup', 520, 350, 1);
+  await touch('pointerup', 620, 350, 2);
+  await page.waitForTimeout(300);
+  const panned = await state();
+  await page.evaluate(() => document.querySelector('.lv-stage').dispatchEvent(new MouseEvent('dblclick', { bubbles: true })));
+  await page.waitForTimeout(600);
+  const reset = await state();
+  check('T12 双击复位视图（平移后回到基准）',
+    panned.transform !== reset.transform && /(^|,)0(,|$)|0,0/.test(reset.transform.replace(/\s/g, '')),
+    `${panned.transform} → ${reset.transform}`);
+
+  // T13 全屏进出（清单第 7 条的机制面，standalone 页 = 浏览器原生全屏）
+  const fsState = () => page.evaluate(() => ({
+    fullscreen: Boolean(document.fullscreenElement),
+    isRoot: document.fullscreenElement?.classList?.contains('lv-root') ?? false,
+  }));
+  await page.evaluate(() => {
+    const btn = [...document.querySelectorAll('.lv-hud button')].find((b) => (b.title ?? '').startsWith('全屏'));
+    btn?.click();
+  });
+  await page.waitForTimeout(900);
+  const entered = await fsState();
+  await page.evaluate(() => {
+    const btn = [...document.querySelectorAll('.lv-hud button')].find((b) => (b.title ?? '').startsWith('退出全屏'));
+    btn?.click();
+  });
+  await page.waitForTimeout(900);
+  const exited = await fsState();
+  check('T13 全屏进出（右上角按钮 → 原生全屏 → 再点退出）',
+    entered.fullscreen && entered.isRoot && !exited.fullscreen,
+    `进入 fullscreen=${entered.fullscreen}/root=${entered.isRoot}，退出后 fullscreen=${exited.fullscreen}`);
+
   // T11 HUD 开关落盘（设置卡与 HUD 共用同一条 saveConfig 路径）
   const readCfgTouch = () => { try { return JSON.parse(readFileSync(CFG, 'utf8')).touchMode; } catch { return undefined; } };
   const clickTouchButton = async () => {
