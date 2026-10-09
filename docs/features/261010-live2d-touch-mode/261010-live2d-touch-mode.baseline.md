@@ -8,9 +8,13 @@
 
 | 产物 | sha256 |
 |---|---|
-| `lib/client.js` | `677b75f752456cbdb2abc289b069c28be5d4eada21cc2956f3d58f8ebbcd45bb` |
+| `lib/client.js` | `c72ae8ae38889d711746a3972850be7f9644668ef83b0a1efc680e107d34a445` |
 | `lib/index.js` | `ba7c4c692bee4f97f0f3eaf4dae72b545fa3d0e2ecf25ffbae3d0d117d975fc7` |
-| `lib/standalone.js` | `7e306672f9162de33db0af45699a5561ee5f53ac0eece8af5da5c36746ce8f67` |
+| `lib/standalone.js` | `4bba35d4880c8b48038197923b59e34636e3d11bfc0a8e89d3dfb37a09ed81ec` |
+
+**2026-10-10 06:5x 更新（手势接受计数契约）**：为把 e2e 从"读到期望值"升级为"因果归因"，客户端新增
+`dataset.lvGestureSeq`（手势真的起播时单调 +1；被拒绝的滑动不推进）——只动了 client 侧，
+**host（`lib/index.js`）未变、无需重启 dsh，刷新页面即拿到新 bundle**。
 
 独立重算：
 

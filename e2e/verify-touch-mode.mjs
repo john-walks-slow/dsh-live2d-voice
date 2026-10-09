@@ -100,6 +100,8 @@ const gestureState = () => page.evaluate(() => document.querySelector('.lv-stage
  * `dataset.lvGesture` 值而不是吞掉异常——调用方据此判红并打印实际值。
  */
 const clearGesture = () => page.evaluate(() => { delete document.querySelector('.lv-stage').dataset.lvGesture; });
+/** 手势接受计数（成功起播时 +1，被拒绝的滑动不动它）——因果归因的依据。 */
+const gestureSeq = () => page.evaluate(() => document.querySelector('.lv-stage')?.dataset?.lvGestureSeq ?? null);
 
 /**
  * 等待"滑动被接受"（**eventual 契约**：动作排队/冷却期间会被静默拒绝，故允许多次尝试）。
@@ -113,15 +115,20 @@ const clearGesture = () => page.evaluate(() => { delete document.querySelector('
  * 注意它验证的是"最终被接受"，不是"单次滑动立刻生效"——后者需要 src 侧的接受信号
  * （`dataset.lvGestureSeq` 之类），已记入 validation §十 未结项。
  */
-const MAX_ATTEMPTS = 16; // 有界放宽：武装要等上一个动作播完，16 × settleMs 仍是硬上限
+const MAX_ATTEMPTS = 16; // 有界放宽：等上一个动作播完，16 × settleMs 仍是硬上限
 const swipeExpect = async (fromX, fromY, dx, dy, expected, { attempts = 4, settleMs = 700, pointerType = 'touch', pointerId = 7 } = {}) => {
   const cap = Number.isSafeInteger(attempts) ? Math.min(Math.max(attempts, 1), MAX_ATTEMPTS) : 4;
   let value = null;
   for (let used = 1; used <= cap; used++) {
+    // 因果归因：记下接受计数 → 清空旧值 → 滑动 → 只有**计数前进且值等于期望**
+    // 才算这一次滑动被接受。上一个动作还在播时新滑动会被框架静默拒绝，此时
+    // 计数不动，即使页面上残留着同样的旧值也不会假通过（交叉核查指出的洞）。
+    const seq0 = await gestureSeq();
     await clearGesture();
     await swipe(fromX, fromY, dx, dy, { settleMs, pointerType, pointerId });
     value = await gestureState();
-    if (value === expected) return { ok: true, value, attempts: used };
+    const seq1 = await gestureSeq();
+    if (value === expected && seq1 !== null && seq1 !== seq0) return { ok: true, value, attempts: used, seq: seq1 };
   }
   return { ok: false, value, attempts: cap };
 };
@@ -490,10 +497,12 @@ PY`, { encoding: 'utf8' }).trim();
 
   // T14 重试有硬上限 + 失败报真实状态；izumi 没有 FlickDown → 该期望永不出现。
   // 它在滑动时**会**真的起播 izumi 自带的手势动作（回退到 Shake），所以放在本段最后。
+  const seqBefore = Number(await gestureSeq());
   const impossible = await swipeExpect(startX, startY, 160, 0, 'Right:FlickDown', { attempts: 2, settleMs: 500 });
-  check('T14 重试有硬上限、失败报真实状态（不可能满足的期望必须判红）',
-    impossible.ok === false && impossible.attempts === 2 && impossible.value !== 'Right:FlickDown',
-    `ok=${impossible.ok} attempts=${impossible.attempts} 实际=${impossible.value}`);
+  const seqAfter = Number(await gestureSeq());
+  check('T14 不可能满足的期望必判红（重试有硬上限；被拒绝的滑动不推进接受计数）',
+    impossible.ok === false && impossible.attempts === 2 && impossible.value !== 'Right:FlickDown' && seqAfter >= seqBefore,
+    `ok=${impossible.ok} attempts=${impossible.attempts} 实际=${impossible.value} seq ${seqBefore}→${seqAfter}`);
 
   check('T9 无页面错误', pageErrors.length === 0, pageErrors.slice(0, 2).join(' | '));
 } finally {

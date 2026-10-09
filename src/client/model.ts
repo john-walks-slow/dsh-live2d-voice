@@ -496,6 +496,7 @@ export async function mountModel(
 			for (const [id, v] of angles) setParam(id, v);
 			applyTransform();
 		}
+
 	});
 
 	// Touch / mouse interaction:
@@ -550,6 +551,7 @@ export async function mountModel(
 	let touchMode = false;
 	/** Swipe motions must not be spammed: a short cooldown keeps the queue sane. */
 	let gestureCooldownUntil = 0;
+	let gestureSeq = 0;
 	const GESTURE_COOLDOWN_MS = 400;
 
 	/**
@@ -650,6 +652,10 @@ export async function mountModel(
 				const value = `${direction}:${group}`;
 				if (tag) container.dataset[`lv${tag}Gesture`] = value;
 				container.dataset.lvGesture = value;
+				// Monotonic acceptance counter: a swipe that was refused does not
+				// advance it, so a test can attribute a gesture to *its own*
+				// input instead of trusting a stale value.
+				container.dataset.lvGestureSeq = String(++gestureSeq);
 			})
 			.catch(() => {});
 	};
@@ -974,6 +980,7 @@ export async function mountModel(
 			if (tag) delete container.dataset[`lv${tag}ParamIds`];
 			if (tag) delete container.dataset[`lv${tag}Tap`];
 			if (tag) delete container.dataset[`lv${tag}Gesture`];
+			delete container.dataset.lvGestureSeq;
 			// The shared tap key is last-writer-wins in dual mode (see AGENTS.md);
 			// drop it with the model so a stale value cannot outlive its mount.
 			delete container.dataset.lvTap;
