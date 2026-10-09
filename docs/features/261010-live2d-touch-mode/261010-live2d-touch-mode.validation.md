@@ -67,4 +67,20 @@
 - **ADV-02（记为后续重构）**：`mountModel` 位置参数已到 8 个，建议后续统一收敛为 `options` 对象；本轮不改以免扩大改动面。
 - **INF-01（备忘）**：触屏与鼠标混用时的指针状态交叠已被 hover/touch 互斥逻辑挡住，仅留作边界记录。
 
-补充验证（改动后复跑）：`verify-touch-mode` **30/30**、`verify-tap` **11/11**、`verify-look-math` **17/17**。
+补充验证（改动后复跑）：`verify-touch-mode` **33/33**、`verify-tap` **11/11**、`verify-look-math` **17/17**。
+
+### 追加：两个由"自我加码"的用例抓出来的真问题
+
+1. **`touchMode` 没有进 host 的保存白名单**（`src/routes.ts` 的 `patch` 允许列表）：HUD/设置卡的开关在 UI 上会亮灭、`saveConfig({touchMode})` 也照发，但 host 端**静默丢弃**，配置里永远是旧值。这是 T11「HUD 开关落盘且可还原」抓到的（`true → true → true`，而不是 `true → false → true`）。修好后 `true → false → true`。
+   → 影响：这只是**触摸模式的持久化**，任何用户点开开关、刷新后都会发现又关了。修法 = 白名单加一行。
+   → **副作用：这是 host 侧改动（`lib/index.js` 变了），线上实例必须重启 dsh 才能生效**（不是"刷新页面即可"）。
+2. **松手回落的连续性**（ADV-03 改的行为）现在有断言：按住右侧松手后每 180ms 一帧，单帧质心位移最大 **0.087**、四帧累计回落 **0.136**，无跳变——这正是原来"先衰减到 0 再瞬切摄像头"会破坏的性质。
+
+### 顺带记录的测试基建问题（今日落记录，另行排期）
+
+`verify-fullscreen-usable` / `verify-fullscreen-keyboard` / `verify-keyboard-squish`（以及 `verify-settings-model`）都需要实例里有**真实 chat 会话或完整 GUI 状态**，在最小 e2e 实例里会在 `waitForSelector` 阶段超时失败。应改成"前置不满足时 skip 并明确报告（exit 0 + SKIP 行）"，否则全量跑永远三片红，容易掩盖真问题。已写入 `docs/references/260927-e2e-testing.md` 的待办段。
+
+### 待办（不阻塞本次合并）
+
+- ADV-02：`mountModel` 的 8 个位置参数收敛为 `options` 对象（记录在计划 §九）。
+- 无会话 GUI 套件的 skip 语义（上面那条）。

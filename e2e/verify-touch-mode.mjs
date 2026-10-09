@@ -277,6 +277,64 @@ PY`, { encoding: 'utf8' }).trim().split('\n');
   check('T8b null case 漂移 < 阈值', drift < THRESHOLD, `drift=${drift.toFixed(4)}`);
   check('T8c 方向正确（手指在右时头部质心更大）', Number(lr?.[2]) > Number(lr?.[1]), `left=${lr?.[1]} right=${lr?.[2]}`);
 
+  // T8d 松手回落连续性（ADV-03 改的就是这里）：按住右侧 → 松手 → 连拍逐帧看有无跳变
+  const centroidOf = (path) => {
+    const out = execSync(`python3 - <<'PY'
+from PIL import Image
+im = Image.open('${path}').convert('RGB')
+w, h = im.size
+im = im.crop((0, 0, w, int(h * 0.55)))
+w, h = im.size
+px = im.load()
+corners = [px[4, 4], px[w-5, 4], px[4, h-5], px[w-5, h-5]]
+bg = tuple(sum(c[i] for c in corners) // 4 for i in range(3))
+xs = [x for y in range(0, h, 2) for x in range(0, w, 2)
+      if abs(px[x, y][0]-bg[0]) + abs(px[x, y][1]-bg[1]) + abs(px[x, y][2]-bg[2]) > 40]
+print(sum(xs) / len(xs) / w)
+PY`, { encoding: 'utf8' }).trim();
+    return Number(out);
+  };
+  const holdX = stageBox.x + stageBox.w * 0.85;
+  const holdY = stageBox.y + stageBox.h * 0.45;
+  await touch('pointerdown', holdX, holdY);
+  await touch('pointermove', holdX, holdY);
+  await page.waitForTimeout(900);
+  await page.screenshot({ path: '/tmp/touch-release-0.png' });
+  await touch('pointerup', holdX, holdY);
+  const shots = [];
+  for (let i = 0; i < 4; i++) {
+    await page.waitForTimeout(180);
+    const p = `/tmp/touch-release-${i + 1}.png`;
+    await page.screenshot({ path: p });
+    shots.push(centroidOf(p));
+  }
+  const held = centroidOf('/tmp/touch-release-0.png');
+  const steps = shots.map((c, i) => Math.abs(c - (i === 0 ? held : shots[i - 1])));
+  const maxStep = Math.max(...steps);
+  const returned = Math.abs(shots[shots.length - 1] - held);
+  check('T8d 松手回落连续（单帧无跳变）', maxStep <= 0.18, `maxStep=${maxStep.toFixed(4)} steps=${steps.map((v) => v.toFixed(3)).join(',')}`);
+  check('T8d2 回落确实发生（末帧朝中位移动）', returned >= 0.05, `held=${held.toFixed(3)} last=${shots[shots.length - 1].toFixed(3)} 位移=${returned.toFixed(3)}`);
+
+  // T11 HUD 开关落盘（设置卡与 HUD 共用同一条 saveConfig 路径）
+  const readCfgTouch = () => { try { return JSON.parse(readFileSync(CFG, 'utf8')).touchMode; } catch { return undefined; } };
+  const clickTouchButton = async () => {
+    await page.evaluate(() => {
+      // 标题在开/关两种状态下不同（"触摸模式：…" / "关闭触摸模式"），用 includes
+      const btn = [...document.querySelectorAll('.lv-capsule button')].find((b) => (b.title ?? '').includes('触摸模式'));
+      btn?.click();
+    });
+  };
+  const beforeToggle = readCfgTouch();
+  await clickTouchButton();
+  await page.waitForTimeout(800);
+  const afterToggle = readCfgTouch();
+  await clickTouchButton();
+  await page.waitForTimeout(800);
+  const restored = readCfgTouch();
+  check('T11 HUD 触摸模式开关落盘且可还原',
+    afterToggle === !beforeToggle && restored === beforeToggle,
+    `${beforeToggle} → ${afterToggle} → ${restored}`);
+
   // ── T10 组选择/方向/判定纯函数（表驱动，不依赖模型）────────────────────
   check('T10a 有方向组 → Flick<方向>', resolveGestureGroup(['FlickRight', 'Flick', 'Shake'], 'Right') === 'FlickRight');
   check('T10b 只有 Flick → 回退 Flick', resolveGestureGroup(['Flick', 'Shake'], 'Left') === 'Flick');

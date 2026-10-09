@@ -83,3 +83,12 @@ const sessionId = [...streams].at(-1); // 从长连接请求捕获真实的 sess
 - 点击已有会话与挂载视图**绝对不产生任何大模型日志增长**。
 - 日志断言使用捕获到的真实 sessionId。
 - 前端测试如需模拟语音回复，直接向客户端派发 Mock SSE 事件包，无需打通后端大模型。
+
+## 待办：需要真实会话/GUI 状态的套件要"skip 并明确报告"
+
+现状：`verify-fullscreen-usable`、`verify-fullscreen-keyboard`、`verify-keyboard-squish`（以及设置页烟测 `verify-settings-model`）都依赖实例里存在**真实 chat 会话**或完整 GUI 状态——最小 e2e 实例（只有空会话）跑到 `waitForSelector('.lv-root .lv-stage canvas')` / 设置卡标题时超时，最终以**失败**收场。261010 触摸模式那轮就撞上过：三片红全与环境前置有关，没有任何一条是当次改动的回归，却要人肉逐条排除。
+
+约定（待实施）：
+- 套件开头显式探测前置（例如 `[role="treeitem"].sessionRow` 是否存在、设置卡是否渲染）：不满足时打印 `SKIP <suite>: <缺少的前置>` 并 **exit 0**；
+- 汇总输出里区分 `PASS / FAIL / SKIP`，SKIP 不需要人肉复跑但要出现在报告里；
+- 真实 API 类前置永远不为了"跑通"而现场制造（铁律 #3），只能 skip。
