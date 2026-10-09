@@ -589,6 +589,8 @@ export async function mountModel({
 	let touchMode = false;
 	/** Swipe motions must not be spammed: a short cooldown keeps the queue sane. */
 	let gestureCooldownUntil = 0;
+	// Acceptance counter for the e2e attribution: observations only, the product
+	// never reads it (same as lvGesture/lvTouchLook — DOM diagnostics contract).
 	let gestureSeq = 0;
 	const GESTURE_COOLDOWN_MS = 400;
 
