@@ -24,6 +24,7 @@ import {
 	IconClose,
 	IconExternalLink,
 	IconCopy,
+	IconTouch,
 } from "./icons.js";
 import { logger } from "./logger.js";
 import { useState } from "react";
@@ -41,6 +42,9 @@ export interface HudProps {
 	inputOpen: boolean;
 	popoverOpen: boolean;
 	fullscreen: boolean;
+	/** Touch mode: the avatar follows the finger (mouse hover counts) and tap/swipe gestures drive the model's own motions. */
+	touchMode: boolean;
+	onToggleTouchMode: () => void;
 	micState: MicState;
 	/** True only when the mic is on AND the live RMS level is above the
 	    "user is actually speaking" threshold. Drives the mic button's halo
@@ -264,6 +268,8 @@ export function Hud(props: HudProps) {
 
 	return (
 		<div className={`lv-hud${props.faded ? " lv-faded" : ""}${micOn ? " lv-mic-live" : ""}`}>
+			{/* 底部胶囊：会话相关按钮（视图级按钮搬到右上角 .lv-corner） */}
+			<div className="lv-capsule">
 			{/* 1. 麦克风录音控制 */}
 			<button
 				type="button"
@@ -310,27 +316,15 @@ export function Hud(props: HudProps) {
 				<IconKeyboard size={19} />
 			</button>
 
-			{/* 5. 沉浸全屏模式 */}
+			{/* 5. 触摸模式：视线跟手指 + 模型手势动作 */}
 			<button
 				type="button"
-				className={`lv-btn${props.fullscreen ? " lv-on" : ""}`}
-				title={props.fullscreen ? "退出全屏" : "全屏沉浸模式"}
-				onClick={props.onToggleFullscreen}
+				className={`lv-btn${props.touchMode ? " lv-on" : ""}`}
+				title={props.touchMode ? "关闭触摸模式" : "触摸模式：视线跟随手指，可触发模型手势"}
+				onClick={props.onToggleTouchMode}
 			>
-				{props.fullscreen ? <IconMinimize size={19} /> : <IconMaximize size={19} />}
+				<IconTouch size={19} />
 			</button>
-
-			{/* 5b. 独立入口（仅 GUI：新开 /live2d-voice/app 单会话页） */}
-			{props.onOpenStandalone && (
-				<button
-					type="button"
-					className="lv-btn"
-					title="独立入口（新窗口打开单会话角色页）"
-					onClick={props.onOpenStandalone}
-				>
-					<IconExternalLink size={18} />
-				</button>
-			)}
 
 			<div className="lv-hud-sep" />
 
@@ -725,6 +719,29 @@ export function Hud(props: HudProps) {
 					</div>
 				</div>
 			)}
+			</div>
+
+			{/* 右上角视图按钮簇：全屏 / 独立入口（常驻，跟随 HUD 一起淡出） */}
+			<div className="lv-corner">
+				<button
+					type="button"
+					className={`lv-btn${props.fullscreen ? " lv-on" : ""}`}
+					title={props.fullscreen ? "退出全屏" : "全屏沉浸模式"}
+					onClick={props.onToggleFullscreen}
+				>
+					{props.fullscreen ? <IconMinimize size={19} /> : <IconMaximize size={19} />}
+				</button>
+				{props.onOpenStandalone && (
+					<button
+						type="button"
+						className="lv-btn"
+						title="独立入口（新窗口打开单会话角色页）"
+						onClick={props.onOpenStandalone}
+					>
+						<IconExternalLink size={18} />
+					</button>
+				)}
+			</div>
 		</div>
 	);
 }

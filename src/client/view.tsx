@@ -11,7 +11,7 @@ import type { ConvViewProps } from "@deepseek-ai/dsh-client-ui-conversation/clie
 import { fetchConfig, fetchModelInfo, fetchModelCatalog, fetchModelSelection, openStream, postMessage, postPlayerLine, recognizeUtterance, saveConfig, selectModel, postCameraResult, startAsrUpload, type AsrUpload } from "./api.js";
 import { SpeechEngine } from "./engine.js";
 import { Hud } from "./hud.js";
-import { isCubismCoreLoaded, mountModel, createLive2DStage, DEFAULT_LOOK_PARAMS, type Live2DHandle, type LookParams, type SharedStage, type StageWindow } from "./model.js";
+import { isCubismCoreLoaded, mountModel, createLive2DStage, DEFAULT_LOOK_PARAMS, type Live2DHandle, type LookParams, type SharedStage, type StageWindow, type TouchLookChannel } from "./model.js";
 import { MicCapture, type MicState } from "./mic.js";
 import { GazeTracker, capturePhoto, loadSavedCalibration, saveCalibration, type GazeCalibration } from "./gaze.js";
 import { TiltParallax } from "./tilt.js";
@@ -163,6 +163,23 @@ export function Live2DView(props: ViewProps) {
 
 	const [languages, setLanguages] = useState<LanguageOption[]>([]);
 	const [idleInterval, setIdleInterval] = useState(20);
+	const [touchMode, setTouchMode] = useState(false);
+	const touchModeRef = useRef(false);
+	/** Live finger/hover vector while the pointer is down (touch) or hovering (mouse). */
+	const touchLookRef = useRef<{ dx: number; dy: number } | null>(null);
+	/** Last vector + release time, used to ease the gaze back over ~450ms. */
+	const touchLookReleaseRef = useRef<{ vector: { dx: number; dy: number }; at: number } | null>(null);
+	const touchLookChannelRef = useRef<TouchLookChannel>({
+		onTouchLook: (vector) => {
+			if (vector) {
+				touchLookRef.current = vector;
+				touchLookReleaseRef.current = null;
+			} else if (touchLookRef.current) {
+				touchLookReleaseRef.current = { vector: touchLookRef.current, at: performance.now() };
+				touchLookRef.current = null;
+			}
+		},
+	});
 	const [voiceId, setVoiceId] = useState("");
 	const [apiKeyCount, setApiKeyCount] = useState(-1);
 	const [speechPrompt, setSpeechPrompt] = useState("");
@@ -372,6 +389,7 @@ export function Live2DView(props: ViewProps) {
 				setEyeTracking(config.eyeTracking);
 				setGyroParallax(config.gyroParallax);
 				setIdleInterval(typeof config.idleInterval === "number" ? config.idleInterval : 20);
+				setTouchMode(config.touchMode === true);
 				setLiveMode(config.liveMode === "third" || config.liveMode === "call" ? config.liveMode : "first");
 				setPlayerVoiceId(config.playerVoiceId || "");
 				setPlayerPolish(config.playerPolish !== false);
@@ -457,6 +475,11 @@ export function Live2DView(props: ViewProps) {
 	// Third-person resting gaze: the two avatars face each other (stage-play
 	// framing — they don't know the viewer exists) instead of staring at the
 	// camera; the AI (right) looks left, the player (left) looks right.
+/** localStorage flag: the touch-mode hint is shown once per browser. */
+const TOUCH_HINT_KEY = "lv-touch-mode-hint";
+
+/** Touch-mode gaze: after the finger leaves, ease the look back over this long. */
+const TOUCH_LOOK_DECAY_MS = 450;
 	const AI_FACE_BIAS = -0.6;
 	const PLAYER_FACE_BIAS = 0.6;
 	// In third-person the avatars must not turn toward the user: zero the
@@ -529,6 +552,7 @@ export function Live2DView(props: ViewProps) {
 			dual ? { xFraction: 0.72, scaleGain: 0.8, faceBiasX: AI_FACE_BIAS } : undefined,
 			sharedStageRef.current ?? undefined,
 			"Ai",
+			touchLookChannelRef.current,
 		);
 
 		mountPromise
@@ -543,6 +567,9 @@ export function Live2DView(props: ViewProps) {
 				}
 				handle = mounted;
 				modelRef.current = mounted;
+				// Touch mode may have been restored from config before the model
+				// finished mounting: apply it the moment the handle exists.
+				mounted.setTouchMode(touchModeRef.current);
 				setStatus("ready");
 				logger.info(`Live2D model ready: ${modelInfo?.name}`);
 				if (gazeRef.current?.active || tiltRef.current?.active) modelRef.current?.setLook(camLookRef.current, gyroLookRef.current);
@@ -629,6 +656,7 @@ export function Live2DView(props: ViewProps) {
 				: { xFraction: 0.28, scaleGain: 0.8, faceBiasX: PLAYER_FACE_BIAS },
 			stage,
 			"Player",
+			touchLookChannelRef.current,
 		);
 		mountPromise
 			.then((mounted) => {
@@ -642,6 +670,7 @@ export function Live2DView(props: ViewProps) {
 				}
 				handle = mounted;
 				playerModelRef.current = mounted;
+				mounted.setTouchMode(touchModeRef.current);
 				// An expression may have arrived while the avatar was still
 				// mounting — apply the latest one now.
 				const pendingExpression = pendingPlayerExpressionRef.current;
@@ -848,14 +877,33 @@ export function Live2DView(props: ViewProps) {
 		};
 	}, [gyroParallax]);
 
+	// Push touch mode into the mounted models: the gesture layer reads it live,
+	// so toggling must never remount the avatar.
+	useEffect(() => {
+		touchModeRef.current = touchMode;
+		modelRef.current?.setTouchMode(touchMode);
+		playerModelRef.current?.setTouchMode(touchMode);
+	}, [touchMode, modelInfo?.name, modelInfo?.player?.name]);
+
 	// Look loop: while camera gaze or gyro tilt is active, drive the model
 	// every frame from the latest cam/gyro vectors.
 	useEffect(() => {
 		let raf = 0;
 
 		const tick = () => {
-			const cam = gazeRef.current?.active ? camLookRef.current : null;
+			const camera = gazeRef.current?.active ? camLookRef.current : null;
 			const gyro = tiltRef.current?.active ? gyroLookRef.current : null;
+			// Touch mode overrides the camera source while the finger is down,
+			// then eases back over TOUCH_LOOK_DECAY_MS so releasing never snaps.
+			let cam = camera;
+			const release = touchLookReleaseRef.current;
+			if (touchLookRef.current) {
+				cam = touchLookRef.current;
+			} else if (release) {
+				const progress = (performance.now() - release.at) / TOUCH_LOOK_DECAY_MS;
+				if (progress >= 1) touchLookReleaseRef.current = null;
+				else cam = { dx: release.vector.dx * (1 - progress), dy: release.vector.dy * (1 - progress) };
+			}
 			modelRef.current?.setLook(cam, gyro);
 			// The PiP self-view is a MIRROR of the user, not an autonomous
 			// character: raw camera/gyro follow while the stage avatar keeps
@@ -1373,6 +1421,25 @@ export function Live2DView(props: ViewProps) {
 		}
 	};
 
+	/**
+	 * Touch mode toggle: persisted like every other view preference, with a
+	 * one-time hint because the semantics (finger gaze + gestures + two-finger
+	 * pan) are impossible to guess.
+	 */
+	const toggleTouchMode = useCallback(async () => {
+		const next = !touchModeRef.current;
+		setTouchMode(next);
+		if (next && !window.localStorage.getItem(TOUCH_HINT_KEY)) {
+			setToast("触摸模式：角色跟着你的手指看 · 轻触有反应 · 滑动换动作 · 双指缩放");
+			window.localStorage.setItem(TOUCH_HINT_KEY, "1");
+		}
+		try {
+			await saveConfig({ touchMode: next });
+		} catch (error) {
+			logger.warn("save touchMode failed", error);
+		}
+	}, []);
+
 	const handleSelectModel = async (provider: string, model: string, reasoningEffort?: string) => {
 		try {
 			const { selected } = await selectModel(sessionId, provider, model, reasoningEffort);
@@ -1836,6 +1903,8 @@ export function Live2DView(props: ViewProps) {
 				onPickPlayerModel={(name) => void pickPlayerModel(name)}
 				currentPlayerVoiceId={playerVoiceId}
 				onPickPlayerVoice={(preset) => void pickPlayerVoice(preset)}
+				touchMode={touchMode}
+				onToggleTouchMode={() => void toggleTouchMode()}
 				modelCatalog={modelCatalog}
 				currentModelSelection={currentModelSelection}
 				onSelectModel={(provider, model, effort) => void handleSelectModel(provider, model, effort)}

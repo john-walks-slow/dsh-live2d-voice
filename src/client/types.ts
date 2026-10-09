@@ -30,6 +30,11 @@ export interface PublicConfig {
 	speechPrompt: string;
 	/** Seconds between automatic random idle motions (0 = off). */
 	idleInterval: number;
+	/**
+	 * Touch mode: the avatar looks at the finger (hover for the mouse) and
+	 * swipe/tap gestures drive the model's own gesture motions.
+	 */
+	touchMode: boolean;
 	eyeTracking: boolean;
 	gyroParallax: boolean;
 	emotionMap: Record<string, number | string>;

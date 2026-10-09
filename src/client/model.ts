@@ -46,6 +46,12 @@ export interface Live2DHandle {
 	playRandomMotion(group: string, priority?: "idle" | "normal" | "force"): Promise<boolean>;
 	/** Read the motion catalog baked into the loaded model. */
 	getMotions(): { name: string; group: string; index: number }[];
+	/**
+	 * Touch mode: single-finger drag stops panning (two fingers still do) and
+	 * feeds the finger position to the look pipeline instead; tap/swipe
+	 * gestures keep working either way.
+	 */
+	setTouchMode(on: boolean): void;
 	getEyePosition(): { x: number; y: number };
 	/**
 	 * Drive the look: camera gaze target + gyro parallax.
@@ -149,6 +155,16 @@ export function createLive2DStage(container: HTMLElement): SharedStage {
 	return { app, canvas, gestures: { mounts: [], dragOwner: null } };
 }
 
+/**
+ * Touch-mode look feed. The mount samples the finger/hover position and hands
+ * the normalized ±1 vector to whoever owns the look pipeline (view.tsx owns it,
+ * because the camera and gyro sources are blended there); `null` means the
+ * pointer left, which starts the ease-back window.
+ */
+export interface TouchLookChannel {
+	onTouchLook(vector: { dx: number; dy: number } | null): void;
+}
+
 export async function mountModel(
 	container: HTMLElement,
 	modelUrl: string,
@@ -157,6 +173,7 @@ export async function mountModel(
 	layout?: Partial<StageLayout>,
 	shared?: SharedStage,
 	tag?: string,
+	touchLook?: TouchLookChannel,
 ): Promise<Live2DHandle> {
 	// Owner mode creates (and later destroys) its own application; shared
 	// mode reuses one — the model is just added to that stage and its
@@ -529,6 +546,30 @@ export async function mountModel(
 	const TAP_SLOP_PX = 8;
 	const TAP_MAX_MS = 500;
 	let press: { x: number; y: number; at: number; onModel: boolean; moved: boolean } | null = null;
+	let touchMode = false;
+
+	/**
+	 * Touch-mode gaze: normalize the pointer into the ±1 look space relative to
+	 * the stage (same space the camera source uses) and hand it to the view,
+	 * which blends it with camera/gyro. `dataset.lvTouchLook` is the e2e
+	 * contract (per-tag key is the stable one in third-person mode).
+	 */
+	const publishTouchLook = (clientX: number, clientY: number) => {
+		const rect = stage.getBoundingClientRect();
+		if (rect.width <= 0 || rect.height <= 0) return;
+		const dx = Math.max(-1, Math.min(1, ((clientX - rect.left) / rect.width) * 2 - 1));
+		const dy = Math.max(-1, Math.min(1, ((clientY - rect.top) / rect.height) * 2 - 1));
+		const value = `${dx.toFixed(3)},${dy.toFixed(3)}`;
+		if (tag) container.dataset[`lv${tag}TouchLook`] = value;
+		container.dataset.lvTouchLook = value;
+		touchLook?.onTouchLook({ dx, dy });
+	};
+
+	const releaseTouchLook = () => {
+		if (tag) delete container.dataset[`lv${tag}TouchLook`];
+		delete container.dataset.lvTouchLook;
+		touchLook?.onTouchLook(null);
+	};
 
 	/** Which motion group answers a tap on `area` (null = no declared areas). */
 	const tapGroupFor = (area: string | null): string | null => {
@@ -589,8 +630,10 @@ export async function mountModel(
 				lastSingleTouchY = event.clientY;
 				gestures.dragOwner = hitAvatar(event);
 				press = { x: event.clientX, y: event.clientY, at: Date.now(), onModel: gestures.dragOwner === model, moved: false };
+				if (touchMode) publishTouchLook(event.clientX, event.clientY);
 			} else if (activeTouches.size === 2) {
 				press = null; // a second finger means pinch, never a tap
+				if (touchMode) releaseTouchLook(); // pinch wins: stop following
 				const points = [...activeTouches.values()];
 				lastPinchDist = Math.hypot(points[0].x - points[1].x, points[0].y - points[1].y);
 				lastPinchMidX = (points[0].x + points[1].x) / 2;
@@ -622,6 +665,12 @@ export async function mountModel(
 				activeTouches.set(event.pointerId, { x: event.clientX, y: event.clientY });
 			}
 			if (activeTouches.size === 1) {
+				if (touchMode) {
+					// Touch mode: the finger is a gaze pointer, not a camera
+					// handle — panning is left to two fingers.
+					publishTouchLook(event.clientX, event.clientY);
+					return;
+				}
 				// Single finger drag: move only the avatar the finger
 				// landed on (empty space pans the whole camera).
 				const deltaX = event.clientX - lastSingleTouchX;
@@ -670,7 +719,11 @@ export async function mountModel(
 			return;
 		}
 
-		// Mouse hover: no gaze tracking without camera — just idle
+		// Mouse hover feeds the same gaze channel in touch mode (no button
+		// needed); an actual drag keeps its pan semantics.
+		if (touchMode && !isMousePanning && event.pointerType !== "touch") {
+			publishTouchLook(event.clientX, event.clientY);
+		}
 	};
 
 	const onPointerUp = (event: PointerEvent) => {
@@ -697,6 +750,9 @@ export async function mountModel(
 			}
 		} else {
 			isMousePanning = false;
+		}
+		if (touchMode && (event.pointerType === "touch" || event.pointerType === "pen") && activeTouches.size === 0) {
+			releaseTouchLook();
 		}
 		gestures.dragOwner = null;
 		// pointercancel must not fire a tap, and a press that travelled or ran
@@ -733,6 +789,10 @@ export async function mountModel(
 	stage.addEventListener("pointermove", onPointerMove);
 	stage.addEventListener("pointerup", onPointerUp);
 	stage.addEventListener("pointercancel", onPointerUp);
+	const onPointerLeave = () => {
+		if (touchMode) releaseTouchLook();
+	};
+	stage.addEventListener("pointerleave", onPointerLeave);
 	stage.addEventListener("wheel", onWheel, { passive: false });
 	stage.addEventListener("dblclick", onDblClick);
 
@@ -801,6 +861,10 @@ export async function mountModel(
 		getMotions() {
 			return motionCatalog.slice();
 		},
+		setTouchMode(on) {
+			touchMode = on;
+			if (!on) releaseTouchLook();
+		},
 		getEyePosition() {
 			const width = container.clientWidth || 1;
 			const height = container.clientHeight || 1;
@@ -837,6 +901,7 @@ export async function mountModel(
 			stage.removeEventListener("pointermove", onPointerMove);
 			stage.removeEventListener("pointerup", onPointerUp);
 			stage.removeEventListener("pointercancel", onPointerUp);
+			stage.removeEventListener("pointerleave", onPointerLeave);
 			stage.removeEventListener("wheel", onWheel);
 			stage.removeEventListener("dblclick", onDblClick);
 			observer.disconnect();

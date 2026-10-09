@@ -129,6 +129,15 @@ export const IconExternalLink: FC<P> = ({ size, ...rest }) => (
 	</svg>
 );
 
+/** 触摸模式：指尖按下（视线跟随手指 + 手势动作） */
+export const IconTouch: FC<P> = ({ size, ...rest }) => (
+	<svg {...base(size)} {...rest}>
+		<path d="M12 11V5.5a1.75 1.75 0 0 1 3.5 0V13" />
+		<path d="M15.5 12.2V9.7a1.6 1.6 0 0 1 3.2 0v3.6a6 6 0 0 1-6 6h-1.2a5 5 0 0 1-3.7-1.6l-2.6-2.9a1.5 1.5 0 0 1 2.2-2l1.5 1.6V8.2a1.6 1.6 0 0 1 3.2 0v2.6" />
+		<path d="M8.5 6.2A4.5 4.5 0 0 1 12 3.2a4.5 4.5 0 0 1 3.5 3" opacity=".55" />
+	</svg>
+);
+
 /** 关闭 ✕ */
 export const IconClose: FC<P> = ({ size, ...rest }) => (
 	<svg {...base(size)} {...rest}>

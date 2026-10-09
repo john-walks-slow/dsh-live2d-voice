@@ -143,6 +143,11 @@ export interface PluginConfig {
 	 * 0 or negative disables automatic random idle motions (keeps breath/blink only).
 	 */
 	idleInterval: number;
+	/**
+	 * Touch mode: the avatar looks at the finger (mouse hover counts as a
+	 * finger) and tap/swipe gestures drive the model's own gesture motions.
+	 */
+	touchMode: boolean;
 	/** Emotion tag → model expression name/index map. */
 	emotionMap: Record<string, number | string>;
 	/**
@@ -255,6 +260,7 @@ export const DEFAULT_CONFIG: PluginConfig = {
 	sentenceSubtitles: true,
 	speechPrompt: "",
 	idleInterval: 20,
+	touchMode: false,
 	eyeTracking: false,
 	gyroParallax: false,
 	emotionMap: { ...DEFAULT_EMOTION_MAP },
@@ -286,6 +292,7 @@ export function loadConfig(): PluginConfig {
 			emotionMap: { ...DEFAULT_EMOTION_MAP, ...(raw.emotionMap ?? {}) },
 			playerEmotionMap: { ...DEFAULT_EMOTION_MAP, ...(raw.playerEmotionMap ?? {}) },
 			idleInterval: typeof raw.idleInterval === "number" ? raw.idleInterval : DEFAULT_CONFIG.idleInterval,
+			touchMode: typeof raw.touchMode === "boolean" ? raw.touchMode : DEFAULT_CONFIG.touchMode,
 			workspaces: raw.workspaces ?? {},
 			apiKeys: Array.isArray(raw.apiKeys) ? raw.apiKeys.filter((k) => typeof k === "string" && k) : [],
 		};

@@ -319,7 +319,19 @@ body[data-live2d-active="true"] [class*="taskBoard"] {
 /* ==========================================================================
    5. HUD Toolbar & Buttons (Vector Iconography, No Emoji)
    ========================================================================== */
+/* .lv-hud 是舞台 UI 的 root layer：透明、不吃指针、铺满舞台，只是把两块玻璃 UI
+   托在一起（底部胶囊 + 右上角视图按钮）。之所以还叫 lv-hud，是因为 e2e 选择器
+   （.lv-hud button[title*=…]、.lv-hud .lv-mic、display:none 隐藏整层做像素测量）
+   都挂在它上面；外观与定位在 .lv-capsule / .lv-corner 上。 */
 .lv-hud {
+	position: absolute;
+	inset: 0;
+	pointer-events: none;
+	z-index: 9;
+}
+
+/* 底部胶囊：承接原 .lv-hud 的全部盒子与外观（逐像素等价是回归契约）。 */
+.lv-capsule {
 	position: absolute;
 	bottom: calc(var(--lv-chrome-bottom) + 12px);
 	left: 50%;
@@ -333,16 +345,41 @@ body[data-live2d-active="true"] [class*="taskBoard"] {
 	backdrop-filter: var(--lv-glass-blur);
 	border: 1px solid var(--lv-glass-border);
 	box-shadow: var(--lv-shadow-pop);
-	z-index: 9;
+	pointer-events: auto;
 	transition: opacity 0.3s ease, transform 0.3s ease;
 }
 
-.lv-hud.lv-faded:not(:hover):not(:focus-within) {
+/* 右上角视图按钮簇（全屏 / 独立入口）：常驻但跟随 HUD 一起淡出。
+   手机上右上角是系统下拉手势区，留 safe-area 不贴边。 */
+.lv-corner {
+	position: absolute;
+	top: calc(env(safe-area-inset-top, 0px) + 10px);
+	right: calc(env(safe-area-inset-right, 0px) + 10px);
+	display: inline-flex;
+	align-items: center;
+	gap: 4px;
+	padding: 5px 8px;
+	border-radius: 999px;
+	background: var(--lv-glass-bg);
+	backdrop-filter: var(--lv-glass-blur);
+	border: 1px solid var(--lv-glass-border);
+	box-shadow: var(--lv-shadow-pop);
+	pointer-events: auto;
+	transition: opacity 0.3s ease;
+}
+
+/* 淡出作用域落到两块子元素上（root layer 恒被 :hover 命中，不能再写在 .lv-hud 上）。 */
+.lv-hud.lv-faded .lv-capsule:not(:hover):not(:focus-within) {
 	opacity: 0.45;
 	transform: translateX(-50%) scale(0.98);
 }
 
-.lv-hud.lv-mic-live.lv-faded {
+.lv-hud.lv-faded .lv-corner:not(:hover):not(:focus-within) {
+	opacity: 0.45;
+}
+
+/* 麦克风常显例外只抬胶囊，角落簇维持淡出值。 */
+.lv-hud.lv-mic-live.lv-faded .lv-capsule {
 	opacity: 0.85;
 }
 
