@@ -13,6 +13,8 @@
  *   node e2e/run.mjs real-api        # 运行真实外部 API 套件（需确认成本与网络）
  */
 import { execSync, spawnSync } from 'node:child_process';
+import { existsSync } from 'node:fs';
+import { join } from 'node:path';
 import { SKIP_EXIT_CODE } from './lib/skip.mjs';
 
 export const MODULES = {
@@ -111,6 +113,23 @@ suitesToRun = [...new Set(suitesToRun)];
  * 环境假设：本机没有以 chromium 形式常驻的浏览器服务（sv/supervisord 里没有 chromium 项，
  * 现存的 chromium 全部来自 playwright 启动）——若将来引入常驻浏览器服务，条件 1/2 需重审。
  */
+// ── 环境守卫：跑错地方不能退化成 SKIP ────────────────────────────────────────
+// 主检出的 .dsh-e2e-home 是 09-27 的旧 home（没有 instance.json/instance.pid），
+// 那里插件根本不会加载：插件路由落进 web 的 SPA 兜底返回 HTML，于是所有依赖插件
+// 的套件都"看起来正常地 SKIP"——跑错地方和环境确实不具备前提长得一模一样，输出
+// 还是绿的。这比没有测试更危险，所以在启动阶段直接判环境错误（exit 2，不是 SKIP）。
+{
+	const home = process.env.DSH_E2E_HOME;
+	if (home) {
+		const missing = ['instance.json', 'instance.pid'].filter((f) => !existsSync(join(home, f)));
+		if (missing.length > 0) {
+			console.error(`✗ 环境错误：${home} 里缺少 ${missing.join('、')}——这是旧版残留 home，插件不会被加载。`);
+			console.error('  请在 worktree 里运行 e2e（dsh-e2e 会在那里建立当前版本的 home），不要在旧 home 上跑。');
+			process.exit(2);
+		}
+	}
+}
+
 const CHROME_PATTERN = 'chrome-linux-arm64/chrom[e]';
 // 上限按**浏览器实例数**（root 进程）算，不按进程数：一个 chromium 会带 ~10 个 helper 进程。
 // 别人（其它 worktree）正在跑的浏览器也有 root，所以上限只做护栏、可用环境变量放宽。
