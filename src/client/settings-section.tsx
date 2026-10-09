@@ -270,6 +270,7 @@ export function Live2DSettingsSection() {
 	const [subLang, setSubLang] = useState("zh");
 	const [sentenceSubs, setSentenceSubs] = useState(true);
 	const [idleSec, setIdleSec] = useState(20);
+	const [touchMode, setTouchMode] = useState(false);
 	const [sttLang, setSttLang] = useState("auto");
 	const [asrMode, setAsrMode] = useState("stream");
 	const [micNs, setMicNs] = useState(true);
@@ -299,6 +300,7 @@ export function Live2DSettingsSection() {
 				setSubLang(data.config.subtitleLanguage || "zh");
 				setSentenceSubs(data.config.sentenceSubtitles ?? true);
 				setIdleSec(typeof data.config.idleInterval === "number" ? data.config.idleInterval : 20);
+				setTouchMode(data.config.touchMode === true);
 				setSttLang(data.config.sttLanguage || "auto");
 				setAsrMode(data.config.asrMode || "stream");
 				setMicNs(data.config.micNoiseSuppression !== false);
@@ -674,6 +676,24 @@ export function Live2DSettingsSection() {
 					</select>
 					<div className="lv-set-help">
 						角色长时间不互动时才轻微触发一次待机动作（系统提示词会同步告诉大模型当前可用的所有动作标签 [motion:xxx]）。
+					</div>
+				</div>
+				<div className="lv-set-field">
+					<label className="lv-set-label">触摸模式 (touchMode)</label>
+					<select
+						className="lv-set-select"
+						value={touchMode ? "on" : "off"}
+						onChange={(e) => {
+							const next = e.target.value === "on";
+							setTouchMode(next);
+							handleSave({ touchMode: next });
+						}}
+					>
+						<option value="off">关闭（默认：单指拖动平移，角色只跟摄像头/陀螺仪）</option>
+						<option value="on">开启（触屏单指跟视线+轻触/滑动触发动作，双指平移缩放；鼠标 hover 跟视线）</option>
+					</select>
+					<div className="lv-set-help">
+						工具条上也有同一个开关（手指图标）。触摸模式下单指不再平移，手感不对就先关掉。
 					</div>
 				</div>
 			</div>

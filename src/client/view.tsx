@@ -901,8 +901,17 @@ const TOUCH_LOOK_DECAY_MS = 450;
 				cam = touchLookRef.current;
 			} else if (release) {
 				const progress = (performance.now() - release.at) / TOUCH_LOOK_DECAY_MS;
-				if (progress >= 1) touchLookReleaseRef.current = null;
-				else cam = { dx: release.vector.dx * (1 - progress), dy: release.vector.dy * (1 - progress) };
+				if (progress >= 1) {
+					touchLookReleaseRef.current = null;
+				} else {
+					// Ease towards whatever the camera would show (or the centre
+					// when no camera source is live) so the hand-off never snaps.
+					const target = camera ?? { dx: 0, dy: 0 };
+					cam = {
+						dx: release.vector.dx + (target.dx - release.vector.dx) * progress,
+						dy: release.vector.dy + (target.dy - release.vector.dy) * progress,
+					};
+				}
 			}
 			modelRef.current?.setLook(cam, gyro);
 			// The PiP self-view is a MIRROR of the user, not an autonomous
@@ -1429,9 +1438,13 @@ const TOUCH_LOOK_DECAY_MS = 450;
 	const toggleTouchMode = useCallback(async () => {
 		const next = !touchModeRef.current;
 		setTouchMode(next);
-		if (next && !window.localStorage.getItem(TOUCH_HINT_KEY)) {
-			setToast("触摸模式：角色跟着你的手指看 · 轻触有反应 · 滑动换动作 · 双指缩放");
-			window.localStorage.setItem(TOUCH_HINT_KEY, "1");
+		try {
+			if (next && !window.localStorage.getItem(TOUCH_HINT_KEY)) {
+				setToast("触摸模式：角色跟着你的手指看 · 轻触有反应 · 滑动换动作 · 双指缩放");
+				window.localStorage.setItem(TOUCH_HINT_KEY, "1");
+			}
+		} catch {
+			// localStorage can be unavailable (private mode); the hint is optional.
 		}
 		try {
 			await saveConfig({ touchMode: next });
