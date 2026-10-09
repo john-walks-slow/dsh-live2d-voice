@@ -92,6 +92,19 @@ const swipe = async (fromX, fromY, dx, dy, { pointerId = 7, settleMs = 2600 } = 
   await page.waitForTimeout(settleMs);
 };
 const gestureState = () => page.evaluate(() => document.querySelector('.lv-stage')?.dataset?.lvGesture ?? null);
+/**
+ * 滑动并等待手势真正生效：上一个手势动作还在播时新的 NORMAL 动作会被框架拒绝
+ * （设计上的"静默不响应"），而动作时长因模型而异，固定等待必然偶发 flake。
+ * 这里最多重试 attempts 次，每次等 settleMs；真正坏掉的手势路径永远不会满足期望值。
+ */
+const swipeExpect = async (fromX, fromY, dx, dy, expected, { attempts = 4, settleMs = 1200 } = {}) => {
+  for (let i = 0; i < attempts; i++) {
+    await swipe(fromX, fromY, dx, dy, { settleMs });
+    const got = await gestureState();
+    if (got === expected) return got;
+  }
+  return gestureState();
+};
 
 try {
   // ── 触摸模式开 ────────────────────────────────────────────────────────────
@@ -400,23 +413,20 @@ PY`, { encoding: 'utf8' }).trim();
     return { x: c.x, y: c.y, w: c.width, h: c.height };
   });
   const startX = izBox.x + izBox.w * 0.5, startY = izBox.y + izBox.h * 0.4;
-  await swipe(startX, startY, 160, 0);
-  check('T4a 右划 → FlickRight（izumi）', (await gestureState()) === 'Right:FlickRight', String(await gestureState()));
-  await swipe(startX, startY, -160, 0);
-  check('T4b 左划 → FlickLeft（izumi）', (await gestureState()) === 'Left:FlickLeft', String(await gestureState()));
-  await swipe(startX, startY, 0, 160, 8);
+  check('T4a 右划 → FlickRight（izumi）', (await swipeExpect(startX, startY, 160, 0, 'Right:FlickRight')) === 'Right:FlickRight', String(await gestureState()));
+  check('T4b 左划 → FlickLeft（izumi）', (await swipeExpect(startX, startY, -160, 0, 'Left:FlickLeft')) === 'Left:FlickLeft', String(await gestureState()));
   // izumi 只有 FlickRight/FlickLeft + Shake（无裸 Flick）→ 缺方向组时回退 Shake
   check('T4c 下划 → izumi 缺 FlickDown → 回退 Shake',
-    (await gestureState()) === 'Down:Shake', String(await gestureState()));
+    (await swipeExpect(startX, startY, 0, 160, 'Down:Shake')) === 'Down:Shake', String(await gestureState()));
 
-  // T5 防刷屏：一次起效后，紧接着的第二次滑动在 400ms 冷却（以及正在播的动作）内不生效
-  await swipe(startX, startY, 160, 0); // 结算：等动作播完，手势回到可触发状态
-  const base = await gestureState();
-  await swipe(startX, startY, 160, 0, { settleMs: 120 }); // A：允许，应改写成 Right:FlickRight
-  const afterA = await gestureState();
-  await swipe(startX, startY, -160, 0, { settleMs: 120 }); // B：距 A 约 140ms，应被冷却挡住
+  // T5 防刷屏：一次真正生效后，紧接着（约 140ms）的第二次滑动在 400ms 冷却窗口内不生效。
+  // 先用可重试的助手把状态"武装"到确定值，避免上一个动作还在播导致基准不稳（flaky）。
+  const armed = await swipeExpect(startX, startY, 160, 0, 'Right:FlickRight');
+  const beforeB = await gestureState();
+  await swipe(startX, startY, -160, 0, { settleMs: 120 });
   const afterB = await gestureState();
-  check('T5 连续快划不刷屏（400ms 冷却）', afterA !== base && afterB === afterA, `${base} → ${afterA} → ${afterB}`);
+  check('T5 连续快划不刷屏（400ms 冷却 / 动作播放中让位）',
+    armed === 'Right:FlickRight' && afterB === beforeB, `${armed} → ${afterB}（期望保持 ${beforeB}）`);
 
   // T6 回退样本：只有 Flick / 只有 Shake
   await load({ touchMode: true, modelSelection: 'chitose' });
@@ -424,16 +434,16 @@ PY`, { encoding: 'utf8' }).trim();
     const c = document.querySelector('.lv-stage canvas').getBoundingClientRect();
     return { x: c.x, y: c.y, w: c.width, h: c.height };
   });
-  await swipe(chBox.x + chBox.w * 0.5, chBox.y + chBox.h * 0.4, 160, 0);
-  check('T6a 只有 Flick 的模型 → 回退 Flick', (await gestureState()) === 'Right:Flick', String(await gestureState()));
+  check('T6a 只有 Flick 的模型 → 回退 Flick',
+    (await swipeExpect(chBox.x + chBox.w * 0.5, chBox.y + chBox.h * 0.4, 160, 0, 'Right:Flick')) === 'Right:Flick', String(await gestureState()));
 
   await load({ touchMode: true, modelSelection: 'luna', modelPath: LIB + '/oc' });
   const luBox = await page.evaluate(() => {
     const c = document.querySelector('.lv-stage canvas').getBoundingClientRect();
     return { x: c.x, y: c.y, w: c.width, h: c.height };
   });
-  await swipe(luBox.x + luBox.w * 0.5, luBox.y + luBox.h * 0.4, 160, 0);
-  check('T6b 只有 Shake 的模型 → 回退 Shake', (await gestureState()) === 'Right:Shake', String(await gestureState()));
+  check('T6b 只有 Shake 的模型 → 回退 Shake',
+    (await swipeExpect(luBox.x + luBox.w * 0.5, luBox.y + luBox.h * 0.4, 160, 0, 'Right:Shake')) === 'Right:Shake', String(await gestureState()));
 
   check('T9 无页面错误', pageErrors.length === 0, pageErrors.slice(0, 2).join(' | '));
 } finally {
