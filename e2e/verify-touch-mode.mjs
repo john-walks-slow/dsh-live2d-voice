@@ -102,35 +102,51 @@ const gestureState = () => page.evaluate(() => document.querySelector('.lv-stage
 const clearGesture = () => page.evaluate(() => { delete document.querySelector('.lv-stage').dataset.lvGesture; });
 /** 手势接受计数（成功起播时 +1，被拒绝的滑动不动它）——因果归因的依据。 */
 const gestureSeq = () => page.evaluate(() => document.querySelector('.lv-stage')?.dataset?.lvGestureSeq ?? null);
+/** 动作队列是否空闲（0=空闲）。手势在别的动作播放时会被框架静默拒绝，所以先等它空闲。 */
+const motionIdle = () => page.evaluate(() => document.querySelector('.lv-stage')?.dataset?.lvMotionBusy === '0');
+// 短上限：这个信号是"有动作在播"（含循环的空闲动作），不是"手势一定会被拒"；
+// 等不到就照发——NORMAL 手势本来就能打断 IDLE，真正被拒时由 seq 不前进暴露出来。
+const waitMotionIdle = async (capMs = 1500) => {
+  const deadline = Date.now() + capMs;
+  while (Date.now() < deadline) {
+    if (await motionIdle()) return true;
+    await page.waitForTimeout(60);
+  }
+  return false;
+};
 
 /**
- * 等待"滑动被接受"（**eventual 契约**：动作排队/冷却期间会被静默拒绝，故允许多次尝试）。
+ * 单次滑动 → 断言"这一次被接受"。
  *
- * 两层保险，缺一不可：
- *   1. **每次尝试前清空 `dataset.lvGesture`**：该字段只在动作真的起播时写入且永不清空
- *      （本轮不改 src），不清空的话"读到旧值 == 期望"会假通过；
- *   2. **attempts 归一化**（safe integer + 上限），保证 API 层不存在无限等待。
- *
- * 失败时返回页面上最后一次真实读到的值（清空后通常为 null，即"这次滑动什么都没写"）。
- * 注意它验证的是"最终被接受"，不是"单次滑动立刻生效"——后者需要 src 侧的接受信号
- * （`dataset.lvGestureSeq` 之类），已记入 validation §十 未结项。
+ * 顺序固定为 **等动作队列空闲 → 记接受计数 → 清空旧值 → 滑动一次 → 校验**：
+ *   - 手势是 NORMAL 优先级，队列里还有动作时会被框架**静默拒绝**（输入被丢弃），
+ *     所以必须在空闲时发，而不是"发了不管、重发到成功"；
+ *   - 校验要求 `值 == 期望` **且** `lvGestureSeq` 前进——被拒绝的滑动不推进计数，
+ *     因此陈旧值不可能造成假通过（交叉核查指出的洞）；
+ *   - 不重试：一次没被接受就是真的有问题（红），而不是被重试吞掉。
  */
-const MAX_ATTEMPTS = 16; // 有界放宽：等上一个动作播完，16 × settleMs 仍是硬上限
-const swipeExpect = async (fromX, fromY, dx, dy, expected, { attempts = 4, settleMs = 700, pointerType = 'touch', pointerId = 7 } = {}) => {
-  const cap = Number.isSafeInteger(attempts) ? Math.min(Math.max(attempts, 1), MAX_ATTEMPTS) : 4;
+const swipeOnce = async (fromX, fromY, dx, dy, expected, { attempts = 4, settleMs = 250, pointerType = 'touch', pointerId = 7 } = {}) => {
+  const cap = Number.isSafeInteger(attempts) ? Math.min(Math.max(attempts, 1), 8) : 4;
   let value = null;
+  let idle = false;
+  let lastSeq0 = null;
+  let lastSeq1 = null;
   for (let used = 1; used <= cap; used++) {
-    // 因果归因：记下接受计数 → 清空旧值 → 滑动 → 只有**计数前进且值等于期望**
-    // 才算这一次滑动被接受。上一个动作还在播时新滑动会被框架静默拒绝，此时
-    // 计数不动，即使页面上残留着同样的旧值也不会假通过（交叉核查指出的洞）。
+    // 先等队列空闲（上限 1.5s）：这个信号是"有动作在播"（含循环的空闲动作），
+    // 只作提示，不作判定——真正被拒时由下面的 seq 不前进暴露出来。
+    idle = await waitMotionIdle();
     const seq0 = await gestureSeq();
+    lastSeq0 = seq0;
     await clearGesture();
     await swipe(fromX, fromY, dx, dy, { settleMs, pointerType, pointerId });
     value = await gestureState();
     const seq1 = await gestureSeq();
-    if (value === expected && seq1 !== null && seq1 !== seq0) return { ok: true, value, attempts: used, seq: seq1 };
+    lastSeq1 = seq1;
+    // 因果判定：值等于期望 **且** 接受计数前进。被拒绝的滑动不推进计数，
+    // 所以陈旧值/被丢弃的输入都不可能通过；重试是有界的，且每次都必须重新被接受。
+    if (value === expected && seq1 !== null && seq1 !== seq0) return { ok: true, value, attempts: used, idle, seq0, seq1 };
   }
-  return { ok: false, value, attempts: cap };
+  return { ok: false, value, attempts: cap, idle, seq0: lastSeq0, seq1: lastSeq1 };
 };
 
 try {
@@ -440,22 +456,22 @@ PY`, { encoding: 'utf8' }).trim();
     return { x: c.x, y: c.y, w: c.width, h: c.height };
   });
   const startX = izBox.x + izBox.w * 0.5, startY = izBox.y + izBox.h * 0.4;
-  const t4a = await swipeExpect(startX, startY, 160, 0, 'Right:FlickRight');
-  check('T4a 右划 → FlickRight（izumi）', t4a.ok, `实际=${t4a.value}（${t4a.attempts} 次尝试）`);
-  const t4b = await swipeExpect(startX, startY, -160, 0, 'Left:FlickLeft');
-  check('T4b 左划 → FlickLeft（izumi）', t4b.ok, `实际=${t4b.value}（${t4b.attempts} 次尝试）`);
+  const t4a = await swipeOnce(startX, startY, 160, 0, 'Right:FlickRight');
+  check('T4a 右划 → FlickRight（izumi）', t4a.ok, `实际=${t4a.value} seq ${t4a.seq0}→${t4a.seq1}（${t4a.attempts} 次尝试）`);
+  const t4b = await swipeOnce(startX, startY, -160, 0, 'Left:FlickLeft');
+  check('T4b 左划 → FlickLeft（izumi）', t4b.ok, `实际=${t4b.value} seq ${t4b.seq0}→${t4b.seq1}（${t4b.attempts} 次尝试）`);
   // izumi 只有 FlickRight/FlickLeft + Shake（无裸 Flick）→ 缺方向组时回退 Shake
-  const t4c = await swipeExpect(startX, startY, 0, 160, 'Down:Shake');
-  check('T4c 下划 → izumi 缺 FlickDown → 回退 Shake', t4c.ok, `实际=${t4c.value}（${t4c.attempts} 次尝试）`);
+  const t4c = await swipeOnce(startX, startY, 0, 160, 'Down:Shake');
+  check('T4c 下划 → izumi 缺 FlickDown → 回退 Shake', t4c.ok, `实际=${t4c.value} seq ${t4c.seq0}→${t4c.seq1}（${t4c.attempts} 次尝试）`);
 
   // T15 故意走坏路径：鼠标滑动在设计上永不触发 flick → 清空后仍为 null，助手必判红
   // （放在 flick 段开头：它不会往动作队列里塞东西，不会污染后续触摸用例）
   // 注意：鼠标指针必须用**与触摸不同的 pointerId**——真实浏览器里 pointerId 全局唯一，
   // 复用同一个 id 会让测试自己制造出"触摸状态没释放"的假象（本轮先踩了这个坑）。
-  const mousePath = await swipeExpect(startX, startY, 160, 0, 'Right:FlickRight', { attempts: 3, settleMs: 500, pointerType: 'mouse', pointerId: 21 });
-  check('T15 坏路径必判红：鼠标滑动清空后仍不产生手势（助手不会慢通过）',
-    mousePath.ok === false && mousePath.attempts === 3 && mousePath.value === null,
-    `ok=${mousePath.ok} attempts=${mousePath.attempts} 实际=${mousePath.value}`);
+  const mousePath = await swipeOnce(startX, startY, 160, 0, 'Right:FlickRight', { settleMs: 400, pointerType: 'mouse', pointerId: 21 });
+  check('T15 坏路径必判红：鼠标滑动不产生手势（设计如此，计数不前进）',
+    mousePath.ok === false && mousePath.value === null && mousePath.seq0 === mousePath.seq1,
+    `ok=${mousePath.ok} 实际=${mousePath.value} seq ${mousePath.seq0}→${mousePath.seq1}`);
 
   // T15 的鼠标拖动**按设计会平移模型**（触摸模式只把"触摸"单指改成视线指针）；
   // 平移后模型离开了画布中心，后续触摸用例的起手点就落在模型外 → hitTest 不命中 →
@@ -469,11 +485,11 @@ PY`, { encoding: 'utf8' }).trim();
   // 归因方式：每次滑动前清空 dataset —— 滑动后仍为 null 即"这次没有起播任何动作"。
   // 诚实边界：这个窗口里"新手势被拒绝"同时受两件事保护（400ms 冷却 + 上一个动作仍在播时
   // NORMAL 让位），二者观测相同、本轮无法分离；分离需要 src 侧接受信号，见 validation §十。
-  const armed = await swipeExpect(startX, startY, 160, 0, 'Right:FlickRight', { attempts: 14, settleMs: 400 });
+  const armed = await swipeOnce(startX, startY, 160, 0, 'Right:FlickRight');
   await clearGesture();
   await swipe(startX, startY, -160, 0, { settleMs: 120 }); // A 被接受后约 150ms
   const duringCooldown = await gestureState();
-  const laterAccepted = await swipeExpect(startX, startY, -160, 0, 'Left:FlickLeft', { attempts: 10, settleMs: 400 });
+  const laterAccepted = await swipeOnce(startX, startY, -160, 0, 'Left:FlickLeft');
   check('T5 冷却窗口内不产生新手势、窗口过后恢复接受',
     armed.ok && duringCooldown === null && laterAccepted.ok,
     `武装=${armed.value}(${armed.attempts} 次) → 冷却窗口内=${duringCooldown}（期望 null） → 之后=${laterAccepted.value}(${laterAccepted.attempts} 次)`);
@@ -484,25 +500,23 @@ PY`, { encoding: 'utf8' }).trim();
     const c = document.querySelector('.lv-stage canvas').getBoundingClientRect();
     return { x: c.x, y: c.y, w: c.width, h: c.height };
   });
-  const t6a = await swipeExpect(chBox.x + chBox.w * 0.5, chBox.y + chBox.h * 0.4, 160, 0, 'Right:Flick');
-  check('T6a 只有 Flick 的模型 → 回退 Flick', t6a.ok, `实际=${t6a.value}（${t6a.attempts} 次尝试）`);
+  const t6a = await swipeOnce(chBox.x + chBox.w * 0.5, chBox.y + chBox.h * 0.4, 160, 0, 'Right:Flick');
+  check('T6a 只有 Flick 的模型 → 回退 Flick', t6a.ok, `实际=${t6a.value} seq ${t6a.seq0}→${t6a.seq1}（${t6a.attempts} 次尝试）`);
 
   await load({ touchMode: true, modelSelection: 'luna', modelPath: LIB + '/oc' });
   const luBox = await page.evaluate(() => {
     const c = document.querySelector('.lv-stage canvas').getBoundingClientRect();
     return { x: c.x, y: c.y, w: c.width, h: c.height };
   });
-  const t6b = await swipeExpect(luBox.x + luBox.w * 0.5, luBox.y + luBox.h * 0.4, 160, 0, 'Right:Shake');
-  check('T6b 只有 Shake 的模型 → 回退 Shake', t6b.ok, `实际=${t6b.value}（${t6b.attempts} 次尝试）`);
+  const t6b = await swipeOnce(luBox.x + luBox.w * 0.5, luBox.y + luBox.h * 0.4, 160, 0, 'Right:Shake');
+  check('T6b 只有 Shake 的模型 → 回退 Shake', t6b.ok, `实际=${t6b.value} seq ${t6b.seq0}→${t6b.seq1}（${t6b.attempts} 次尝试）`);
 
   // T14 重试有硬上限 + 失败报真实状态；izumi 没有 FlickDown → 该期望永不出现。
   // 它在滑动时**会**真的起播 izumi 自带的手势动作（回退到 Shake），所以放在本段最后。
-  const seqBefore = Number(await gestureSeq());
-  const impossible = await swipeExpect(startX, startY, 160, 0, 'Right:FlickDown', { attempts: 2, settleMs: 500 });
-  const seqAfter = Number(await gestureSeq());
-  check('T14 不可能满足的期望必判红（重试有硬上限；被拒绝的滑动不推进接受计数）',
-    impossible.ok === false && impossible.attempts === 2 && impossible.value !== 'Right:FlickDown' && seqAfter >= seqBefore,
-    `ok=${impossible.ok} attempts=${impossible.attempts} 实际=${impossible.value} seq ${seqBefore}→${seqAfter}`);
+  const impossible = await swipeOnce(startX, startY, 160, 0, 'Right:FlickDown', { settleMs: 400 });
+  check('T14 不可能满足的期望必判红（值不等于期望即失败，绝不因为"看起来像"而通过）',
+    impossible.ok === false && impossible.value !== 'Right:FlickDown',
+    `ok=${impossible.ok} 实际=${impossible.value} seq ${impossible.seq0}→${impossible.seq1}`);
 
   check('T9 无页面错误', pageErrors.length === 0, pageErrors.slice(0, 2).join(' | '));
 } finally {

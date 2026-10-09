@@ -8,13 +8,17 @@
 
 | 产物 | sha256 |
 |---|---|
-| `lib/client.js` | `c72ae8ae38889d711746a3972850be7f9644668ef83b0a1efc680e107d34a445` |
+| `lib/client.js` | `877450732eab3712bc6e41692b66d5e83ecaa2ca341ffe10ab8d2468c889bedd` |
 | `lib/index.js` | `ba7c4c692bee4f97f0f3eaf4dae72b545fa3d0e2ecf25ffbae3d0d117d975fc7` |
-| `lib/standalone.js` | `4bba35d4880c8b48038197923b59e34636e3d11bfc0a8e89d3dfb37a09ed81ec` |
+| `lib/standalone.js` | `83bd53ca9d64b99e7e4a709239225f119ee26736166cba6465d323997fa30036` |
 
-**2026-10-10 06:5x 更新（手势接受计数契约）**：为把 e2e 从"读到期望值"升级为"因果归因"，客户端新增
-`dataset.lvGestureSeq`（手势真的起播时单调 +1；被拒绝的滑动不推进）——只动了 client 侧，
-**host（`lib/index.js`）未变、无需重启 dsh，刷新页面即拿到新 bundle**。
+**2026-10-10 更新（手势诊断契约）**：客户端新增两个诊断字段（只动 client 侧，`lib/index.js` 未变，
+**无需重启 dsh，刷新页面即拿到新 bundle**）：
+- `dataset.lvGestureSeq`：手势**真的起播**时单调 +1，被拒绝的滑动不推进 → e2e 的因果归因依据；
+- `dataset.lvMotionBusy`：`"1"` 表示**有动作在播**（`motionManager.isFinished()` 的反面）。**它是提示不是精确信号**：
+  本构建的 `MotionManager` 起播时不带优先级（`queueManager.startMotion(motion, false, now)`），
+  所以 `getCurrentPriority()` 恒为 0（实测），无法区分"会挡住手势的 NORMAL/FORCE"与"会被手势打断的 IDLE"。
+  e2e 只用它做"等空闲"的提示（上限 1.5s），判定仍走 `lvGestureSeq`。
 
 独立重算：
 

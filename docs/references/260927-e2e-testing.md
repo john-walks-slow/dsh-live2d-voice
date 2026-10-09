@@ -96,3 +96,12 @@ const sessionId = [...streams].at(-1); // 从长连接请求捕获真实的 sess
 - 真实 API 类前置永远不为了"跑通"而现场制造（铁律 #3），只能 skip。
 
 **顺带查明的一处环境坑**：主检出 `/root/projects/dsh-live-mode/.dsh-e2e-home` 是 09-27 遗留的旧 home（没有 `instance.json`/`instance.pid`，`profiles/` 也是旧的），在主检出目录里跑 `dsh-e2e run` 时插件根本没被加载——插件路由 `/live2d-voice/session` 落到 web 的 SPA 兜底返回 HTML，表现为"路由不存在"。**e2e 一律在 worktree 里跑**（那里 dsh-e2e 会建当前版本的新 home）；在主检出跑出来的结果不可信。
+
+## headless 下的帧率量级（261010 实测，影响所有"每帧状态"断言）
+
+headless Chromium 里渲染/内部帧回调明显被节流：一次页面生命周期内实测只累积 **~71 帧**（≈2 fps 量级，
+同一次运行中 `beforeModelUpdate` 与 `app.ticker` 计数相同）。所以：
+
+- 依赖"每帧发布的状态字段"（如 261010 的 `dataset.lvMotionBusy`）的断言，等待上限要按这个量级给（秒级，不要用毫秒级轮询期望值）；
+- 反过来，"某字段是否存在"不能作为"代码没跑"的证据——先确认页面在渲染（例如另有一条像素级断言为绿）再下结论，
+  261010 就踩过一次：把探针自身的读数问题误判成"钩子不触发/死代码"。

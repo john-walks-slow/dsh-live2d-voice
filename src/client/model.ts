@@ -459,6 +459,22 @@ export async function mountModel(
 			? internal.motionManager.lipSyncIds
 			: [MOUTH_FALLBACK];
 	internal.on("beforeModelUpdate", () => {
+		// Whether a gesture would be refused right now: gestures are NORMAL
+		// priority, so only a playing NORMAL/FORCE motion blocks them (IDLE
+		// motions are interrupted by design and must not count — a looping idle
+		// clip would otherwise keep this at "1" forever). e2e waits for "0" and
+		// then swipes **once** instead of retrying blindly; this hook runs every
+		// frame (verified in the same run that measures head displacement).
+		// NOTE: this is "any motion is playing", not "a motion that would block a
+		// gesture". The precise version needs the playing motion's priority, and
+		// this build's MotionManager starts motions through
+		// `queueManager.startMotion(motion, false, now)` without a priority, so
+		// `getCurrentPriority()` stays 0 (measured) — recorded as a limitation
+		// instead of pretending the signal is exact. e2e waits for "0" with a
+		// short cap and judges acceptance by the sequence counter anyway.
+		const queue = internal.motionManager as unknown as { isFinished?(): boolean };
+		const busy = queue.isFinished?.() === false ? "1" : "0";
+		if (container.dataset.lvMotionBusy !== busy) container.dataset.lvMotionBusy = busy;
 		const value = getMouth();
 		const applied = value > 0.002 ? value : 0;
 		for (const id of lipSyncIds) setParam(id, applied);
@@ -981,6 +997,7 @@ export async function mountModel(
 			if (tag) delete container.dataset[`lv${tag}Tap`];
 			if (tag) delete container.dataset[`lv${tag}Gesture`];
 			delete container.dataset.lvGestureSeq;
+			delete container.dataset.lvMotionBusy;
 			// The shared tap key is last-writer-wins in dual mode (see AGENTS.md);
 			// drop it with the model so a stale value cannot outlive its mount.
 			delete container.dataset.lvTap;
