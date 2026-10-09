@@ -21,6 +21,7 @@ import { Live2DModel as Live2DModelCubism4 } from "pixi-live2d-display-lipsyncpa
 import { Live2DModel as Live2DModelCubism2 } from "pixi-live2d-display-lipsyncpatch/cubism2";
 import { logger } from "./logger.js";
 import { resolveParamIds } from "./param-ids.js";
+import { isSwipe, resolveGestureGroup, swipeDirection } from "./gesture-math.js";
 import {
 	mixLookChannel,
 	type LookVector,
@@ -545,8 +546,11 @@ export async function mountModel(
 	// bounds for the many models that ship without HitAreas).
 	const TAP_SLOP_PX = 8;
 	const TAP_MAX_MS = 500;
-	let press: { x: number; y: number; at: number; onModel: boolean; moved: boolean } | null = null;
+	let press: { x: number; y: number; lastX: number; lastY: number; at: number; onModel: boolean; moved: boolean } | null = null;
 	let touchMode = false;
+	/** Swipe motions must not be spammed: a short cooldown keeps the queue sane. */
+	let gestureCooldownUntil = 0;
+	const GESTURE_COOLDOWN_MS = 400;
 
 	/**
 	 * Touch-mode gaze: normalize the pointer into the ±1 look space relative to
@@ -615,6 +619,41 @@ export async function mountModel(
 			.catch(() => {});
 	};
 
+	/**
+	 * Swipe → the model's own gesture motion (`Flick<Direction>` → `Flick` →
+	 * `Shake`). Only touch/pen swipes that started on the avatar count (a
+	 * swipe over empty space is just a gaze gesture), only in touch mode, and
+	 * never during the cooldown. Silent no-op when the rig ships no gesture
+	 * groups or another motion is still playing.
+	 */
+	const handleSwipe = (dx: number, dy: number, durationMs: number) => {
+		if (!touchMode) return;
+		if (Date.now() < gestureCooldownUntil) return;
+		if (!isSwipe({ dx, dy, durationMs })) return;
+		const groups = Object.keys(internal.motionManager.definitions ?? {});
+		const direction = swipeDirection(dx, dy);
+		const group = resolveGestureGroup(groups, direction);
+		if (!group) return;
+		const list = internal.motionManager.definitions?.[group] ?? [];
+		if (list.length === 0) return;
+		const index = Math.floor(Math.random() * list.length);
+		gestureCooldownUntil = Date.now() + GESTURE_COOLDOWN_MS;
+		void (model as unknown as { motion(group: string, index?: number, priority?: number): Promise<boolean> })
+			.motion(group, index, priorityValue("normal"))
+			.then((started) => {
+				if (!started) {
+					// A NORMAL/FORCE motion was playing: stay silent (README says
+					// so) and let the user swipe again after it ends.
+					gestureCooldownUntil = Date.now();
+					return;
+				}
+				const value = `${direction}:${group}`;
+				if (tag) container.dataset[`lv${tag}Gesture`] = value;
+				container.dataset.lvGesture = value;
+			})
+			.catch(() => {});
+	};
+
 	const onPointerDown = (event: PointerEvent) => {
 		// Stop event from propagating to external gesture listeners
 		event.stopPropagation();
@@ -629,7 +668,7 @@ export async function mountModel(
 				lastSingleTouchX = event.clientX;
 				lastSingleTouchY = event.clientY;
 				gestures.dragOwner = hitAvatar(event);
-				press = { x: event.clientX, y: event.clientY, at: Date.now(), onModel: gestures.dragOwner === model, moved: false };
+				press = { x: event.clientX, y: event.clientY, lastX: event.clientX, lastY: event.clientY, at: Date.now(), onModel: gestures.dragOwner === model, moved: false };
 				if (touchMode) publishTouchLook(event.clientX, event.clientY);
 			} else if (activeTouches.size === 2) {
 				press = null; // a second finger means pinch, never a tap
@@ -647,7 +686,7 @@ export async function mountModel(
 			lastMouseY = event.clientY;
 			gestures.dragOwner = event.button === 0 ? hitAvatar(event) : null;
 			press = event.button === 0
-				? { x: event.clientX, y: event.clientY, at: Date.now(), onModel: gestures.dragOwner === model, moved: false }
+				? { x: event.clientX, y: event.clientY, lastX: event.clientX, lastY: event.clientY, at: Date.now(), onModel: gestures.dragOwner === model, moved: false }
 				: null;
 			try {
 				stage.setPointerCapture(event.pointerId);
@@ -658,7 +697,11 @@ export async function mountModel(
 	const onPointerMove = (event: PointerEvent) => {
 		event.stopPropagation();
 
-		if (press && Math.hypot(event.clientX - press.x, event.clientY - press.y) > TAP_SLOP_PX) press.moved = true;
+		if (press) {
+			press.lastX = event.clientX;
+			press.lastY = event.clientY;
+			if (Math.hypot(event.clientX - press.x, event.clientY - press.y) > TAP_SLOP_PX) press.moved = true;
+		}
 
 		if (event.pointerType === "touch") {
 			if (activeTouches.has(event.pointerId)) {
@@ -755,11 +798,15 @@ export async function mountModel(
 			releaseTouchLook();
 		}
 		gestures.dragOwner = null;
-		// pointercancel must not fire a tap, and a press that travelled or ran
-		// long is a drag/zoom, not a tap.
-		if (event.type === "pointerup" && pending && pending.onModel && !pending.moved
-			&& Date.now() - pending.at <= TAP_MAX_MS) {
-			handleTap(event.clientX, event.clientY);
+		// pointercancel must not fire anything; a press that travelled beyond the
+		// tap slop first gets a chance to be a swipe gesture, otherwise a tap.
+		if (event.type === "pointerup" && pending && pending.onModel) {
+			const durationMs = Date.now() - pending.at;
+			if (pending.moved && (event.pointerType === "touch" || event.pointerType === "pen")) {
+				handleSwipe(pending.lastX - pending.x, pending.lastY - pending.y, durationMs);
+			} else if (!pending.moved && durationMs <= TAP_MAX_MS) {
+				handleTap(event.clientX, event.clientY);
+			}
 		}
 	};
 
@@ -926,6 +973,7 @@ export async function mountModel(
 			if (tag) delete container.dataset[`lv${tag}Transform`];
 			if (tag) delete container.dataset[`lv${tag}ParamIds`];
 			if (tag) delete container.dataset[`lv${tag}Tap`];
+			if (tag) delete container.dataset[`lv${tag}Gesture`];
 			// The shared tap key is last-writer-wins in dual mode (see AGENTS.md);
 			// drop it with the model so a stale value cannot outlive its mount.
 			delete container.dataset.lvTap;

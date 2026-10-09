@@ -69,7 +69,7 @@
   **方向一律取主轴较大者**（`|dx| >= |dy|` 即水平、否则垂直），**不存在"斜划走兜底"**——兜底只发生在"模型确实没有该方向的组"时：
   `Flick<Up|Down|Left|Right>` → `Flick` → `Shake` → 无则不动。
 - **冷却 400ms**：冷却期内不触发新手势（防止连划打满动作队列把模型锁死）。
-- **优先级**：与 tap 一致用 **NORMAL**（框架 `MotionState.reserve`：NORMAL 只打断 IDLE，不打断 NORMAL/FORCE）。实据：剧本动作（LLM 打的 motion tag）走 `view.tsx:913 playMotion(def)` → `model.ts playMotion` 默认 `force`，所以手势**不该**用 FORCE 去压掉剧本动作。
+- **优先级**：与点击一致用 **NORMAL**（框架 `MotionState.reserve`：NORMAL 只打断 IDLE，不打断 NORMAL/FORCE）。实据：剧本动作（LLM 打的 motion tag）走 `view.tsx:913 playMotion(def)` → `model.ts playMotion` 默认 `force`，所以手势**不该**用 FORCE 去压掉剧本动作。
   **副作用（写进 README，不要承诺"随时可触发"）**：手势撞上正在播的 FORCE 动作时是**静默不响应**（不写 `lvGesture`）；剧本动作只持续几秒，可接受。
 - **可发现性**：首次开启触摸模式弹出一次性一行提示（localStorage 记住已提示）："轻触角色有反应 · 滑动切换动作 · 双指缩放"。
 
@@ -132,3 +132,14 @@
 4. **布局实现细节**：`.lv-capsule` 保留绝对定位（它就是 `.lv-pop` 的 containing block，不要加 `position:relative`）；`lv-mic-live` 例外只抬胶囊（.85），角落维持 .45；`verify-live.mjs` 断言 `button count >= 5`，新增按钮后不破。
 5. **优先级确认 NORMAL**（auto-human 更正其 FORCE 记忆）：剧本动作是 FORCE（`view.tsx:913 playMotion(def)` → `playMotion` 默认 force），手势不该抢占；裁员副作用"撞上 FORCE 动作时静默不响应"要写进 README。
 6. 开工顺序：P1 验收结案 → 本计划定稿（本次）→ commit A。
+
+## 九、实施状态（2026-10-10）
+
+- **commit A（`2224c69`）**：HUD 拆层 + 触摸模式开关 + 视线跟随 + 一次性提示 + `dataset.lvTouchLook` + `verify-touch-mode.mjs` 的布局/视线/手势共存用例。
+  - 层化等价性已取证：同按钮集合下 `.lv-capsule` rect 与旧 `.lv-hud` **完全相同**（316.5,620,267×48），胶囊区域像素差异 23/16740 = 0.14%（最大通道差 19，抗锯齿级）；工具脚本 `capsule-baseline.mjs` / `capsule-equiv.mjs` / `layer-checks.mjs` 留档。
+  - `layer-checks`：root layer `pointer-events:none`、`.lv-pop` 仍锚定胶囊（计算值 bottom = padding box + 12px）、角落簇淡出 .45、键盘聚焦提亮 ✓。
+  - 视线方向受控度量（haru / 900×700 / 第一人称）：手指左右两端时头部区域非背景像素水平质心位移 **0.289**，同位置两帧漂移 **0.0002** → 阈值取 **0.05**（噪声的 250×、信号的 1/6）。
+- **commit B**：flick/Shake 手势动作 + 纯函数模块 `gesture-math.ts` + 回退样本用例 + 冷却防刷屏。
+  - 实测校准：izumi 只有 `FlickRight`/`FlickLeft` + `Shake`（**没有裸 `Flick`**），下划时正确回退到 `Shake`；chitose（只有 `Flick`）右划 → `Right:Flick`；`oc/luna`（只有 `Shake`）→ `Right:Shake`。
+  - 冷却用例按可观测行为断言：一次起效后 140ms 内的第二次滑动不改写 `lvGesture`（冷却与"动作播放中 NORMAL 让位"共同作用）。
+- 未做（按计划留给后续）：玩家化身的独立空闲/手势调度、鼠标 flick、参数面板。

@@ -18,6 +18,7 @@
 import pw from '/root/projects/camoufox-mcp/node_modules/playwright-core/index.js';
 import { execSync } from 'node:child_process';
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
+import { isSwipe, resolveGestureGroup, swipeDirection } from '../src/client/gesture-math.ts';
 
 const { chromium } = pw;
 const PORT = process.env.DSH_E2E_PORT;
@@ -72,6 +73,25 @@ const touch = (type, x, y, id = 1) => page.evaluate(([type, x, y, id]) => {
     pointerId: id, pointerType: 'touch', isPrimary: id === 1, clientX: x, clientY: y, bubbles: true, cancelable: true, buttons: type === 'pointerup' ? 0 : 1,
   }));
 }, [type, x, y, id]);
+
+/** 合成一次快速滑动：down → 等 50ms → 同一 tick 内 5 次 move + up（保证 <400ms 且 duration>0）。 */
+const swipe = async (fromX, fromY, dx, dy, { pointerId = 7, settleMs = 2600 } = {}) => {
+  await touch('pointerdown', fromX, fromY, pointerId);
+  await page.waitForTimeout(50);
+  await page.evaluate(([fx, fy, ddx, ddy, id]) => {
+    const stage = document.querySelector('.lv-stage');
+    const fire = (type, x, y) => stage.dispatchEvent(new PointerEvent(type, {
+      pointerId: id, pointerType: 'touch', isPrimary: id === 1, clientX: x, clientY: y, bubbles: true, cancelable: true,
+      buttons: type === 'pointerup' ? 0 : 1,
+    }));
+    for (let i = 1; i <= 5; i++) fire('pointermove', fx + (ddx * i) / 5, fy + (ddy * i) / 5);
+    fire('pointerup', fx + ddx, fy + ddy);
+  }, [fromX, fromY, dx, dy, pointerId]);
+  // 上一个手势动作还在播时，下一个 NORMAL 动作会被框架拒绝（设计上的"静默不响应"），
+  // 默认等足够久让动作播完；测冷却时把 settleMs 调小。
+  await page.waitForTimeout(settleMs);
+};
+const gestureState = () => page.evaluate(() => document.querySelector('.lv-stage')?.dataset?.lvGesture ?? null);
 
 try {
   // ── 触摸模式开 ────────────────────────────────────────────────────────────
@@ -198,9 +218,10 @@ try {
   const panning = await state();
   await touch('pointerup', 650, 350);
   await page.waitForTimeout(400);
-  check('T7 关闭触摸模式：单指恢复平移且不写 lvTouchLook',
-    panning.transform !== beforePan.transform && panning.touchLook === null,
-    `transform ${beforePan.transform} → ${panning.transform}, touchLook=${panning.touchLook}`);
+  await swipe(450, 350, 160, 0, { settleMs: 300 }); // 关闭触摸模式时划动不应触发手势动作
+  check('T7 关闭触摸模式：单指恢复平移、不写 lvTouchLook、不触发手势动作',
+    panning.transform !== beforePan.transform && panning.touchLook === null && (await gestureState()) === null,
+    `transform ${beforePan.transform} → ${panning.transform}, touchLook=${panning.touchLook}, gesture=${await gestureState()}`);
 
   // ── T8 视线方向：头部区域非背景像素水平质心 ─────────────────────────────
   await load({ touchMode: true });
@@ -255,6 +276,67 @@ PY`, { encoding: 'utf8' }).trim().split('\n');
   check('T8a 头随手指方向移动（质心位移 ≥ 阈值）', shift >= THRESHOLD, `shift=${shift.toFixed(4)} (阈值 ${THRESHOLD})`);
   check('T8b null case 漂移 < 阈值', drift < THRESHOLD, `drift=${drift.toFixed(4)}`);
   check('T8c 方向正确（手指在右时头部质心更大）', Number(lr?.[2]) > Number(lr?.[1]), `left=${lr?.[1]} right=${lr?.[2]}`);
+
+  // ── T10 组选择/方向/判定纯函数（表驱动，不依赖模型）────────────────────
+  check('T10a 有方向组 → Flick<方向>', resolveGestureGroup(['FlickRight', 'Flick', 'Shake'], 'Right') === 'FlickRight');
+  check('T10b 只有 Flick → 回退 Flick', resolveGestureGroup(['Flick', 'Shake'], 'Left') === 'Flick');
+  check('T10c 只有 Shake → 回退 Shake', resolveGestureGroup(['Idle', 'Shake'], 'Up') === 'Shake');
+  check('T10d 无手势组 → null', resolveGestureGroup(['Idle', 'Tap'], 'Down') === null);
+  check('T10e 大小写不敏感', resolveGestureGroup(['FLICKUP'], 'Up') === 'FLICKUP');
+  check('T10f 方向取主轴（含对角线不为 Shake 桶）',
+    swipeDirection(10, 3) === 'Right' && swipeDirection(-10, 3) === 'Left' &&
+    swipeDirection(3, 10) === 'Down' && swipeDirection(3, -10) === 'Up' && swipeDirection(10, 10) === 'Right');
+  check('T10g 滑动判定：距离/时长/速度三条件',
+    // 够快：50px / 60ms = 0.83 px/ms
+    isSwipe({ dx: 50, dy: 0, durationMs: 60 }) === true &&
+    // 距离不够
+    isSwipe({ dx: 30, dy: 0, durationMs: 60 }) === false &&
+    // 太慢（时长超限）
+    isSwipe({ dx: 80, dy: 0, durationMs: 500 }) === false &&
+    // 距离够但速度不够：60px / 500ms = 0.12 px/ms
+    isSwipe({ dx: 60, dy: 0, durationMs: 500 }) === false);
+
+  // ── T4/T5/T6 flick 实机 ──────────────────────────────────────────────────
+  await load({ touchMode: true, modelSelection: 'izumi' });
+  const izBox = await page.evaluate(() => {
+    const c = document.querySelector('.lv-stage canvas').getBoundingClientRect();
+    return { x: c.x, y: c.y, w: c.width, h: c.height };
+  });
+  const startX = izBox.x + izBox.w * 0.5, startY = izBox.y + izBox.h * 0.4;
+  await swipe(startX, startY, 160, 0);
+  check('T4a 右划 → FlickRight（izumi）', (await gestureState()) === 'Right:FlickRight', String(await gestureState()));
+  await swipe(startX, startY, -160, 0);
+  check('T4b 左划 → FlickLeft（izumi）', (await gestureState()) === 'Left:FlickLeft', String(await gestureState()));
+  await swipe(startX, startY, 0, 160, 8);
+  // izumi 只有 FlickRight/FlickLeft + Shake（无裸 Flick）→ 缺方向组时回退 Shake
+  check('T4c 下划 → izumi 缺 FlickDown → 回退 Shake',
+    (await gestureState()) === 'Down:Shake', String(await gestureState()));
+
+  // T5 防刷屏：一次起效后，紧接着的第二次滑动在 400ms 冷却（以及正在播的动作）内不生效
+  await swipe(startX, startY, 160, 0); // 结算：等动作播完，手势回到可触发状态
+  const base = await gestureState();
+  await swipe(startX, startY, 160, 0, { settleMs: 120 }); // A：允许，应改写成 Right:FlickRight
+  const afterA = await gestureState();
+  await swipe(startX, startY, -160, 0, { settleMs: 120 }); // B：距 A 约 140ms，应被冷却挡住
+  const afterB = await gestureState();
+  check('T5 连续快划不刷屏（400ms 冷却）', afterA !== base && afterB === afterA, `${base} → ${afterA} → ${afterB}`);
+
+  // T6 回退样本：只有 Flick / 只有 Shake
+  await load({ touchMode: true, modelSelection: 'chitose' });
+  const chBox = await page.evaluate(() => {
+    const c = document.querySelector('.lv-stage canvas').getBoundingClientRect();
+    return { x: c.x, y: c.y, w: c.width, h: c.height };
+  });
+  await swipe(chBox.x + chBox.w * 0.5, chBox.y + chBox.h * 0.4, 160, 0);
+  check('T6a 只有 Flick 的模型 → 回退 Flick', (await gestureState()) === 'Right:Flick', String(await gestureState()));
+
+  await load({ touchMode: true, modelSelection: 'luna', modelPath: LIB + '/oc' });
+  const luBox = await page.evaluate(() => {
+    const c = document.querySelector('.lv-stage canvas').getBoundingClientRect();
+    return { x: c.x, y: c.y, w: c.width, h: c.height };
+  });
+  await swipe(luBox.x + luBox.w * 0.5, luBox.y + luBox.h * 0.4, 160, 0);
+  check('T6b 只有 Shake 的模型 → 回退 Shake', (await gestureState()) === 'Right:Shake', String(await gestureState()));
 
   check('T9 无页面错误', pageErrors.length === 0, pageErrors.slice(0, 2).join(' | '));
 } finally {
