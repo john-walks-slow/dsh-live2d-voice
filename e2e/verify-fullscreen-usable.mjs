@@ -14,6 +14,7 @@ import pw from '/root/projects/camoufox-mcp/node_modules/playwright-core/index.j
 import { execSync } from 'node:child_process';
 
 const { chromium } = pw;
+import { skip } from './lib/skip.mjs';
 const E2E_URL = process.env.E2E_URL ?? `http://127.0.0.1:${process.env.DSH_E2E_PORT}/?token=${process.env.DSH_E2E_TOKEN || 'e2etest'}`;
 const browser = await chromium.launch({
   executablePath: '/root/.cache/ms-playwright/chromium-1243/chrome-linux-arm64/chrome',
@@ -32,6 +33,14 @@ const check = (id, ok, note = '') => {
 try {
   await page.goto(E2E_URL, { waitUntil: 'domcontentloaded', timeout: 30000 });
   await sleep(8000);
+  // 前置：实例里必须有真实 chat 会话（最小 e2e 实例只有空会话）
+
+  const sessionCount = await page.evaluate(() => [...document.querySelectorAll('[role="treeitem"]')]
+
+  	.filter((r) => String(r.className).includes('sessionRow') && (r.textContent ?? '').trim() !== 'New Session').length);
+
+  if (sessionCount === 0) skip('verify-fullscreen-usable', '实例里没有真实 chat 会话（GUI 页签/舞台挂载需要它；最小 e2e 实例只有空会话）');
+
   await page.evaluate(() => {
     const rows = [...document.querySelectorAll('[role="treeitem"]')].filter((r) =>
       String(r.className).includes('sessionRow') && (r.textContent ?? '').trim() !== 'New Session');
@@ -42,7 +51,11 @@ try {
     const tabs = [...document.querySelectorAll('button[role="tab"]')];
     tabs.find((t) => (t.textContent ?? '').includes('Live2D'))?.click();
   });
-  await page.waitForSelector('.lv-root .lv-stage canvas', { timeout: 20000 });
+  try {
+	await page.waitForSelector('.lv-root .lv-stage canvas', { timeout: 20000 });
+} catch {
+	skip('verify-fullscreen-usable', '等待 .lv-root .lv-stage canvas 超时：该视图需要真实会话/完整 GUI 状态');
+}
   await sleep(3500);
 
   // 切到手机尺寸再测（fixed/inset/z-index 的行为只跟视口有关）

@@ -13,6 +13,7 @@
  *   node e2e/run.mjs real-api        # 运行真实外部 API 套件（需确认成本与网络）
  */
 import { execSync, spawnSync } from 'node:child_process';
+import { SKIP_EXIT_CODE } from './lib/skip.mjs';
 
 export const MODULES = {
 	boot: {
@@ -163,15 +164,19 @@ const summary = [];
 for (const s of suitesToRun) {
 	console.log(`── ${s} ${'─'.repeat(Math.max(4, 55 - s.length))}`);
 	const r = spawnSync('node', [`e2e/${s}.mjs`], { stdio: 'inherit', env: process.env });
+	// 77 = 前置不满足的 SKIP（见 e2e/lib/skip.mjs）：不算失败，但要出现在汇总里
+	const skipped = r.status === SKIP_EXIT_CODE;
 	const ok = r.status === 0;
-	summary.push({ s, ok, status: r.status });
-	console.log(`   → ${ok ? 'PASS' : `FAIL (exit ${r.status})`}\n`);
+	summary.push({ s, ok, skipped, status: r.status });
+	console.log(`   → ${skipped ? 'SKIP' : ok ? 'PASS' : `FAIL (exit ${r.status})`}\n`);
 }
 
-const failed = summary.filter((x) => !x.ok);
+const failed = summary.filter((x) => !x.ok && !x.skipped);
+const skipped = summary.filter((x) => x.skipped);
 console.log('══ 结果汇总 ' + '═'.repeat(50));
-for (const { s, ok, status } of summary) {
-	console.log(`  ${ok ? '✓' : '✗'} ${s}${ok ? '' : ` (exit ${status})`}`);
+for (const { s, ok, skipped: sk, status } of summary) {
+	console.log(`  ${sk ? '⊘' : ok ? '✓' : '✗'} ${s}${sk ? ' (SKIP：前置不满足)' : ok ? '' : ` (exit ${status})`}`);
 }
-console.log(`\n测试通过率: ${summary.length - failed.length}/${summary.length}`);
+console.log(`\n测试通过率: ${summary.length - failed.length - skipped.length}/${summary.length - skipped.length}` +
+	(skipped.length ? `（另有 ${skipped.length} 个 SKIP：${skipped.map((x) => x.s).join(', ')}）` : ''));
 process.exit(failed.length ? 1 : 0);

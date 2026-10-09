@@ -84,11 +84,15 @@ const sessionId = [...streams].at(-1); // 从长连接请求捕获真实的 sess
 - 日志断言使用捕获到的真实 sessionId。
 - 前端测试如需模拟语音回复，直接向客户端派发 Mock SSE 事件包，无需打通后端大模型。
 
-## 待办：需要真实会话/GUI 状态的套件要"skip 并明确报告"
+## 前置不满足时 skip 并明确报告（已实施，261010）
 
-现状：`verify-fullscreen-usable`、`verify-fullscreen-keyboard`、`verify-keyboard-squish`（以及设置页烟测 `verify-settings-model`）都依赖实例里存在**真实 chat 会话**或完整 GUI 状态——最小 e2e 实例（只有空会话）跑到 `waitForSelector('.lv-root .lv-stage canvas')` / 设置卡标题时超时，最终以**失败**收场。261010 触摸模式那轮就撞上过：三片红全与环境前置有关，没有任何一条是当次改动的回归，却要人肉逐条排除。
+有些套件需要实例里存在**真实 chat 会话**或完整 GUI 状态（会话行 → "Live2D" 页签、设置卡渲染）。最小 e2e 实例里这些前置天然不存在，过去会以 `waitForSelector` 超时**失败**收场——几片红全是环境问题，却要人肉逐条排除，还容易掩盖真回归。
 
-约定（待实施）：
-- 套件开头显式探测前置（例如 `[role="treeitem"].sessionRow` 是否存在、设置卡是否渲染）：不满足时打印 `SKIP <suite>: <缺少的前置>` 并 **exit 0**；
-- 汇总输出里区分 `PASS / FAIL / SKIP`，SKIP 不需要人肉复跑但要出现在报告里；
+约定（已落地）：
+
+- helper：`e2e/lib/skip.mjs` 导出 `skip(suite, reason)` → 打印 `SKIP <suite>: <缺少什么>` 并 **exit 77**；
+- `e2e/run.mjs` 把 77 记为 `SKIP`（不算失败），汇总行用 `⊘` 单独列出，通过率分母剔除 SKIP；
+- 已接入：`verify-fullscreen-usable`、`verify-fullscreen-keyboard`、`verify-keyboard-squish`（都要真实会话行）、`verify-settings-model`（要设置卡渲染）、`verify-standalone-fullscreen`（无活跃会话可 follow 时**先自建零 API 空会话**，仍拿不到才 SKIP）；
 - 真实 API 类前置永远不为了"跑通"而现场制造（铁律 #3），只能 skip。
+
+**顺带查明的一处环境坑**：主检出 `/root/projects/dsh-live-mode/.dsh-e2e-home` 是 09-27 遗留的旧 home（没有 `instance.json`/`instance.pid`，`profiles/` 也是旧的），在主检出目录里跑 `dsh-e2e run` 时插件根本没被加载——插件路由 `/live2d-voice/session` 落到 web 的 SPA 兜底返回 HTML，表现为"路由不存在"。**e2e 一律在 worktree 里跑**（那里 dsh-e2e 会建当前版本的新 home）；在主检出跑出来的结果不可信。

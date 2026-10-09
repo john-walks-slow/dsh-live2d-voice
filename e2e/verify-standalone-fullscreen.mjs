@@ -11,6 +11,7 @@
  * N5 再点退出 → fullscreenElement === null
  */
 import pw from '/root/projects/camoufox-mcp/node_modules/playwright-core/index.js';
+import { skip } from './lib/skip.mjs';
 
 const { chromium } = pw;
 const E2E_URL = process.env.E2E_URL ?? `http://127.0.0.1:${process.env.DSH_E2E_PORT}/?token=${process.env.DSH_E2E_TOKEN || 'e2etest'}`;
@@ -43,9 +44,20 @@ try {
   });
   await page.goto(E2E_URL, { waitUntil: 'domcontentloaded', timeout: 30000 });
   await sleep(9000);
-  const sid = [...sessionIds][0];
-  check('N1', !!sid, `捕获 session ${sid?.slice(0, 20) ?? 'none'}…（共 ${sessionIds.size} 个）`);
-  if (!sid) throw new Error('no session captured');
+  let sid = [...sessionIds][0];
+  if (!sid) {
+    // 最小 e2e 实例没有真实 chat 会话可 follow：改用零 API 的空会话直连入口
+    // （e2e 铁律 #3：不为拿 sessionId 烧真实轮次）。standalone 页对空会话同样成立。
+    const created = await fetch(`${ORIGIN}/live2d-voice/session`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ title: 'standalone-fullscreen' }),
+    }).then((r) => r.json()).catch((e) => { console.log('[debug] create session failed:', String(e).slice(0, 120)); return null; });
+    sid = created?.sessionId;
+  }
+  check('N1', !!sid, `session ${sid?.slice(0, 20) ?? 'none'}…（GUI 捕获 ${sessionIds.size} 个${sessionIds.size ? '' : '，改用空会话'}）`);
+  if (!sid) {
+    skip('verify-standalone-fullscreen',
+      '既没捕获到活跃会话，也拿不到空会话：该实例没有 /live2d-voice/session 路由（插件未加载）或路由不可达');
+  }
 
   // N2: standalone 挂载
   await page.goto(`${ORIGIN}/live2d-voice/app?session=${encodeURIComponent(sid)}`, { waitUntil: 'domcontentloaded', timeout: 30000 });
