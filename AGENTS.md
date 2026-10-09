@@ -21,14 +21,16 @@ node e2e/run.mjs verify-boot
 
 e2e 实例：隔离 home + acquire-port 动态端口，见 dsh-e2e skill。
 
-> **`npm run build` 是全量构建**：它会把工作树里**任何未提交的 `src/` 改动**一并编进产物——
-> 多 agent 并行时，你只改了 client，也会把别人的在途 host 改动写进 `lib/index.js`。
-> 处置：**脏着它，别提交**（提交走 commit-own-changes，只提你改的那几个产物文件即可）；
-> **不要为了"还原产物"去覆盖文件**（`git show HEAD:lib/index.js > lib/index.js` 之类），
-> **也不要用 `npm run build` 去"撤销"它**——build 同样是对他人工作树 src 的一次快照，
-> 会把你看到的（可能半改完的）src 编进产物。两者都不是撤销手段。
-> 发现产物被误覆盖时：**通知当事人**（在他的 working dir 留 NOTE 或经协调人转达），由他自己决定重建还是重跑。
-> 只改 client 时，提交里不应出现 `lib/index.js`。
+> **`npm run build` 是全量构建，且是对共享工作树的一次快照**——多 agent 并行时，它会把工作树里
+> **任何未提交的 `src/` 改动**（包括别人的在途 host 改动）一并编进 `lib/index.js`。
+>
+> - **别在共享工作树里为了"核对产物"跑它**（例如只想确认注释是否影响产物）：需要核对字节一致性/可复现性时，
+>   用 worktree 或临时 checkout 跑，别在主工作树上跑；
+> - 跑完发现 `lib/index.js` 被带上别人的改动：**脏着它，别提交**（提交走 commit-own-changes，
+>   只提你改的那几个产物文件；只改 client 时提交里不应出现 `lib/index.js`）；
+> - **覆盖文件**（`git show HEAD:lib/index.js > lib/index.js`）和**再跑一次 build** 都**不是**撤销手段：
+>   前者用旧字节顶掉别人正在验证的产物，后者把当前（可能半改完的）src 快照进去；
+> - 发现产物被误覆盖：**通知当事人**（在他的 working dir 留 NOTE 或经协调人转达），由他自己决定重建还是重跑。
 
 ## 多 Agent 协作
 
