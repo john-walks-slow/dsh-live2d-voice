@@ -9,9 +9,14 @@
 其中两处后果较重：
 
 1. **torn / 非法 JSON → 整份配置回到全默认，并在下一次 save 时落盘**
-   `loadConfig()` 整个函数体包在 `try/catch` 里，`JSON.parse` 失败即 `return structuredClone(DEFAULT_CONFIG)`。
-   而 `saveConfig(patch)` 是 `{ ...loadConfig(), ...patch }` 的读-改-写——只要之后有人动过任何一个设置，
-   这份"全默认"就被写回磁盘，**原配置不可恢复**（没有备份、没有告警、调用方拿不到"我读的是默认值"的信号）。
+   **两段根因叠加，缺一不可**：
+   - **写侧非原子**：`saveConfig` 直接覆盖目标文件（无 tmp + fsync + rename），写入中途被打断就留下半截 JSON；
+   - **读侧静默降级**：`loadConfig()` 整个函数体包在 `try/catch` 里，`JSON.parse` 失败即
+     `return structuredClone(DEFAULT_CONFIG)`——不抛错、不告警、调用方拿不到"我读的是默认值"的信号。
+   随后 `saveConfig(patch)` 的读-改-写（`{ ...loadConfig(), ...patch }`）把这份"全默认"写回磁盘，
+   **原配置不可恢复**。
+   → 只做原子写只能挡住"写中途被打断"这一类；**外部脚本改坏、手工编辑出错、磁盘满**照样会静默清空，
+     因为读侧仍然吞掉解析失败。两条修法要一起上。
 2. **`apiKeys` 静默丢元素**
    `Array.isArray(raw.apiKeys) ? raw.apiKeys.filter((k) => typeof k === "string" && k) : []`——
    非数组直接变 `[]`，数组里的 `null`/`""`/数字/对象全部丢弃且无提示。
@@ -21,11 +26,14 @@
 
 ## 复现（隔离 home，不碰线上）
 
+复现脚本随文档入库（易失的 /tmp 路径不能当"正式跟踪入口"的复现路径）：
+
 ```bash
 mkdir -p /tmp/lv-cfg-probe
-# 脚本：/tmp/lv-cfg-probe/load-contract.mjs（见 baseline §3.1 的实测输出）
-DSH_HOME=/tmp/lv-cfg-probe node /tmp/lv-cfg-probe/load-contract.mjs
+DSH_HOME=/tmp/lv-cfg-probe node docs/issues/261010-config-load-path-risks/load-contract.mjs
 ```
+
+（脚本只读/写 `$DSH_HOME/live2d-voice.json`，用在隔离目录上，绝不碰线上配置。）
 
 关键两行（原样输出）：
 
@@ -37,8 +45,8 @@ DSH_HOME=/tmp/lv-cfg-probe node /tmp/lv-cfg-probe/load-contract.mjs
 
 ## 影响面（判断依据，不夸大）
 
-- 触发 torn JSON 的路径：磁盘写满/断电/进程被杀在写入中途、外部脚本手工改坏、`writeFileSync` 非原子
-  （无临时文件 + rename）——**最后一类是根因**：`saveConfig` 直接覆盖目标文件，写入中途被打断就会留下半截 JSON。
+- 触发来源：磁盘写满 / 断电 / 进程被杀在写入中途（写侧非原子）；外部脚本改坏、手工编辑出错（读侧静默降级）。
+  **两类来源都要靠对应那一段修法挡住**，不能只做原子写。
 - 命中后不是"丢一个键"，而是**整个配置面**（模型、音色、语言、提示词、Live 专用模型…）静默回默认。
 - 本轮不修的理由：修复要动 `src/`（原子写 + 读失败时抛错/让调用方决定），会改动线上基线并需要重启；
   真机验收窗口期冻结 src/lib。属既有行为，非本次触摸模式引入。

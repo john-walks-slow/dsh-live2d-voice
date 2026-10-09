@@ -178,7 +178,7 @@ try {
   check('T4 鼠标 hover 跟视线', Boolean(hovered.touchLook) && Number(hovered.touchLook.split(',')[0]) < -0.2, `touchLook=${hovered.touchLook}`);
   await page.mouse.move(700, 300);
   await page.waitForTimeout(250);
-  check('T4b hover 不平移', (await state()).transform === beforeHover.transform, `${beforeHover.transform} → ${(await state()).transform}`);
+  check('T4h hover 不平移', (await state()).transform === beforeHover.transform, `${beforeHover.transform} → ${(await state()).transform}`);
 
   // T5 布局 + root layer 不吃指针（从胶囊外起手拖动）
   const layout = await page.evaluate(() => {

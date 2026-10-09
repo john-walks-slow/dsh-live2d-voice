@@ -65,7 +65,7 @@ $ sed -n 1944p lib/index.js
 | `thirdPerson` | 仅当 `liveMode` 缺失且 `thirdPerson === true` | 映射为 `liveMode="third"`，并从载入对象里删掉该键（实测：载入对象无 `thirdPerson`，随后 save 也不写它） |
 | **整个函数体外层 `try/catch`** | JSON 解析失败 → `catch` 返回**全默认** | **最严重**：文件一旦 torn，本次读回全默认，**且随后任意一次 `saveConfig` 都是 read-modify-write，会把这个"全默认"落盘**，原值不可恢复 |
 
-实测（`DSH_HOME=/tmp/lv-cfg-probe`，隔离目录，脚本 `/tmp/lv-cfg-probe/load-contract.mjs`，绝不碰线上配置）：
+实测（`DSH_HOME=/tmp/lv-cfg-probe`，隔离目录，脚本 `docs/issues/261010-config-load-path-risks/load-contract.mjs`，绝不碰线上配置）：
 
 ```
 ① 写坏的 JSON 确实无法解析
@@ -84,7 +84,7 @@ $ sed -n 1944p lib/index.js
 
 | 风险 | 复现 | 影响 | 处置 |
 |---|---|---|---|
-| **torn JSON → 整份配置回默认 → 下次 save 落盘** | `DSH_HOME=/tmp/lv-cfg-probe node /tmp/lv-cfg-probe/load-contract.mjs`（① 段）——写坏 JSON 后 `loadConfig()` 返回全默认，随后任意一次 `saveConfig` 把"全默认"写回磁盘 | 不是丢一个键，是**整个配置面**静默回默认且原值不可恢复；根因是 `saveConfig` 非原子写（直接覆盖，无 tmp+rename） | **本轮不修**（动 src 破冻结/改基线），跟踪入口：[`docs/issues/261010-config-load-path-risks/261010-config-load-path-risks.troubleshoot.md`](../../issues/261010-config-load-path-risks/261010-config-load-path-risks.troubleshoot.md) |
+| **torn JSON → 整份配置回默认 → 下次 save 落盘** | `mkdir -p /tmp/lv-cfg-probe && DSH_HOME=/tmp/lv-cfg-probe node docs/issues/261010-config-load-path-risks/load-contract.mjs`（① 段）——写坏 JSON 后 `loadConfig()` 返回全默认，随后任意一次 `saveConfig` 把"全默认"写回磁盘 | 不是丢一个键，是**整个配置面**静默回默认且原值不可恢复；根因是 `saveConfig` 非原子写（直接覆盖，无 tmp+rename） | **本轮不修**（动 src 破冻结/改基线），跟踪入口：[`docs/issues/261010-config-load-path-risks/261010-config-load-path-risks.troubleshoot.md`](../../issues/261010-config-load-path-risks/261010-config-load-path-risks.troubleshoot.md) |
 | **`apiKeys` 静默丢元素** | 同脚本 ② 段：`['k1',null,'',123,'k2',{}]` → `["k1","k2"]`；非数组 → `[]` | 一次坏写静默清空用户 key（无提示、无日志） | 同上（同一 issue 记录，含建议修法） |
 | 读-写窗口（并发 patch 撞进同一读→写窗口） | 无法稳定复现（微秒级） | 并发写可能被覆盖 | **接受，不修**（所有设置保存路径共有） |
 
@@ -92,7 +92,7 @@ $ sed -n 1944p lib/index.js
 
 ### 3.3 残余风险的处置决定
 
-- (a) **读路径的默认值填充/强转/非法值回退**：已按上表枚举 + 三条实测覆盖，不再写"未知"。其中 `apiKeys` 静默清空与外层 try/catch 的"torn → 全默认 → 下次 save 落盘"是真实风险，但**本轮决定不修**（要动 `src/`，破冻结、改线上基线；且属既有行为，非本次引入）——记为后续 issue 候选。
+- (a) **读路径的默认值填充/强转/非法值回退**：已按上表枚举 + 三条实测覆盖，不再写"未知"。其中 `apiKeys` 静默清空与外层 try/catch 的"torn → 全默认 → 下次 save 落盘"是真实风险，**本轮决定不修**（要动 `src/`，破冻结、改线上基线；且属既有行为，非本次引入）。跟踪入口：[`docs/issues/261010-config-load-path-risks/261010-config-load-path-risks.troubleshoot.md`](../../issues/261010-config-load-path-risks/261010-config-load-path-risks.troubleshoot.md)（含复现脚本与建议修法）。
 - (b) **读-写窗口**（并发 patch 撞进同一读→写窗口）：也是既有性质，**接受，不修**。
 - 两条都是**决定**，不是留洞；真机验收的归因基线以本文件为准。
 
