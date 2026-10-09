@@ -67,26 +67,26 @@ const load = async (extra) => {
   await page.waitForTimeout(2200);
 };
 /** 合成触摸指针事件（playwright 的 mouse 是 pointerType=mouse，走不到触摸分支）。 */
-const touch = (type, x, y, id = 1) => page.evaluate(([type, x, y, id]) => {
+const touch = (type, x, y, id = 1, pointerType = 'touch') => page.evaluate(([type, x, y, id, ptype]) => {
   const stage = document.querySelector('.lv-stage');
   stage.dispatchEvent(new PointerEvent(type, {
-    pointerId: id, pointerType: 'touch', isPrimary: id === 1, clientX: x, clientY: y, bubbles: true, cancelable: true, buttons: type === 'pointerup' ? 0 : 1,
+    pointerId: id, pointerType: ptype, isPrimary: id === 1, clientX: x, clientY: y, bubbles: true, cancelable: true, buttons: type === 'pointerup' ? 0 : 1,
   }));
-}, [type, x, y, id]);
+}, [type, x, y, id, pointerType]);
 
 /** 合成一次快速滑动：down → 等 50ms → 同一 tick 内 5 次 move + up（保证 <400ms 且 duration>0）。 */
-const swipe = async (fromX, fromY, dx, dy, { pointerId = 7, settleMs = 2600 } = {}) => {
-  await touch('pointerdown', fromX, fromY, pointerId);
+const swipe = async (fromX, fromY, dx, dy, { pointerId = 7, settleMs = 2600, pointerType = 'touch' } = {}) => {
+  await touch('pointerdown', fromX, fromY, pointerId, pointerType);
   await page.waitForTimeout(50);
-  await page.evaluate(([fx, fy, ddx, ddy, id]) => {
+  await page.evaluate(([fx, fy, ddx, ddy, id, ptype]) => {
     const stage = document.querySelector('.lv-stage');
     const fire = (type, x, y) => stage.dispatchEvent(new PointerEvent(type, {
-      pointerId: id, pointerType: 'touch', isPrimary: id === 1, clientX: x, clientY: y, bubbles: true, cancelable: true,
+      pointerId: id, pointerType: ptype, isPrimary: id === 1, clientX: x, clientY: y, bubbles: true, cancelable: true,
       buttons: type === 'pointerup' ? 0 : 1,
     }));
     for (let i = 1; i <= 5; i++) fire('pointermove', fx + (ddx * i) / 5, fy + (ddy * i) / 5);
     fire('pointerup', fx + ddx, fy + ddy);
-  }, [fromX, fromY, dx, dy, pointerId]);
+  }, [fromX, fromY, dx, dy, pointerId, pointerType]);
   // 上一个手势动作还在播时，下一个 NORMAL 动作会被框架拒绝（设计上的"静默不响应"），
   // 默认等足够久让动作播完；测冷却时把 settleMs 调小。
   await page.waitForTimeout(settleMs);
@@ -95,15 +95,35 @@ const gestureState = () => page.evaluate(() => document.querySelector('.lv-stage
 /**
  * 滑动并等待手势真正生效：上一个手势动作还在播时新的 NORMAL 动作会被框架拒绝
  * （设计上的"静默不响应"），而动作时长因模型而异，固定等待必然偶发 flake。
- * 这里最多重试 attempts 次，每次等 settleMs；真正坏掉的手势路径永远不会满足期望值。
+ *
+ * 重试是**有硬上限**的（attempts 次后返回 ok=false），失败时返回的是页面上真实的
+ * `dataset.lvGesture` 值而不是吞掉异常——调用方据此判红并打印实际值。
  */
-const swipeExpect = async (fromX, fromY, dx, dy, expected, { attempts = 4, settleMs = 1200 } = {}) => {
-  for (let i = 0; i < attempts; i++) {
-    await swipe(fromX, fromY, dx, dy, { settleMs });
-    const got = await gestureState();
-    if (got === expected) return got;
+const clearGesture = () => page.evaluate(() => { delete document.querySelector('.lv-stage').dataset.lvGesture; });
+
+/**
+ * 等待"滑动被接受"（**eventual 契约**：动作排队/冷却期间会被静默拒绝，故允许多次尝试）。
+ *
+ * 两层保险，缺一不可：
+ *   1. **每次尝试前清空 `dataset.lvGesture`**：该字段只在动作真的起播时写入且永不清空
+ *      （本轮不改 src），不清空的话"读到旧值 == 期望"会假通过；
+ *   2. **attempts 归一化**（safe integer + 上限），保证 API 层不存在无限等待。
+ *
+ * 失败时返回页面上最后一次真实读到的值（清空后通常为 null，即"这次滑动什么都没写"）。
+ * 注意它验证的是"最终被接受"，不是"单次滑动立刻生效"——后者需要 src 侧的接受信号
+ * （`dataset.lvGestureSeq` 之类），已记入 validation §十 未结项。
+ */
+const MAX_ATTEMPTS = 16; // 有界放宽：武装要等上一个动作播完，16 × settleMs 仍是硬上限
+const swipeExpect = async (fromX, fromY, dx, dy, expected, { attempts = 4, settleMs = 700, pointerType = 'touch', pointerId = 7 } = {}) => {
+  const cap = Number.isSafeInteger(attempts) ? Math.min(Math.max(attempts, 1), MAX_ATTEMPTS) : 4;
+  let value = null;
+  for (let used = 1; used <= cap; used++) {
+    await clearGesture();
+    await swipe(fromX, fromY, dx, dy, { settleMs, pointerType, pointerId });
+    value = await gestureState();
+    if (value === expected) return { ok: true, value, attempts: used };
   }
-  return gestureState();
+  return { ok: false, value, attempts: cap };
 };
 
 try {
@@ -413,20 +433,43 @@ PY`, { encoding: 'utf8' }).trim();
     return { x: c.x, y: c.y, w: c.width, h: c.height };
   });
   const startX = izBox.x + izBox.w * 0.5, startY = izBox.y + izBox.h * 0.4;
-  check('T4a 右划 → FlickRight（izumi）', (await swipeExpect(startX, startY, 160, 0, 'Right:FlickRight')) === 'Right:FlickRight', String(await gestureState()));
-  check('T4b 左划 → FlickLeft（izumi）', (await swipeExpect(startX, startY, -160, 0, 'Left:FlickLeft')) === 'Left:FlickLeft', String(await gestureState()));
+  const t4a = await swipeExpect(startX, startY, 160, 0, 'Right:FlickRight');
+  check('T4a 右划 → FlickRight（izumi）', t4a.ok, `实际=${t4a.value}（${t4a.attempts} 次尝试）`);
+  const t4b = await swipeExpect(startX, startY, -160, 0, 'Left:FlickLeft');
+  check('T4b 左划 → FlickLeft（izumi）', t4b.ok, `实际=${t4b.value}（${t4b.attempts} 次尝试）`);
   // izumi 只有 FlickRight/FlickLeft + Shake（无裸 Flick）→ 缺方向组时回退 Shake
-  check('T4c 下划 → izumi 缺 FlickDown → 回退 Shake',
-    (await swipeExpect(startX, startY, 0, 160, 'Down:Shake')) === 'Down:Shake', String(await gestureState()));
+  const t4c = await swipeExpect(startX, startY, 0, 160, 'Down:Shake');
+  check('T4c 下划 → izumi 缺 FlickDown → 回退 Shake', t4c.ok, `实际=${t4c.value}（${t4c.attempts} 次尝试）`);
 
-  // T5 防刷屏：一次真正生效后，紧接着（约 140ms）的第二次滑动在 400ms 冷却窗口内不生效。
-  // 先用可重试的助手把状态"武装"到确定值，避免上一个动作还在播导致基准不稳（flaky）。
-  const armed = await swipeExpect(startX, startY, 160, 0, 'Right:FlickRight');
-  const beforeB = await gestureState();
-  await swipe(startX, startY, -160, 0, { settleMs: 120 });
-  const afterB = await gestureState();
-  check('T5 连续快划不刷屏（400ms 冷却 / 动作播放中让位）',
-    armed === 'Right:FlickRight' && afterB === beforeB, `${armed} → ${afterB}（期望保持 ${beforeB}）`);
+  // T15 故意走坏路径：鼠标滑动在设计上永不触发 flick → 清空后仍为 null，助手必判红
+  // （放在 flick 段开头：它不会往动作队列里塞东西，不会污染后续触摸用例）
+  // 注意：鼠标指针必须用**与触摸不同的 pointerId**——真实浏览器里 pointerId 全局唯一，
+  // 复用同一个 id 会让测试自己制造出"触摸状态没释放"的假象（本轮先踩了这个坑）。
+  const mousePath = await swipeExpect(startX, startY, 160, 0, 'Right:FlickRight', { attempts: 3, settleMs: 500, pointerType: 'mouse', pointerId: 21 });
+  check('T15 坏路径必判红：鼠标滑动清空后仍不产生手势（助手不会慢通过）',
+    mousePath.ok === false && mousePath.attempts === 3 && mousePath.value === null,
+    `ok=${mousePath.ok} attempts=${mousePath.attempts} 实际=${mousePath.value}`);
+
+  // T15 的鼠标拖动**按设计会平移模型**（触摸模式只把"触摸"单指改成视线指针）；
+  // 平移后模型离开了画布中心，后续触摸用例的起手点就落在模型外 → hitTest 不命中 →
+  // 手势被正确地拒绝，于是看起来像"手势坏了"。这里先双击复位再继续。
+  await page.evaluate(() => document.querySelector('.lv-stage').dispatchEvent(new MouseEvent('dblclick', { bubbles: true })));
+  await page.waitForTimeout(500);
+
+  // T5 防刷屏：一次被接受之后，**紧接着**（≤400ms 冷却窗口内）的反向滑动不得产生新手势；
+  // 冷却窗口过去后，同样的滑动必须能被接受（正对照，证明上一条不是因为手势永久坏掉）。
+  //
+  // 归因方式：每次滑动前清空 dataset —— 滑动后仍为 null 即"这次没有起播任何动作"。
+  // 诚实边界：这个窗口里"新手势被拒绝"同时受两件事保护（400ms 冷却 + 上一个动作仍在播时
+  // NORMAL 让位），二者观测相同、本轮无法分离；分离需要 src 侧接受信号，见 validation §十。
+  const armed = await swipeExpect(startX, startY, 160, 0, 'Right:FlickRight', { attempts: 14, settleMs: 400 });
+  await clearGesture();
+  await swipe(startX, startY, -160, 0, { settleMs: 120 }); // A 被接受后约 150ms
+  const duringCooldown = await gestureState();
+  const laterAccepted = await swipeExpect(startX, startY, -160, 0, 'Left:FlickLeft', { attempts: 10, settleMs: 400 });
+  check('T5 冷却窗口内不产生新手势、窗口过后恢复接受',
+    armed.ok && duringCooldown === null && laterAccepted.ok,
+    `武装=${armed.value}(${armed.attempts} 次) → 冷却窗口内=${duringCooldown}（期望 null） → 之后=${laterAccepted.value}(${laterAccepted.attempts} 次)`);
 
   // T6 回退样本：只有 Flick / 只有 Shake
   await load({ touchMode: true, modelSelection: 'chitose' });
@@ -434,16 +477,23 @@ PY`, { encoding: 'utf8' }).trim();
     const c = document.querySelector('.lv-stage canvas').getBoundingClientRect();
     return { x: c.x, y: c.y, w: c.width, h: c.height };
   });
-  check('T6a 只有 Flick 的模型 → 回退 Flick',
-    (await swipeExpect(chBox.x + chBox.w * 0.5, chBox.y + chBox.h * 0.4, 160, 0, 'Right:Flick')) === 'Right:Flick', String(await gestureState()));
+  const t6a = await swipeExpect(chBox.x + chBox.w * 0.5, chBox.y + chBox.h * 0.4, 160, 0, 'Right:Flick');
+  check('T6a 只有 Flick 的模型 → 回退 Flick', t6a.ok, `实际=${t6a.value}（${t6a.attempts} 次尝试）`);
 
   await load({ touchMode: true, modelSelection: 'luna', modelPath: LIB + '/oc' });
   const luBox = await page.evaluate(() => {
     const c = document.querySelector('.lv-stage canvas').getBoundingClientRect();
     return { x: c.x, y: c.y, w: c.width, h: c.height };
   });
-  check('T6b 只有 Shake 的模型 → 回退 Shake',
-    (await swipeExpect(luBox.x + luBox.w * 0.5, luBox.y + luBox.h * 0.4, 160, 0, 'Right:Shake')) === 'Right:Shake', String(await gestureState()));
+  const t6b = await swipeExpect(luBox.x + luBox.w * 0.5, luBox.y + luBox.h * 0.4, 160, 0, 'Right:Shake');
+  check('T6b 只有 Shake 的模型 → 回退 Shake', t6b.ok, `实际=${t6b.value}（${t6b.attempts} 次尝试）`);
+
+  // T14 重试有硬上限 + 失败报真实状态；izumi 没有 FlickDown → 该期望永不出现。
+  // 它在滑动时**会**真的起播 izumi 自带的手势动作（回退到 Shake），所以放在本段最后。
+  const impossible = await swipeExpect(startX, startY, 160, 0, 'Right:FlickDown', { attempts: 2, settleMs: 500 });
+  check('T14 重试有硬上限、失败报真实状态（不可能满足的期望必须判红）',
+    impossible.ok === false && impossible.attempts === 2 && impossible.value !== 'Right:FlickDown',
+    `ok=${impossible.ok} attempts=${impossible.attempts} 实际=${impossible.value}`);
 
   check('T9 无页面错误', pageErrors.length === 0, pageErrors.slice(0, 2).join(' | '));
 } finally {
