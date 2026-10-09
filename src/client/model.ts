@@ -547,7 +547,9 @@ export async function mountModel(
 		const x = clientX - rect.left;
 		const y = clientY - rect.top;
 		const names = typeof model.hitTest === "function" ? model.hitTest(x, y) : [];
-		let area: string | null = names[0] ?? null;
+		// Overlapping hit areas (e.g. Body over Head) are rare but real: prefer the
+		// first one that actually has a Tap group, then fall back to the first hit.
+		let area: string | null = names.find((name) => tapGroupFor(name)) ?? names[0] ?? null;
 		if (!area) {
 			// Models that declare HitAreas and miss: no response. Models without
 			// any declared area fall back to "did the tap land on the avatar".
@@ -858,6 +860,10 @@ export async function mountModel(
 			if (gestures.dragOwner === model) gestures.dragOwner = null;
 			if (tag) delete container.dataset[`lv${tag}Transform`];
 			if (tag) delete container.dataset[`lv${tag}ParamIds`];
+			if (tag) delete container.dataset[`lv${tag}Tap`];
+			// The shared tap key is last-writer-wins in dual mode (see AGENTS.md);
+			// drop it with the model so a stale value cannot outlive its mount.
+			delete container.dataset.lvTap;
 			try {
 				(model as unknown as { destroy: (options?: unknown) => void }).destroy({
 						children: true,
