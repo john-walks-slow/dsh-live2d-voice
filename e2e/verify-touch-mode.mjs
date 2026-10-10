@@ -710,6 +710,12 @@ PY`, { encoding: 'utf8' }).trim();
     armedWatcher && refused?.seen === flashBeforeScript + 1 && !refused.stillOn && flashCssMs !== null && flashCssMs <= 200,
     `闪 ${refused?.seen - flashBeforeScript} 次，实测动画 ${refused?.visualMs}ms / 类名停留 ${refused?.classMs}ms（headless 受限，辅助数据），CSS 声明 ${flashCssMs}ms`);
 
+  // T19e 剧本动作播完后通道必须回到空闲行（"标记只在 busy 时被查询"的前提）：
+  // Shake 约 4.1s，等它自然播完，lvMotionBusy 必须回落 0，随后一次滑动能正常起播。
+  const scriptIdle = await waitMotionIdle(8000);
+  check('T19e 剧本动作自然播完后 lvMotionBusy 回落 0（不留下永久拒绝）',
+    scriptIdle, `8s 内回落到 0 = ${scriptIdle}`);
+
   // ── T20 非法手势：距离够但时长超限的慢拖 → 明确计数，不起播 ────────────────
   await waitMotionIdle();
   await page.waitForTimeout(500); // 冷却窗口已过（T19 之后没有手势被接受，这里只是稳妥）
