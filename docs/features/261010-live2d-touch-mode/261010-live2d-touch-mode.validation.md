@@ -380,6 +380,21 @@ izumi 的手势片长（`Meta.Duration`，秒）：`FlickLeft` **1.90**、`Flick
 | ④ 能否做到"极短淡出/平滑抢占" | **公开 stop+start 路径做不到淡出**（旧 entry 被直接丢弃）；但**新动作自带 fade-in**（默认 `motionFadingDuration = 500ms`，动作自身 `FadeInTime` 优先） | `config.motionFadingDuration: 500`；`createMotion` 设 `setFadeInTime`；`_startMotion` 先 `queueManager.stopAllMotions()` |
 | ⑤ `Meta.Loop=true` 时 `onFinish` 是否触发 | **不触发**（循环动作重置 startTime，不 set finished） | `CubismMotion` `:3680-3692`；且库的公开 `startMotion` 解构了 `onFinish` 却没传给 `_startMotion`（`:9142`） |
 
+**抢占的混合语义（最后一道钉，headless 实测）**：新动作从上一次动作的**末帧姿态淡入**，**不会在 f=0 跳变到基础姿态**。
+`motion-preempt-mix.mjs`（临时探针构建逐帧发布的姿态参数，用后已回滚）在被抢占动作播放期间建立"基准帧间角度增量"分布，
+再比较"抢占前最后一帧 → 抢占后第一个变化帧"的增量：
+
+```
+基准（播放中每帧角度最大增量）：中位 4.1–4.2°，最大 7.2–8.4°
+跨越抢占的第一个变化帧：        0.78–3.10°（**小于**基准，因为新动作 fade-in 从权重 0 起步）
+嘴部：基准最大 0.87–0.95 → 跨越 0.04–0.11
+```
+
+⇒ **抢占不会产生姿态 snap**，因此**不需要**"只允许同类/同向手势被抢占"那套备选实现；
+过渡只有"新动作自带 ~500ms fade-in"这一层（与原设计一致）。
+（探针细节：先在 `src/client/model.ts` 注入临时 `__lvProbe` + 逐帧 `dataset.lvPoseProbe`，用 esbuild **只构建 standalone**、
+不碰 `lib/index.js`；测完已把 `model.ts` 回滚到提交版本，探针构建也被已提交产物覆盖。）
+
 **对实现设计的两条硬约束**：
 1. **状态标记绝不能靠 `onFinish` 清除**（⑤：循环动作永不触发，且公开路径根本没注册回调）→ 改为"**所有起播路径（手势 / 剧本 / 待机）走同一个入口写标记，后起的覆盖先前的**"，陈旧标记在结构上不可能存在；
 2. **不能把"极短淡出"写成兜底**（④：做不到）→ 抢占的过渡只能是"新动作自带的 fade-in（~500ms）"；若真机逐帧看出现 snap，需要回来改需求（例如只允许同类/同向手势被抢占），而不是硬加淡出。
