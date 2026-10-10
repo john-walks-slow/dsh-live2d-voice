@@ -30,6 +30,7 @@ const IDLE_INTERVAL = Number(process.env.IDLE_INTERVAL ?? 0);
 const SWEEP = String(process.env.SWEEP ?? '800,1000,1200,1400,1600,1800').split(',').map(Number);
 const TRIALS = Number(process.env.TRIALS ?? 3);
 const ACCEPT_WINDOW_MS = 1500;
+const ARM = String(process.env.ARM ?? 'auto').toLowerCase(); // auto | right | left | down（down 在 izumi 上回退为 4.13s 的 Shake）
 const READY_K = 5;
 const SAMPLE_MS = 100;
 
@@ -75,7 +76,7 @@ try {
     await page.waitForTimeout(SAMPLE_MS);
   }
   if (stable < READY_K) { console.log('× 字段始终不稳定可读，放弃'); process.exit(1); }
-  console.log(`就绪门通过（连续可读 ${READY_K} 次）\n`);
+  console.log(`就绪门通过（连续可读 ${READY_K} 次）；武装方向 = ${ARM}\n`);
 
   const box = await page.evaluate(() => {
     const c = document.querySelector('.lv-stage canvas').getBoundingClientRect();
@@ -85,7 +86,7 @@ try {
   const sy = box.y + box.h * 0.4;
 
   /** 打一发滑动：返回"动作开始时刻"（seq 前进）或 null（被拒）。 */
-  const fire = async (dx) => page.evaluate(async ([fx, fy, ddx, windowMs]) => {
+  const fire2 = async (dx, dy) => page.evaluate(async ([fx, fy, ddx, ddy, windowMs]) => {
     const stage = document.querySelector('.lv-stage');
     const seqBefore = Number(stage.dataset.lvGestureSeq ?? 0);
     const ev = (t, x, y) => stage.dispatchEvent(new PointerEvent(t, {
@@ -94,10 +95,10 @@ try {
     }));
     ev('pointerdown', fx, fy);
     await new Promise((r) => setTimeout(r, 40));
-    for (let k = 1; k <= 5; k++) ev('pointermove', fx + (ddx * k) / 5, fy);
+    for (let k = 1; k <= 5; k++) ev('pointermove', fx + (ddx * k) / 5, fy + (ddy * k) / 5);
     const busyAtSwipe = stage.dataset.lvMotionBusy ?? null;
     const t0 = performance.now();
-    ev('pointerup', fx + ddx, fy);
+    ev('pointerup', fx + ddx, fy + ddy);
     while (performance.now() - t0 < windowMs) {
       if (Number(stage.dataset.lvGestureSeq ?? 0) > seqBefore) {
         return { accepted: true, startAt: performance.now(), busyAtSwipe, value: stage.dataset.lvGesture ?? null };
@@ -105,7 +106,7 @@ try {
       await new Promise((r) => setTimeout(r, 5));
     }
     return { accepted: false, startAt: null, busyAtSwipe, value: null };
-  }, [sx, sy, dx, ACCEPT_WINDOW_MS]);
+  }, [sx, sy, dx, dy, ACCEPT_WINDOW_MS]);
 
   const results = [];
   for (const t of SWEEP) {
@@ -113,12 +114,14 @@ try {
     for (let k = 0; k < TRIALS; k++) {
       // 1) 起始空闲  2) 武装一发（必须被接受，否则本次作废）  3) 精确等待 t 后打第二发
       if (!(await waitIdle())) { console.log(`t=${t} 第 ${k + 1} 次：起始非空闲，跳过`); continue; }
-      const arm = await fire(k % 2 === 0 ? 160 : -160);
+      const armDx = ARM === 'down' ? 0 : ARM === 'right' ? 160 : ARM === 'left' ? -160 : (k % 2 === 0 ? 160 : -160);
+      const armDy = ARM === 'down' ? 160 : 0;
+      const arm = await fire2(armDx, armDy);
       if (!arm.accepted) { console.log(`t=${t} 第 ${k + 1} 次：武装滑动被拒（起始态异常），跳过`); continue; }
       const target = arm.startAt + t;
       const waitMs = target - (await page.evaluate(() => performance.now()));
       if (waitMs > 0) await page.waitForTimeout(waitMs);
-      const second = await fire(k % 2 === 0 ? -160 : 160);
+      const second = await fire2(k % 2 === 0 ? -160 : 160, 0);
       row[second.accepted ? 'accept' : 'refuse'] += 1;
       if (!second.accepted) row[second.busyAtSwipe === '1' ? 'refuseBusy1' : 'refuseBusy0'] += 1;
       row.samples.push(`${second.accepted ? 'A' : 'R'}${second.busyAtSwipe === '1' ? '(busy1)' : '(busy0)'}`);
