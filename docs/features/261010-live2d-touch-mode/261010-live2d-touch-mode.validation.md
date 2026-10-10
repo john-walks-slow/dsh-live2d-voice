@@ -340,6 +340,26 @@ RAW 连划 #6     gap=2010ms  busy=0  ACCEPT
 izumi 的手势片长（`Meta.Duration`，秒）：`FlickLeft` **1.90**、`FlickRight` **2.57 / 2.63**、`Shake` **4.13**；
 所以先前测到的"≈1.6–1.8s"其实是"FlickLeft 1.9s ± headless 帧量化（±0.5s）"，**死区应表述为"≈上一个手势动作的片长（izumi 1.9–4.1s，随模型而异）"**。
 
+**补测：把边界跨过去才叫观测到"门开了"**（Shake 片长 4.13s，之前只测到 3.0s，全在窗口内）：
+
+```
+武装 = 下划（Shake 4.13s）：t=4500ms ACCEPT ×2、5000ms ACCEPT ×2、6000ms ACCEPT ×2（busy 全为 0）
+武装 = 左划（FlickLeft 1.90s）：t=2200ms ACCEPT ×2（> 片长）   ← 已跨过边界
+```
+
+⇒ 两条臂都**观测到了释放**，且释放点贴合各自片长（1.9s / 4.13s）→ **死区 = 上一个动作的播放期**在两条臂上都是实测。
+
+**排除 confound（同一实验的对照项）**：
+- **优先级**：所有手势都走同一个 `handleSwipe`、同一个 `priorityValue("normal")`（`src/client/model.ts:683`）；
+  剧本动作才用 `force`（`:936`）→ Flick 与 Shake **不是**不同代码路径，也不是 FORCE。
+- **Loop 标志**：izumi 的 `FlickLeft`/`FlickRight`/`Shake`/`Tap` 的 `Meta.Loop` **全部为 `True`**（相同），
+  但实测两者都在 `Meta.Duration` 处释放 → Loop 不构成差异，gate 是**播放时长**。
+
+**gate 的位置（实现前必须钉死）**：拒绝发生在**库内部**的 `MotionManager.startMotion` → `MotionState.reserve/start`
+（`dist/cubism4.js`），不是我们的代码。但库**公开**了 `stopAllMotions()`：它清空队列**并调用 `this.state.reset()`**
+（`dist/cubism4.js:9203`，`MotionState.reset` 在 `:8366`）→ 之后 `startMotion` 会被接受。
+**结论：抢占在公开 API 可达**（`stopAllMotions()` + 起播新动作；新动作自带 fade-in，避免硬切）。
+
 **修法含义**：既然 gate 是"上一个动作在播"，最小改动是让**手势能抢占上一次手势触发的动作**（不改动模型自带/剧本动作的语义），
 即"动作缘起分支抢占"；"把动作改短"要靠产品侧提前停止/淡出该动作，本质上与抢占是同一条路。
 
