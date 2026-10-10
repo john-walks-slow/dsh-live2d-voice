@@ -96,6 +96,18 @@ try {
       ? '→ 静息态**恒为 "1"**：常驻动画把标志钉住了，12b 的空闲分支采不到样本 ✗（需改用队列长度/动作类别判定）'
       : `→ 静息态**在 0/1 之间翻转**（${uniq.join('/')}）：需要按"滑动瞬间"取值归因（下面第 3 步）`);
 
+  // 就绪门：字段连续可读 READY_K 次才算"挂载稳定"，之后的样本才计入统计。
+  // （实测：刚加载完的一小段窗口里该字段整体缺失，属未就绪，不是"忙"。）
+  const READY_K = Number(process.env.READY_K ?? 5);
+  let stable = 0;
+  const readyDeadline = Date.now() + 30000;
+  while (Date.now() < readyDeadline && stable < READY_K) {
+    stable = (await busyNow()) === null ? 0 : stable + 1;
+    await page.waitForTimeout(SAMPLE_MS);
+  }
+  if (stable < READY_K) { console.log('× 30s 内字段始终不稳定可读，放弃（模型可能没挂上）'); process.exit(1); }
+  console.log(`就绪门：字段连续可读 ${READY_K} 次（${READY_K * SAMPLE_MS}ms）→ 开始计数\n`);
+
   const box = await page.evaluate(() => {
     const c = document.querySelector('.lv-stage canvas').getBoundingClientRect();
     return { x: c.x, y: c.y, w: c.width, h: c.height };
@@ -126,6 +138,8 @@ try {
     return { accepted: false, busyAtSwipe, value: null, delta: null };
   }, [sx, sy, dx, ACCEPT_WINDOW_MS]);
 
+  const t0 = Date.now();
+  let lastAt = null;
   const run = async (label, rounds, waitIdleBetween) => {
     const rows = [];
     for (let i = 0; i < rounds; i++) {
@@ -133,9 +147,13 @@ try {
         const d = Date.now() + 4000;
         while (Date.now() < d && (await busyNow()) !== '0') await page.waitForTimeout(60);
       }
+      const at = Date.now() - t0;
+      const gap = lastAt === null ? null : at - lastAt;
+      lastAt = at;
       const r = await swipe(i % 2 === 0 ? 160 : -160);
-      rows.push(r);
-      console.log(`${label} 第 ${i + 1} 次：busy(瞬间)=${String(r.busyAtSwipe)} ${r.accepted ? `接受（${Math.round(r.delta)}ms, ${r.value}）` : '拒绝'}`);
+      rows.push({ at, gap, ...r });
+      await page.waitForTimeout(250);
+      console.log(`RAW ${label} #${i + 1} t=${at}ms gap=${gap === null ? '-' : `${gap}ms`} busy=${String(r.busyAtSwipe)} ${r.accepted ? `ACCEPT ${r.value} ${Math.round(r.delta)}ms` : 'REFUSE'}`);
     }
     const accepted = rows.filter((r) => r.accepted).length;
     const refusedBusy = rows.filter((r) => !r.accepted && r.busyAtSwipe === '1').length;
