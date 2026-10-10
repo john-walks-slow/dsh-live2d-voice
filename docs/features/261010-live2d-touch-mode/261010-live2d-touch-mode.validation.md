@@ -370,6 +370,20 @@ izumi 的手势片长（`Meta.Duration`，秒）：`FlickLeft` **1.90**、`Flick
 （返回值即 `model.motion(...)` 的 `Promise<boolean>`；`lvGestureSeq` 只在它 true 时写入。因此本报告里的
 "ACCEPT/REFUSE" 与"返回值 true/false"是同一件事，而"排队"这一替代解释被 3 秒观察窗排除。）
 
+**抢占方案的四个前置钉子（源码冷读 + 实测，报告：`docs/issues/261010-motion-preempt/261010-motion-preempt.troubleshoot.md`）**：
+
+| 钉子 | 结论 | 证据 |
+| --- | --- | --- |
+| ① "拒绝"是丢弃还是排队 | **丢弃**（同优先级直接 `false`），返回值 true = 真的起播 | 库 `MotionState.reserve`：`s <= currentPriority` 即 `false`（`dist/cubism4.js:8259-8267`）；实测 3s 观察窗内**零迟到出现**（`gesture-queue-check.mjs`） |
+| ② `stopAllMotions()` 副作用面 | **只清 motion queue / state / audio**；**不动** expression / eyeBlink / breath / physics / pose | `dist/cubism4.js:9203-9207`；`MotionState.reset()` 仅清 current/reserved 字段 |
+| ③ 抢占后 idle 是否自恢复 | **会**：`update()` 在队列 finished 后 `complete()` + `shouldRequestIdleMotion()` → 重新请求 `groups.idle`；`state.reset()` 不清 `groups.idle` | `dist/cubism4.js:9214-9227`（注意：库侧没有 `idleInterval` 字段，那是我们自己的配置） |
+| ④ 能否做到"极短淡出/平滑抢占" | **公开 stop+start 路径做不到淡出**（旧 entry 被直接丢弃）；但**新动作自带 fade-in**（默认 `motionFadingDuration = 500ms`，动作自身 `FadeInTime` 优先） | `config.motionFadingDuration: 500`；`createMotion` 设 `setFadeInTime`；`_startMotion` 先 `queueManager.stopAllMotions()` |
+| ⑤ `Meta.Loop=true` 时 `onFinish` 是否触发 | **不触发**（循环动作重置 startTime，不 set finished） | `CubismMotion` `:3680-3692`；且库的公开 `startMotion` 解构了 `onFinish` 却没传给 `_startMotion`（`:9142`） |
+
+**对实现设计的两条硬约束**：
+1. **状态标记绝不能靠 `onFinish` 清除**（⑤：循环动作永不触发，且公开路径根本没注册回调）→ 改为"**所有起播路径（手势 / 剧本 / 待机）走同一个入口写标记，后起的覆盖先前的**"，陈旧标记在结构上不可能存在；
+2. **不能把"极短淡出"写成兜底**（④：做不到）→ 抢占的过渡只能是"新动作自带的 fade-in（~500ms）"；若真机逐帧看出现 snap，需要回来改需求（例如只允许同类/同向手势被抢占），而不是硬加淡出。
+
 **修法含义**：既然 gate 是"上一个动作在播"，最小改动是让**手势能抢占上一次手势触发的动作**（不改动模型自带/剧本动作的语义），
 即"动作缘起分支抢占"；"把动作改短"要靠产品侧提前停止/淡出该动作，本质上与抢占是同一条路。
 
