@@ -21,7 +21,7 @@ import { Live2DModel as Live2DModelCubism4 } from "pixi-live2d-display-lipsyncpa
 import { Live2DModel as Live2DModelCubism2 } from "pixi-live2d-display-lipsyncpatch/cubism2";
 import { logger } from "./logger.js";
 import { resolveParamIds } from "./param-ids.js";
-import { isSwipe, resolveGestureGroup, swipeDirection } from "./gesture-math.js";
+import { SWIPE_MIN_DISTANCE_PX, isSwipe, resolveGestureGroup, swipeDirection } from "./gesture-math.js";
 import {
 	mixLookChannel,
 	type LookVector,
@@ -43,8 +43,6 @@ export interface Live2DHandle {
 	 * only, "force" interrupts anything.
 	 */
 	playMotion(motion: { name: string; group: string; index: number }, priority?: "idle" | "normal" | "force"): Promise<boolean>;
-	/** Play a random motion from the named group (used by the idle scheduler). */
-	playRandomMotion(group: string, priority?: "idle" | "normal" | "force"): Promise<boolean>;
 	/** Read the motion catalog baked into the loaded model. */
 	getMotions(): { name: string; group: string; index: number }[];
 	/**
@@ -183,6 +181,10 @@ export interface MountModelOptions {
 	tag?: string;
 	/** Touch-mode gaze feed (finger / hover position). */
 	touchLook?: TouchLookChannel;
+	/** Called when a swipe was refused because a *scripted* motion is playing
+	 * (the one refusal the user cannot attribute); the HUD flashes its
+	 * touch-mode button. Gesture-originated motions are preempted instead. */
+	onGestureRefused?: () => void;
 }
 
 export async function mountModel({
@@ -194,6 +196,7 @@ export async function mountModel({
 	shared,
 	tag,
 	touchLook,
+	onGestureRefused,
 }: MountModelOptions): Promise<Live2DHandle> {
 	// Owner mode creates (and later destroys) its own application; shared
 	// mode reuses one — the model is just added to that stage and its
@@ -587,12 +590,91 @@ export async function mountModel({
 	const TAP_MAX_MS = 500;
 	let press: { x: number; y: number; lastX: number; lastY: number; at: number; onModel: boolean; moved: boolean } | null = null;
 	let touchMode = false;
-	/** Swipe motions must not be spammed: a short cooldown keeps the queue sane. */
+	/** Which subsystem started a motion: the idle scheduler, a scripted (LLM or
+	 * HUD-picked) motion, or the user's own tap/flick. */
+	type MotionSource = "idle" | "script" | "gesture";
+	// Who started the motion that is playing right now. Written by every start
+	// path through startMotion(); never cleared on finish (a looping motion
+	// never fires onFinish, and the library does not even register that
+	// callback on the public path). Nothing is refused while the lane is free,
+	// so a stale value cannot keep refusing input.
+	let playingSource: MotionSource | null = null;
+	const counters = {
+		preemptGesture: 0,
+		rejectScript: 0,
+		rejectCooldown: 0,
+		rejectInvalidGesture: 0,
+	};
+	/** Swipe motions must not be spammed: a short cooldown keeps the queue sane.
+	 * It only debounces repeated input and never takes part in preemption. */
 	let gestureCooldownUntil = 0;
 	// Acceptance counter for the e2e attribution: observations only, the product
 	// never reads it (same as lvGesture/lvTouchLook — DOM diagnostics contract).
 	let gestureSeq = 0;
 	const GESTURE_COOLDOWN_MS = 400;
+
+	/** Publish the refusal/preemption counters (diagnostics contract). */
+	const publishCounters = () => {
+		container.dataset.lvPreemptGesture = String(counters.preemptGesture);
+		container.dataset.lvRejectScript = String(counters.rejectScript);
+		container.dataset.lvRejectCooldown = String(counters.rejectCooldown);
+		container.dataset.lvRejectInvalidGesture = String(counters.rejectInvalidGesture);
+	};
+	publishCounters(); // the keys exist from mount, so e2e can read a stable zero state
+
+	/**
+	 * Every motion start goes through here, so `playingSource` always names the
+	 * motion that is playing now. It is recorded on *success* only: the library
+	 * refuses an IDLE (and any equal-or-lower priority) request while a higher
+	 * one plays, and letting a refused request overwrite the owner would send
+	 * the next gesture down the "nothing to preempt" path — i.e. straight back
+	 * into the silent drop this module is fixing.
+	 */
+	const startMotion = async (group: string, index: number, priority: number, source: MotionSource): Promise<boolean> => {
+		const started = await (model as unknown as { motion(group: string, index?: number, priority?: number): Promise<boolean> })
+			.motion(group, index, priority);
+		if (started) playingSource = source;
+		return started;
+	};
+
+	/**
+	 * Start a gesture-originated motion (tap or flick). When the library refuses
+	 * it because a NORMAL/FORCE motion is already playing, the source of that
+	 * motion decides what happens:
+	 *   - our own gesture → preempt it. The clip keeps the priority lane for its
+	 *     whole duration (1.9–4.1s on the shipped rig), so without this every
+	 *     gesture is swallowed until it ends;
+	 *   - a scripted/LLM motion → leave it playing and make the refusal visible
+	 *     in the HUD (the only refusal the user cannot otherwise attribute);
+	 *   - anything else (never observed) → give up quietly.
+	 * `onResult` reports whether the gesture motion actually started.
+	 */
+	const startGesture = (group: string, index: number, onResult: (started: boolean) => void) => {
+		const attempt = () => startMotion(group, index, priorityValue("normal"), "gesture");
+		void attempt()
+			.then((started) => {
+				if (started) return onResult(true);
+				if (playingSource === "gesture") {
+					// Stop the motions only (the model keeps its expression, eye
+					// blink and physics); the retry starts with the usual fade-in,
+					// so the pose blends from the interrupted clip rather than
+					// snapping. `stopSpeaking` inside is a no-op here — this plugin
+					// drives the mouth through parameters, not the library's
+					// speak()/lipsync path.
+					(internal.motionManager as unknown as { stopAllMotions?: () => void }).stopAllMotions?.();
+					counters.preemptGesture += 1;
+					publishCounters();
+					return void attempt().then(onResult).catch(() => onResult(false));
+				}
+				if (playingSource === "script") {
+					counters.rejectScript += 1;
+					publishCounters();
+					onGestureRefused?.();
+				}
+				onResult(false);
+			})
+			.catch(() => onResult(false));
+	};
 
 	/**
 	 * Touch-mode gaze: normalize the pointer into the ±1 look space relative to
@@ -627,7 +709,8 @@ export async function mountModel({
 	/**
 	 * Handle a tap at stage coordinates. Writes `dataset.lvTap` (`area:group`)
 	 * only when a motion is actually started, so e2e can tell "responded" from
-	 * "no response" (blank space, no Tap group, or a motion already playing).
+	 * "no response" (blank space, no Tap group, or a scripted motion holding
+	 * the priority lane).
 	 */
 	const handleTap = (clientX: number, clientY: number): void => {
 		const rect = stage.getBoundingClientRect();
@@ -650,28 +733,43 @@ export async function mountModel({
 		const list = internal.motionManager.definitions?.[group] ?? [];
 		if (list.length === 0) return;
 		const index = Math.floor(Math.random() * list.length);
-		void (model as unknown as { motion(group: string, index?: number, priority?: number): Promise<boolean> })
-			.motion(group, index, priorityValue("normal"))
-			.then((started) => {
-				if (!started) return;
-				const value = `${area ?? "body"}:${group}`;
-				if (tag) container.dataset[`lv${tag}Tap`] = value;
-				container.dataset.lvTap = value;
-			})
-			.catch(() => {});
+		startGesture(group, index, (started) => {
+			if (!started) return;
+			const value = `${area ?? "body"}:${group}`;
+			if (tag) container.dataset[`lv${tag}Tap`] = value;
+			container.dataset.lvTap = value;
+		});
 	};
 
 	/**
 	 * Swipe → the model's own gesture motion (`Flick<Direction>` → `Flick` →
 	 * `Shake`). Only touch/pen swipes that started on the avatar count (a
 	 * swipe over empty space is just a gaze gesture), only in touch mode, and
-	 * never during the cooldown. Silent no-op when the rig ships no gesture
-	 * groups or another motion is still playing.
+	 * never during the cooldown. No-op when the rig ships no gesture groups;
+	 * when a motion holds the priority lane, `startGesture` decides between
+	 * preempting our own gesture and leaving a scripted motion alone.
 	 */
 	const handleSwipe = (dx: number, dy: number, durationMs: number) => {
 		if (!touchMode) return;
-		if (Date.now() < gestureCooldownUntil) return;
-		if (!isSwipe({ dx, dy, durationMs })) return;
+		const distance = Math.hypot(dx, dy);
+		if (Date.now() < gestureCooldownUntil) {
+			// Cooldown is its own layer: it only debounces repeated input and
+			// never takes part in the preemption decision.
+			if (distance >= SWIPE_MIN_DISTANCE_PX) {
+				counters.rejectCooldown += 1;
+				publishCounters();
+			}
+			return;
+		}
+		if (!isSwipe({ dx, dy, durationMs })) {
+			// Only count gestures that *tried* to be a flick (long enough, wrong
+			// timing); a plain drag is not a rejected gesture.
+			if (distance >= SWIPE_MIN_DISTANCE_PX) {
+				counters.rejectInvalidGesture += 1;
+				publishCounters();
+			}
+			return;
+		}
 		const groups = Object.keys(internal.motionManager.definitions ?? {});
 		const direction = swipeDirection(dx, dy);
 		const group = resolveGestureGroup(groups, direction);
@@ -680,24 +778,23 @@ export async function mountModel({
 		if (list.length === 0) return;
 		const index = Math.floor(Math.random() * list.length);
 		gestureCooldownUntil = Date.now() + GESTURE_COOLDOWN_MS;
-		void (model as unknown as { motion(group: string, index?: number, priority?: number): Promise<boolean> })
-			.motion(group, index, priorityValue("normal"))
-			.then((started) => {
-				if (!started) {
-					// A NORMAL/FORCE motion was playing: stay silent (README says
-					// so) and let the user swipe again after it ends.
-					gestureCooldownUntil = Date.now();
-					return;
-				}
-				const value = `${direction}:${group}`;
-				if (tag) container.dataset[`lv${tag}Gesture`] = value;
-				container.dataset.lvGesture = value;
-				// Monotonic acceptance counter: a swipe that was refused does not
-				// advance it, so a test can attribute a gesture to *its own*
-				// input instead of trusting a stale value.
-				container.dataset.lvGestureSeq = String(++gestureSeq);
-			})
-			.catch(() => {});
+
+		startGesture(group, index, (started) => {
+			if (!started) {
+				// Still refused after the tri-state decision (a FORCE motion won):
+				// keep the pre-existing behaviour of releasing the cooldown so the
+				// user can try again right away.
+				gestureCooldownUntil = Date.now();
+				return;
+			}
+			const value = `${direction}:${group}`;
+			if (tag) container.dataset[`lv${tag}Gesture`] = value;
+			container.dataset.lvGesture = value;
+			// Monotonic acceptance counter: a swipe that was refused does not
+			// advance it, so a test can attribute a gesture to *its own* input
+			// instead of trusting a stale value.
+			container.dataset.lvGestureSeq = String(++gestureSeq);
+		});
 	};
 
 	const onPointerDown = (event: PointerEvent) => {
@@ -931,23 +1028,14 @@ export async function mountModel({
 		},
 		async playMotion(motion, priority) {
 			try {
-				return await (model as unknown as {
-					motion(group: string, index?: number, priority?: number): Promise<boolean>;
-				}).motion(motion.group, motion.index, priorityValue(priority ?? "force"));
+				// Scripted (LLM motion tag) and HUD-picked motions are FORCE;
+				// the idle scheduler passes "idle". Both are recorded as the
+				// source of whatever is playing so a later swipe can tell whose
+				// motion it is about to interrupt.
+				const resolved = priority ?? "force";
+				return await startMotion(motion.group, motion.index, priorityValue(resolved), resolved === "idle" ? "idle" : "script");
 			} catch (error) {
 				logger.warn(`motion ${motion.name} failed`, error);
-				return false;
-			}
-		},
-		async playRandomMotion(group, priority) {
-			try {
-				const fn = (model as unknown as {
-					startRandomMotion: (g: string, p?: number) => Promise<boolean>;
-				}).startRandomMotion;
-				if (typeof fn !== "function") return false;
-				return await fn(group, priorityValue(priority));
-			} catch (error) {
-				logger.warn(`random motion ${group} failed`, error);
 				return false;
 			}
 		},
@@ -1022,6 +1110,10 @@ export async function mountModel({
 			if (tag) delete container.dataset[`lv${tag}Gesture`];
 			delete container.dataset.lvGestureSeq;
 			delete container.dataset.lvMotionBusy;
+			delete container.dataset.lvPreemptGesture;
+			delete container.dataset.lvRejectScript;
+			delete container.dataset.lvRejectCooldown;
+			delete container.dataset.lvRejectInvalidGesture;
 			// The shared tap key is last-writer-wins in dual mode (see AGENTS.md);
 			// drop it with the model so a stale value cannot outlive its mount.
 			delete container.dataset.lvTap;

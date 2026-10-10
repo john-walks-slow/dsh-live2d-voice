@@ -58,3 +58,19 @@ Motion queue 本身不是这个拒绝请求的排队机制；Cubism queue 的 `s
 1. 以上结论针对仓库实际解析到的 `node_modules/pixi-live2d-display-lipsyncpatch/dist/cubism4.js` 与对应 `types/index.d.ts`；未对浏览器运行时可能替换的其他 bundle 做结论。
 2. `MotionState` 是打包产物中的公开导出，但没有额外源码映射；字段行为以产物实现为准。
 3. 停止后 idle 是否最终播放还取决于 idle 定义、加载状态和下一帧 update；源码能确定会发起请求，不能保证每次请求成功。
+
+## 结论落地（2026-10-10，feat/gesture-preempt）
+
+修复实现与验收证据写在 `docs/features/261010-live2d-touch-mode/261010-live2d-touch-mode.validation.md` **§十五**；
+按结论逐条对应：
+
+- 结论 1/2（死区 = 上一个动作的播放期；同优先级拒绝且不排队）→ 用**来源标记**区分"谁占着通道"，
+  只有**动作缘起**（tap/flick）的动作被抢占，剧本（FORCE）与 idle 不碰；
+- 结论 3（idle 自恢复）→ 抢占只调 `stopAllMotions()`（含 `state.reset()`），不碰 idle group 配置，
+  下一帧 `update()` 仍会自行请求 idle；
+- 结论 4（公开 stop+start 无淡出）→ 抢占后靠新动作自带的 fade-in，实测跨越窗口的帧间增量
+  **2.943° ≤ 该动作自身帧间峰值 11.853°**（负对照注入 30° 判红），即从旧动作末帧姿态淡入，无 snap；
+- 结论 5（循环动作不触发 onFinish）→ 标记**不用 onFinish 清理**：它只在"通道被占"时才被查询，
+  动作播完后 `currentPriority` 归零，走的是"空闲正常起播"那条路。
+
+用户实机确认项见 `docs/issues/261010-motion-preempt/261010-motion-preempt.validation.md`。

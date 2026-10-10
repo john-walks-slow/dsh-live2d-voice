@@ -330,6 +330,15 @@ body[data-live2d-active="true"] [class*="taskBoard"] {
 	z-index: 9;
 }
 
+/* 手势被拒（剧本动作在播）：按钮闪一下，只闪不弹字。 */
+@keyframes lv-refused-flash {
+	0%, 100% { transform: scale(1); box-shadow: 0 0 0 0 rgba(255, 138, 128, 0); }
+	40% { transform: scale(1.08); box-shadow: 0 0 0 6px rgba(255, 138, 128, 0.35); }
+}
+.lv-hud .lv-btn.lv-refused {
+	animation: lv-refused-flash 200ms ease-out;
+}
+
 /* 底部胶囊：承接原 .lv-hud 的全部盒子与外观（逐像素等价是回归契约）。 */
 .lv-capsule {
 	position: absolute;

@@ -45,6 +45,9 @@ export interface HudProps {
 	/** Touch mode: the avatar follows the finger (mouse hover counts) and tap/swipe gestures drive the model's own motions. */
 	touchMode: boolean;
 	onToggleTouchMode: () => void;
+	/** True for ~200ms after a swipe was refused because a scripted motion is
+	 * playing — the only refusal the user cannot otherwise attribute. */
+	touchRefusedFlash?: boolean;
 	micState: MicState;
 	/** True only when the mic is on AND the live RMS level is above the
 	    "user is actually speaking" threshold. Drives the mic button's halo
@@ -319,7 +322,7 @@ export function Hud(props: HudProps) {
 			{/* 5. 触摸模式：视线跟手指 + 模型手势动作 */}
 			<button
 				type="button"
-				className={`lv-btn${props.touchMode ? " lv-on" : ""}`}
+				className={`lv-btn${props.touchMode ? " lv-on" : ""}${props.touchRefusedFlash ? " lv-refused" : ""}`}
 				title={props.touchMode ? "关闭触摸模式" : "触摸模式：视线跟随手指，可触发模型手势"}
 				onClick={props.onToggleTouchMode}
 			>

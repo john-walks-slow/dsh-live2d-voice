@@ -164,6 +164,15 @@ export function Live2DView(props: ViewProps) {
 	const [languages, setLanguages] = useState<LanguageOption[]>([]);
 	const [idleInterval, setIdleInterval] = useState(20);
 	const [touchMode, setTouchMode] = useState(false);
+	// HUD finger button flashes for ~200ms when a swipe was refused because a
+	// scripted motion is playing (the one refusal with no other feedback).
+	const [touchRefusedFlash, setTouchRefusedFlash] = useState(false);
+	const touchRefusedTimer = useRef<number | null>(null);
+	const flashTouchRefused = useCallback(() => {
+		setTouchRefusedFlash(true);
+		if (touchRefusedTimer.current !== null) window.clearTimeout(touchRefusedTimer.current);
+		touchRefusedTimer.current = window.setTimeout(() => setTouchRefusedFlash(false), 200);
+	}, []);
 	const touchModeRef = useRef(false);
 	/** Live finger/hover vector while the pointer is down (touch) or hovering (mouse). */
 	const touchLookRef = useRef<{ dx: number; dy: number } | null>(null);
@@ -553,6 +562,7 @@ const TOUCH_LOOK_DECAY_MS = 450;
 			shared: sharedStageRef.current ?? undefined,
 			tag: "Ai",
 			touchLook: touchLookChannelRef.current,
+			onGestureRefused: flashTouchRefused,
 		});
 
 		mountPromise
@@ -657,6 +667,7 @@ const TOUCH_LOOK_DECAY_MS = 450;
 			shared: stage,
 			tag: "Player",
 			touchLook: touchLookChannelRef.current,
+			onGestureRefused: flashTouchRefused,
 		});
 		mountPromise
 			.then((mounted) => {
@@ -1917,6 +1928,7 @@ const TOUCH_LOOK_DECAY_MS = 450;
 				currentPlayerVoiceId={playerVoiceId}
 				onPickPlayerVoice={(preset) => void pickPlayerVoice(preset)}
 				touchMode={touchMode}
+				touchRefusedFlash={touchRefusedFlash}
 				onToggleTouchMode={() => void toggleTouchMode()}
 				modelCatalog={modelCatalog}
 				currentModelSelection={currentModelSelection}
