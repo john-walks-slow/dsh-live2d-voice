@@ -428,3 +428,38 @@ izumi 的手势片长（`Meta.Duration`，秒）：`FlickLeft` **1.90**、`Flick
 
 - 第 12 项若出现"等动作播完再划仍无响应"，请记录发生时的模型与手势方向，回来对照 `lvGestureSeq` / `lvMotionBusy` 诊断（`docs/issues/261010-motion-priority-signal/`）。
 - 第 13 项若拿不到桌面环境，保持「延后」。
+
+## 十四、抢占方案（待实现）的验收口径与已钉前置
+
+### 三态状态机（真实运行态回答"在不在播"，来源标记回答"谁起的"）
+
+| 运行态：`max(state.currentPriority, state.reservePriority)` | 来源标记（单一入口写，后起覆盖先起） | 滑动到达时的动作 |
+| --- | --- | --- |
+| `< 2`（空闲，**含只有 IDLE 在播**） | 不参与判定 | **正常起播**（框架本就接受，无需抢占） |
+| `>= 2` 且标记 = `gesture` | `gesture` | **抢占**：`stopAllMotions()` → 起播本次手势（`preemptGesture++`） |
+| `>= 2` 且标记 = `script` | `script` | **拒绝**（保持）+ HUD 手指按钮闪 ≤200ms（`rejectScript++`） |
+
+标记**只在 `busy === true` 时被查询**，因此"剧本/idle 播完后标记仍旧"不会造成永久拒绝（那时走空闲行）；
+`onFinish` 不可用于清标记（循环动作不触发，且公开 `startMotion` 根本没把 `onFinish` 传给 `_startMotion`，`:9142`）。
+
+**规则引用（不靠口述）**：IDLE=1 / NORMAL=2 / FORCE=3；`MotionState.reserve` 中
+`s < 3` 时 `if (s <= this.currentPriority) return false`（**`dist/cubism4.js:8259-8267`**）——
+即 IDLE 被 NORMAL 抢占是框架语义，NORMAL 撞 NORMAL 才被拒。
+
+**idle 行的直接观测（补"到达时没被拒"之外的证据）**：`gesture-start-evidence.mjs`，待机动画在播（`idleInterval=8`）、每次从 `busy=0` 起手：
+
+```
+6/6 次：返回值(seq 前进) = Y（60–125ms）**且** 300ms 内 lvMotionBusy → "1"（57–80ms）
+```
+
+⇒ 空闲行不只是"没被拒"，**动作确实进入了播放态**。
+
+### 采样能力（决定"不跳变"断言的下限）
+
+- 默认 headless ≈2 fps；加 `--disable-frame-rate-limit --disable-gpu-vsync --disable-background-timer-throttling --disable-renderer-backgrounding` 后实测 **≈7.4 fps**（仍远低于 60fps）。
+- 因此：**本方法对 ≥10° 量级的姿态跳变有把握；5° 级会被噪声吃掉**。下限必须**按参数组分别写**
+  （`EYE_BALL_X`/`MOUTH_OPEN_Y` 是归一化值，不能用"度"表述）。
+- 验收① 断言（打在**真实现**上，不用手搓 `stopAll+start`）：
+  1. 覆盖跨越后**连续 5 帧** + 全部关键参数组（`ANGLE_X/Y/Z`、`BODY_ANGLE_X`、`EYE_BALL_X/Y`、`MOUTH_OPEN_Y`、`BREATH`）；
+  2. 阈值：跨帧增量 ≤ **基准 p95 × 1.5**（基准＝同一动作播放期间的同参数帧间增量分布）；
+  3. **负对照必须能变红**：注入 ≥25–30° 的人为跳变（明显高于可探测下限），同一条断言必须失败——否则该断言无效。
