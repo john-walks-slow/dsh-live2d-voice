@@ -442,6 +442,12 @@ izumi 的手势片长（`Meta.Duration`，秒）：`FlickLeft` **1.90**、`Flick
 标记**只在 `busy === true` 时被查询**，因此"剧本/idle 播完后标记仍旧"不会造成永久拒绝（那时走空闲行）；
 `onFinish` 不可用于清标记（循环动作不触发，且公开 `startMotion` 根本没把 `onFinish` 传给 `_startMotion`，`:9142`）。
 
+**剧本动作的真实优先级（file:line，替代"FORCE 代餐"的断言）**：`view.tsx:965` 的 `onMotion`（LLM motion tag 的落点）调用
+`target.playMotion(def)` → `model.ts:936` 用 `priorityValue(priority ?? "force")` → `model.ts:916-924` 映射 `force → 3`。
+即**剧本路径传的就是 FORCE(3)**；因此"注入一次 FORCE 动作"与真实剧本路径在**优先级语境**上等价
+（且都是同一次 `model.motion(group, index, 3)` 调用，差别只有我们 wrapper 的 try/catch 与日志）。
+HUD 手动选动作（`view.tsx:1909`）同样不传优先级 → 也是 FORCE；待机调度（`view.tsx:785`）显式传 `"idle"`(1)。
+
 **规则引用（不靠口述）**：IDLE=1 / NORMAL=2 / FORCE=3；`MotionState.reserve` 中
 `s < 3` 时 `if (s <= this.currentPriority) return false`（**`dist/cubism4.js:8259-8267`**）——
 即 IDLE 被 NORMAL 抢占是框架语义，NORMAL 撞 NORMAL 才被拒。
@@ -454,9 +460,27 @@ izumi 的手势片长（`Meta.Duration`，秒）：`FlickLeft` **1.90**、`Flick
 
 ⇒ 空闲行不只是"没被拒"，**动作确实进入了播放态**。
 
-### 采样能力（决定"不跳变"断言的下限）
+### 采样能力（决定"不跳变"断言的下限与**窗口形状**）
 
-- 默认 headless ≈2 fps；加 `--disable-frame-rate-limit --disable-gpu-vsync --disable-background-timer-throttling --disable-renderer-backgrounding` 后实测 **≈7.4 fps**（仍远低于 60fps）。
+实测三种口径（`frame-cadence.mjs`，5s 窗口，探针计数挂在 `beforeModelUpdate`）：
+
+| 配置 | 钩子/秒 | 姿态变化/秒 | rAF/秒 |
+| --- | --- | --- | --- |
+| 默认（无帧率参数） | **0.4** | 0.0 | 0.4 |
+| 加 `--disable-frame-rate-limit --disable-gpu-vsync --disable-background-timer-throttling --disable-renderer-backgrounding` | **9.9** | **4.8** | 9.9 |
+
+⇒ **"跨越后连续 5 帧"在这个环境里物理上不成立**（250ms 窗口只有 ~1.2 次姿态变化、~2.5 次钩子回调）。
+因此验收① 的窗口**按时间写**，不按帧数写：
+
+- **主判据（确定性信号，红绿看这些）**：
+  1. `preemptGesture` 计数 +1（抢占确实发生）；
+  2. 被抢手势那一组参数在抢占点之后**不再累积位移**（该动作已停）；
+  3. 抢占者动作确实在跑（`lvMotionBusy === "1"`，且 `lvGesture` 为新动作）；
+- **辅助判据（图文佐证，不作唯一依据）**：跨越点前后 **≥250ms** 的姿态增量 ≤ 基准 p95 × 1.5；
+  基准在同一环境中实测（当前配置下姿态通道 ≈4.8 次/秒 → 250ms 窗口只有 ~1.2 个样本，**统计力很低**，这也正是它降为辅助的原因）。
+- 负对照注入 ≥25–30°（明显高于下限），主判据或辅助判据任一未能按预期红/绿即判断言无效。
+
+（早前"≈2 fps"的说法据此更正为：默认配置下 rAF/钩子只有 **0.4/s**，加帧率参数后 **9.9/s**；对"每帧状态"类断言的等待量级也按此修正。）
 - 因此：**本方法对 ≥10° 量级的姿态跳变有把握；5° 级会被噪声吃掉**。下限必须**按参数组分别写**
   （`EYE_BALL_X`/`MOUTH_OPEN_Y` 是归一化值，不能用"度"表述）。
 - 验收① 断言（打在**真实现**上，不用手搓 `stopAll+start`）：
