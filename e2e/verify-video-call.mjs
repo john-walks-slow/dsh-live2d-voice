@@ -24,7 +24,7 @@ const { chromium } = pw;
 
 const CFG = process.env.E2E_CFG ?? `${process.env.DSH_E2E_HOME}/live2d-voice.json`;
 const SESSIONS = process.env.E2E_SESSIONS ?? `${process.env.DSH_E2E_HOME}/sessions`;
-const PLAYER_MODEL = 'deepseek-chan';
+const PLAYER_MODEL = 'haru-alt';
 const PLAYER_VOICE = 'ed3a1c523b524870a85a5a76cb1e0c3d'; // 元气少年音
 const SHOT = (n) => `/tmp/lvvc-${n}.png`;
 const results = [];

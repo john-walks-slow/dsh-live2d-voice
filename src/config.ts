@@ -353,7 +353,6 @@ export function resolveApiKeys(config: PluginConfig): string[] {
 /** 模型显示名映射：目录名 → 中文展示名（未命中的回退为目录名本身）。 */
 export const MODEL_LABELS: Record<string, string> = {
 	chitose: "千岁 · 男性角色",
-	"deepseek-chan": "DeepSeek娘 · 品牌拟人",
 	epsilon: "伊普西隆 · 标准版",
 	"epsilon-lite": "伊普西隆 · 简易版",
 	gantzert: "剑士与飞龙 · Gantzert",
@@ -449,7 +448,6 @@ export interface ModelEntry {
 /** 分类显示名：一级目录名 → 中文名（未命中回退目录名）。 */
 export const GROUP_LABELS: Record<string, string> = {
 	official: "官方示例",
-	brand: "品牌拟人",
 	"game-ripped-food": "游戏拆包 · 食物语",
 	"game-girls-frontline": "游戏拆包 · 少女前线",
 	"game-fantastic-days": "游戏拆包 · 素晴日",

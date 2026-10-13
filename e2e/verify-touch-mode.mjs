@@ -748,13 +748,13 @@ PY`, { encoding: 'utf8' }).trim();
   const t6a = await swipeOnce(chBox.x + chBox.w * 0.5, chBox.y + chBox.h * 0.4, 160, 0, 'Right:Flick');
   check('T6a 只有 Flick 的模型 → 回退 Flick', t6a.ok, `实际=${t6a.value} seq ${t6a.seq0}→${t6a.seq1}（${t6a.attempts} 次尝试）`);
 
-  await load({ touchMode: true, modelSelection: 'luna', modelPath: LIB + '/oc' });
-  const luBox = await page.evaluate(() => {
+  await load({ touchMode: true, modelSelection: 'izumi' });
+  const izBox = await page.evaluate(() => {
     const c = document.querySelector('.lv-stage canvas').getBoundingClientRect();
     return { x: c.x, y: c.y, w: c.width, h: c.height };
   });
-  const t6b = await swipeOnce(luBox.x + luBox.w * 0.5, luBox.y + luBox.h * 0.4, 160, 0, 'Right:Shake');
-  check('T6b 只有 Shake 的模型 → 回退 Shake', t6b.ok, `实际=${t6b.value} seq ${t6b.seq0}→${t6b.seq1}（${t6b.attempts} 次尝试）`);
+  const t6b = await swipeOnce(izBox.x + izBox.w * 0.5, izBox.y + izBox.h * 0.4, 0, 160, 'Down:Shake');
+  check('T6b 缺方向组且无裸 Flick 的模型 → 回退 Shake', t6b.ok, `实际=${t6b.value} seq ${t6b.seq0}→${t6b.seq1}（${t6b.attempts} 次尝试）`);
 
   // T14 重试有硬上限 + 失败报真实状态；izumi 没有 FlickDown → 该期望永不出现。
   // 它在滑动时**会**真的起播 izumi 自带的手势动作（回退到 Shake），所以放在本段最后。

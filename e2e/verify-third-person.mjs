@@ -31,7 +31,7 @@ import { execSync } from 'node:child_process';
 const { chromium } = pw;
 
 const CFG = process.env.E2E_CFG ?? `${process.env.DSH_E2E_HOME}/live2d-voice.json`;
-const PLAYER_MODEL = 'deepseek-chan';
+const PLAYER_MODEL = 'haru-alt';
 const PLAYER_VOICE = 'ed3a1c523b524870a85a5a76cb1e0c3d'; // 元气少年音
 const SHOT = (n) => `/tmp/lvtp-${n}.png`;
 const results = [];
