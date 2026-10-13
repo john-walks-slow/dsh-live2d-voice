@@ -206,10 +206,11 @@ try {
   const asrReady = (() => {
     try {
       const c = JSON.parse(readFileSync(`${process.env.DSH_E2E_HOME}/live2d-voice.json`, 'utf8'));
+      const hasInline = Boolean(c.asrApiKey || (c.asrAppId && c.asrAccessToken));
       const cred = typeof c.asrCredentialsFile === 'string' && c.asrCredentialsFile
         ? c.asrCredentialsFile
         : `${process.env.DSH_E2E_HOME}/.config/volc-asr/credentials.json`;
-      return c.asrMode === 'buffered' && existsSync(cred);
+      return c.asrMode === 'buffered' && (hasInline || existsSync(cred));
     } catch { return false; }
   })();
   if (!asrReady) {

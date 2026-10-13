@@ -52,10 +52,8 @@ pnpm install && sv restart dsh   # 重启 dsh 生效
   // TTS 模型名
   "ttsModel": "s2.1-pro-free",
 
-  // Fish Audio API key：内联数组，或指向 key 文件（每行一个，或 JSON 数组）
-  // 多 key 自动轮询：401/402/429 时切换下一个
+  // Fish Audio API key：内联数组（多个 key 自动轮询：401/402/429 时切换下一个）
   "apiKeys": [],
-  "apiKeyFile": "/root/.config/fish-audio/keys.json",
 
   // 情绪标签 → 模型表情（Haru 的表情索引；值也可以是表情名字符串）
   "emotionMap": {
@@ -63,8 +61,10 @@ pnpm install && sv restart dsh   # 重启 dsh 生效
     "anger": 3, "surprise": 4, "fear": 5, "disgust": 6, "shy": 7
   },
 
-  // 语音输入：火山引擎 ASR 凭证文件（JSON：apikey，或 appid+accessToken）
-  "asrCredentialsFile": "~/.config/volc-asr/credentials.json",
+  // 语音输入：火山引擎 ASR 凭证（可填 apikey，或 appid+accessToken）
+  "asrApiKey": "",
+  "asrAppId": "",
+  "asrAccessToken": "",
 
   // 语音输入识别语言：auto（自动检测中/日/英等）| zh | ja | en
   "sttLanguage": "auto",
@@ -114,9 +114,10 @@ pnpm install && sv restart dsh   # 重启 dsh 生效
 | `modelSelection` | `""` | 多模型目录下当前选中的角色名（空 = 第一个） |
 | `voiceId` | rem | Fish Audio 参考音色 id；界面上通过**音色库**挑选（全库检索 + 试听），也可手填任意 32 位 id |
 | `ttsModel` | `s2.1-pro-free` | Fish Audio TTS 模型 |
-| `apiKeys` | `[]` | 内联 key 列表（优先于 `apiKeyFile`） |
-| `apiKeyFile` | `""` | key 文件路径（每行一个 key 或 JSON 数组） |
-| `asrCredentialsFile` | `~/.config/volc-asr/credentials.json` | 火山 ASR 凭证（JSON 含 `apikey` 或 `appid`+`accessToken`）；未配置时 🎙 点击给出引导提示 |
+| `apiKeys` | `[]` | Fish Audio API Key 列表（支持填入单个或多个 key，401/402/429 时自动轮询） |
+| `asrApiKey` | `""` | 火山 ASR API Key（推荐，新版单 Header 鉴权；与 AppID + Access Token 二选一） |
+| `asrAppId` | `""` | 火山语音服务应用 AppID（配合 `asrAccessToken` 使用） |
+| `asrAccessToken` | `""` | 火山语音服务访问凭据 Access Token（配合 `asrAppId` 使用） |
 | `sttLanguage` | `"auto"` | 语音识别语言；auto 用火山 `enable_auto_lang` 自动检测（仅 `nostream` 模式生效；流式模式自动识别中/英+方言） |
 | `asrMode` | `"stream"` | 语音识别传输：`stream`（默认）实时推流（边说边出字幕、说完 ≈0.6s 定稿；不支持日语/韩语输入）；`nostream` 一次性整句识别（延迟 ≈1.3s；25 语种含日语） |
 | `speechLanguage` | `"ja"` | 角色说话语言，注入"始终用 X 语言交流"指令；`auto` 跟随用户语言（不注入语言指令）。日语指令中的"（用户会看到字幕翻译）"承诺仅在 `subtitleLanguage` 实际生效（非 `off` 且不同于角色语言）时出现 |

@@ -14,9 +14,12 @@ export interface PublicConfig {
 	modelSelection: string;
 	voiceId: string;
 	ttsModel: string;
-	apiKeyFile: string;
+	apiKeys?: string[];
+	apiKey?: string;
+	asrAppId?: string;
+	asrAccessToken?: string;
+	asrApiKey?: string;
 	sttLanguage: string;
-	asrCredentialsFile: string;
 	/** "stream" (live bidirectional, default) | "nostream" (buffered one-shot). */
 	asrMode: string;
 	/** Microphone soft-gain (>1 amplifies before VAD/ASR). */

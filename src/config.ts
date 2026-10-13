@@ -11,6 +11,9 @@
 import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, statSync } from "node:fs";
 import { join, basename } from "node:path";
 import { homedir } from "node:os";
+import { loadVolcCredentials, resolveVolcCredentials, type VolcCredentials } from "./asr.js";
+
+export { resolveVolcCredentials, type VolcCredentials };
 
 /**
  * Curated Fish Audio voices: 25 sound-alikes verified by synthesis.
@@ -66,12 +69,9 @@ export interface PluginConfig {
 	/** Fish Audio model name. */
 	ttsModel: string;
 	/**
-	 * Fish Audio API keys (rotated on 401/402/429). Either inline here or via
-	 * apiKeyFile (one key per line, or a JSON array).
+	 * Fish Audio API keys (rotated on 401/402/429).
 	 */
 	apiKeys: string[];
-	/** Optional file that holds API keys (checked first when apiKeys is empty). */
-	apiKeyFile: string;
 	/**
 	 * Voice-input recognition language: "auto" lets the recognizer detect,
 	 * or an explicit BCP-47-ish hint ("zh", "ja", "en", …). Only honored by
@@ -97,11 +97,12 @@ export interface PluginConfig {
 	 * On by default; some setups prefer the raw mic (own DSP / speaker).
 	 */
 	micNoiseSuppression: boolean;
-	/**
-	 * Volcengine ASR credentials file (JSON: appid/accessToken/apikey) for
-	 * the streaming speech-to-text relay.
-	 */
-	asrCredentialsFile: string;
+	/** Volcengine ASR AppID. */
+	asrAppId: string;
+	/** Volcengine ASR Access Token. */
+	asrAccessToken: string;
+	/** Volcengine ASR API Key (preferred modern single-header auth). */
+	asrApiKey: string;
 	/**
 	 * The character's speaking language ("ja" default; "auto" follows the
 	 * user). Drives the live-mode instruction "always reply in <language>".
@@ -249,12 +250,13 @@ export const DEFAULT_CONFIG: PluginConfig = {
 	voiceId: VOICE_PRESETS[0].voiceId,
 	ttsModel: "s2.1-pro-free",
 	apiKeys: [],
-	apiKeyFile: "",
 	sttLanguage: "auto",
 	asrMode: "stream",
 	micGain: 1.5,
 	micNoiseSuppression: true,
-	asrCredentialsFile: join(homedir(), ".config/volc-asr/credentials.json"),
+	asrAppId: "",
+	asrAccessToken: "",
+	asrApiKey: "",
 	speechLanguage: "ja",
 	subtitleLanguage: "zh",
 	sentenceSubtitles: true,
@@ -277,6 +279,21 @@ export const DEFAULT_CONFIG: PluginConfig = {
 	polishModel: null,
 };
 
+function readKeysFromFile(filePath: string): string[] {
+	try {
+		const expanded = filePath.startsWith("~/") ? `${homedir()}${filePath.slice(1)}` : filePath;
+		if (!existsSync(expanded)) return [];
+		const text = readFileSync(expanded, "utf-8").trim();
+		if (text.startsWith("[")) {
+			const parsed = JSON.parse(text);
+			return Array.isArray(parsed) ? parsed.filter((k) => typeof k === "string" && k) : [];
+		}
+		return text.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+	} catch {
+		return [];
+	}
+}
+
 export function configFilePath(): string {
 	const home = process.env.DSH_HOME ?? join(homedir(), ".dsh");
 	return join(home, "live2d-voice.json");
@@ -285,7 +302,7 @@ export function configFilePath(): string {
 export function loadConfig(): PluginConfig {
 	try {
 		if (!existsSync(configFilePath())) return structuredClone(DEFAULT_CONFIG);
-		const raw = JSON.parse(readFileSync(configFilePath(), "utf-8")) as Partial<PluginConfig>;
+		const raw = JSON.parse(readFileSync(configFilePath(), "utf-8")) as Partial<PluginConfig> & Record<string, unknown>;
 		const config: PluginConfig = {
 			...structuredClone(DEFAULT_CONFIG),
 			...raw,
@@ -296,6 +313,22 @@ export function loadConfig(): PluginConfig {
 			workspaces: raw.workspaces ?? {},
 			apiKeys: Array.isArray(raw.apiKeys) ? raw.apiKeys.filter((k) => typeof k === "string" && k) : [],
 		};
+
+		// One-time legacy credential files migration: if new fields are empty but old file paths exist, read them in.
+		if (config.apiKeys.length === 0 && typeof raw.apiKeyFile === "string" && raw.apiKeyFile) {
+			config.apiKeys = readKeysFromFile(raw.apiKeyFile);
+		}
+		if (!config.asrApiKey && !config.asrAppId && !config.asrAccessToken && typeof raw.asrCredentialsFile === "string" && raw.asrCredentialsFile) {
+			const volc = loadVolcCredentials(raw.asrCredentialsFile);
+			if (volc) {
+				if (volc.apikey) config.asrApiKey = volc.apikey;
+				if (volc.appid) config.asrAppId = volc.appid;
+				if (volc.accessToken) config.asrAccessToken = volc.accessToken;
+			}
+		}
+		delete (config as unknown as Record<string, unknown>).apiKeyFile;
+		delete (config as unknown as Record<string, unknown>).asrCredentialsFile;
+
 		// One-time Phase 1 → 2 migration: Phase 1 files never carried
 		// speechLanguage (no such field) and its saved configs baked the old
 		// sttLanguage default "zh" — which now breaks Japanese recognition.
@@ -327,23 +360,13 @@ export function saveConfig(patch: Partial<PluginConfig>): PluginConfig {
 }
 
 /**
- * Resolve the effective API keys: inline list first, then the key file
- * (JSON array or one key per line).
+ * Resolve the effective API keys: inline list first, then legacy key file fallback.
  */
 export function resolveApiKeys(config: PluginConfig): string[] {
-	if (config.apiKeys.length > 0) return [...config.apiKeys];
-	if (config.apiKeyFile) {
-		try {
-			if (!existsSync(config.apiKeyFile)) return [];
-			const text = readFileSync(config.apiKeyFile, "utf-8").trim();
-			if (text.startsWith("[")) {
-				const parsed = JSON.parse(text);
-				return Array.isArray(parsed) ? parsed.filter((k) => typeof k === "string" && k) : [];
-			}
-			return text.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
-		} catch {
-			return [];
-		}
+	if (Array.isArray(config.apiKeys) && config.apiKeys.length > 0) return [...config.apiKeys];
+	const legacyFile = (config as unknown as Record<string, unknown>).apiKeyFile;
+	if (typeof legacyFile === "string" && legacyFile) {
+		return readKeysFromFile(legacyFile);
 	}
 	return [];
 }

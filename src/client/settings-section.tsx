@@ -264,8 +264,10 @@ export function Live2DSettingsSection() {
 	const [modelPath, setModelPath] = useState("");
 	const [voiceId, setVoiceId] = useState("");
 	const [ttsModel, setTtsModel] = useState("s2.1-pro-free");
-	const [apiKeyFile, setApiKeyFile] = useState("");
-	const [asrFile, setAsrFile] = useState("");
+	const [apiKeysInput, setApiKeysInput] = useState("");
+	const [asrAppId, setAsrAppId] = useState("");
+	const [asrAccessToken, setAsrAccessToken] = useState("");
+	const [asrApiKey, setAsrApiKey] = useState("");
 	const [speechLang, setSpeechLang] = useState("ja");
 	const [subLang, setSubLang] = useState("zh");
 	const [sentenceSubs, setSentenceSubs] = useState(true);
@@ -294,8 +296,10 @@ export function Live2DSettingsSection() {
 				setModelPath(data.config.modelPath || "");
 				setVoiceId(data.config.voiceId || "");
 				setTtsModel(data.config.ttsModel || "s2.1-pro-free");
-				setApiKeyFile(data.config.apiKeyFile || "");
-				setAsrFile(data.config.asrCredentialsFile || "");
+				setApiKeysInput(Array.isArray(data.config.apiKeys) ? data.config.apiKeys.join(", ") : (data.config.apiKey || ""));
+				setAsrAppId(data.config.asrAppId || "");
+				setAsrAccessToken(data.config.asrAccessToken || "");
+				setAsrApiKey(data.config.asrApiKey || "");
 				setSpeechLang(data.config.speechLanguage || "ja");
 				setSubLang(data.config.subtitleLanguage || "zh");
 				setSentenceSubs(data.config.sentenceSubtitles ?? true);
@@ -448,26 +452,29 @@ export function Live2DSettingsSection() {
 					<h3 className="lv-set-card-title">② 语音合成 (TTS - Fish Audio)</h3>
 				</div>
 				<div className="lv-set-field">
-					<label className="lv-set-label">API Key 凭据文件 (apiKeyFile)</label>
+					<label className="lv-set-label">Fish Audio API Key</label>
 					<div className="lv-set-row">
 						<input
 							type="text"
 							className="lv-set-input"
-							value={apiKeyFile}
-							placeholder="例如：/root/.config/fish-audio/keys.json"
-							onChange={(e) => setApiKeyFile(e.target.value)}
+							value={apiKeysInput}
+							placeholder="例如：sk-fish-xxx（多个 Key 用逗号分隔）"
+							onChange={(e) => setApiKeysInput(e.target.value)}
 						/>
 						<button
 							type="button"
 							className="lv-set-btn lv-set-btn-primary"
 							disabled={saving}
-							onClick={() => handleSave({ apiKeyFile })}
+							onClick={() => {
+								const keys = apiKeysInput.split(/[,\n]/).map((k) => k.trim()).filter(Boolean);
+								handleSave({ apiKeys: keys });
+							}}
 						>
 							保存
 						</button>
 					</div>
 					<div className="lv-set-help">
-						支持每行一个 Key 或 JSON 数组。401/402/429 时将自动轮询下一个可用 Key。
+						Fish Audio 访问密钥。填入多个 Key 时将自动轮询（遇到 401/402/429 时切换下一个）。
 					</div>
 				</div>
 				<div className="lv-set-field">
@@ -507,26 +514,72 @@ export function Live2DSettingsSection() {
 					<h3 className="lv-set-card-title">③ 语音识别 (STT - 火山引擎)</h3>
 				</div>
 				<div className="lv-set-field">
-					<label className="lv-set-label">火山 ASR 凭证路径 (asrCredentialsFile)</label>
+					<label className="lv-set-label">火山 ASR API Key (asrApiKey)</label>
 					<div className="lv-set-row">
 						<input
 							type="text"
 							className="lv-set-input"
-							value={asrFile}
-							placeholder="例如：/root/.config/volc-asr/credentials.json"
-							onChange={(e) => setAsrFile(e.target.value)}
+							value={asrApiKey}
+							placeholder="例如：a9e3c7a8-6979-45f6-ae30-..."
+							onChange={(e) => setAsrApiKey(e.target.value)}
 						/>
 						<button
 							type="button"
 							className="lv-set-btn lv-set-btn-primary"
 							disabled={saving}
-							onClick={() => handleSave({ asrCredentialsFile: asrFile })}
+							onClick={() => handleSave({ asrApiKey, asrAppId, asrAccessToken })}
 						>
 							保存
 						</button>
 					</div>
 					<div className="lv-set-help">
-						JSON 格式，需包含 <code>apikey</code>（推荐）或 <code>appid</code> + <code>accessToken</code>。
+						火山语音控制台 API Key（推荐，新版单 Header 鉴权；与下方 AppID + Access Token 二选一）。
+					</div>
+				</div>
+				<div className="lv-set-field">
+					<label className="lv-set-label">火山 AppID (asrAppId)</label>
+					<div className="lv-set-row">
+						<input
+							type="text"
+							className="lv-set-input"
+							value={asrAppId}
+							placeholder="例如：9857678927"
+							onChange={(e) => setAsrAppId(e.target.value)}
+						/>
+						<button
+							type="button"
+							className="lv-set-btn lv-set-btn-primary"
+							disabled={saving}
+							onClick={() => handleSave({ asrApiKey, asrAppId, asrAccessToken })}
+						>
+							保存
+						</button>
+					</div>
+					<div className="lv-set-help">
+						火山引擎语音应用 AppID（若未配置 API Key，需同时配置 AppID 与 Access Token）。
+					</div>
+				</div>
+				<div className="lv-set-field">
+					<label className="lv-set-label">火山 Access Token (asrAccessToken)</label>
+					<div className="lv-set-row">
+						<input
+							type="text"
+							className="lv-set-input"
+							value={asrAccessToken}
+							placeholder="例如：HJTtul6k0jaCrG-..."
+							onChange={(e) => setAsrAccessToken(e.target.value)}
+						/>
+						<button
+							type="button"
+							className="lv-set-btn lv-set-btn-primary"
+							disabled={saving}
+							onClick={() => handleSave({ asrApiKey, asrAppId, asrAccessToken })}
+						>
+							保存
+						</button>
+					</div>
+					<div className="lv-set-help">
+						火山引擎语音访问凭据 Access Token。
 					</div>
 				</div>
 				<div className="lv-set-field">

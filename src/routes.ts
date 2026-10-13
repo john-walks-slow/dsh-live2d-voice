@@ -46,7 +46,7 @@ import { createUserMessage, type ContentBlock } from "@deepseek-ai/dsh-llm";
 import type { SessionId } from "@deepseek-ai/dsh-session";
 import { LANGUAGE_OPTIONS, resolveModelCatalog, resolveModelSelection, resolveSessionConfig, GROUP_LABELS, extractModelMotions, type ModelMotion, type ModelEntry, type PluginConfig } from "./config.js";
 import type { SseHub } from "./events.js";
-import { loadVolcCredentials, recognizeUtterance, StreamingAsrSession } from "./asr.js";
+import { loadVolcCredentials, resolveVolcCredentials, recognizeUtterance, StreamingAsrSession } from "./asr.js";
 import { synthesize, PCM_SAMPLE_RATE } from "./tts.js";
 import { previewText, VoiceCatalogService } from "./voice-catalog.js";
 import { pcmToWav } from "./wav.js";
@@ -169,13 +169,10 @@ async function readRawBody(req: IncomingMessage, maxBytes: number): Promise<Buff
 	return Buffer.concat(chunks);
 }
 
-/** The sanitized config served to the GUI: API keys never leave the host. */
+/** The sanitized config served to the GUI. */
 function publicConfig(config: PluginConfig, keyCount: number) {
-	const { apiKeys: _apiKeys, ...rest } = config;
-	const asrConfigured = config.asrCredentialsFile
-		? loadVolcCredentials(config.asrCredentialsFile) !== undefined
-		: false;
-	return { ...rest, apiKeyCount: keyCount, asrConfigured };
+	const asrConfigured = resolveVolcCredentials(config) !== undefined;
+	return { ...config, apiKeyCount: keyCount, asrConfigured };
 }
 
 function mimeOf(path: string): string {
@@ -242,9 +239,9 @@ export function installRoutes(ctx: Context, deps: RouteDeps): (() => void) | und
 			}
 			void (async () => {
 				const config = deps.getConfig();
-				const credentials = config.asrCredentialsFile ? loadVolcCredentials(config.asrCredentialsFile) : undefined;
+				const credentials = resolveVolcCredentials(config);
 				if (credentials === undefined) {
-					writeJson(res, 500, { ok: false, error: "未配置火山 ASR 凭证（live2d-voice.json → asrCredentialsFile，JSON 需含 apikey 或 appid+accessToken）" });
+					writeJson(res, 500, { ok: false, error: "未配置火山 ASR 凭证（live2d-voice.json → asrApiKey 或 asrAppId+asrAccessToken）" });
 					return;
 				}
 				const language = new URL(req.url ?? "/", "http://localhost").searchParams.get("lang")?.trim() || config.sttLanguage || "auto";
@@ -289,7 +286,7 @@ export function installRoutes(ctx: Context, deps: RouteDeps): (() => void) | und
 				return;
 			}
 			const config = deps.getConfig();
-			const credentials = config.asrCredentialsFile ? loadVolcCredentials(config.asrCredentialsFile) : undefined;
+			const credentials = resolveVolcCredentials(config);
 			if (credentials === undefined) {
 				socket.destroy();
 				return;
@@ -373,7 +370,7 @@ export function installRoutes(ctx: Context, deps: RouteDeps): (() => void) | und
 			void readJsonBody(req)
 				.then((body) => {
 					const patch: Partial<PluginConfig> = {};
-					for (const key of ["modelPath", "modelSelection", "voiceId", "ttsModel", "apiKeyFile", "sttLanguage", "asrMode", "asrCredentialsFile", "speechLanguage", "subtitleLanguage", "speechPrompt", "playerModelSelection", "playerVoiceId", "playerSpeechLanguage", "playerPrompt"] as const) {
+					for (const key of ["modelPath", "modelSelection", "voiceId", "ttsModel", "asrAppId", "asrAccessToken", "asrApiKey", "sttLanguage", "asrMode", "speechLanguage", "subtitleLanguage", "speechPrompt", "playerModelSelection", "playerVoiceId", "playerSpeechLanguage", "playerPrompt"] as const) {
 						if (typeof body[key] === "string") patch[key] = body[key] as string;
 					}
 					if (typeof body.eyeTracking === "boolean") patch.eyeTracking = body.eyeTracking;
@@ -385,6 +382,8 @@ export function installRoutes(ctx: Context, deps: RouteDeps): (() => void) | und
 					if (typeof body.playerPolish === "boolean") patch.playerPolish = body.playerPolish;
 					if (Array.isArray(body.apiKeys)) {
 						patch.apiKeys = body.apiKeys.filter((key): key is string => typeof key === "string" && key.length > 0);
+					} else if (typeof body.apiKey === "string") {
+						patch.apiKeys = body.apiKey.split(/[,\n]/).map((k) => k.trim()).filter(Boolean);
 					}
 					if (typeof body.emotionMap === "object" && body.emotionMap !== null && !Array.isArray(body.emotionMap)) {
 						const emotionMap: Record<string, number | string> = {};

@@ -286,7 +286,7 @@ async function* speak(
 	deps.hub.emit(sessionId, "speech-start", { utteranceId });
 	deps.hub.emit(sessionId, "audio-start", { utteranceId, sampleRate: PCM_SAMPLE_RATE });
 	if (apiKeys.length === 0) {
-		deps.hub.emit(sessionId, "error", { message: "未配置 Fish Audio API key（live2d-voice.json → apiKeys 或 apiKeyFile），语音朗读不可用" });
+		deps.hub.emit(sessionId, "error", { message: "未配置 Fish Audio API key（请在设置中配置 Fish Audio API Key），语音朗读不可用" });
 	}
 
 	// The drain must never reject (TTS failures are reported as error events).

@@ -30,6 +30,7 @@ import { PlayerPipeline } from "./player.js";
 
 export const name = "dsh-live2d-voice";
 export const inject = ["agents", "llm", "attachments", "sessionController"];
+export { loadConfig, saveConfig, resolveApiKeys, resolveVolcCredentials } from "./config.js";
 
 export function apply(ctx: Context): () => void {
 	const hub = new SseHub();

@@ -86,6 +86,25 @@ export function loadVolcCredentials(filePath: string): VolcCredentials | undefin
 	}
 }
 
+/** Resolve credentials from config object (inline fields preferred, fallback to file). */
+export function resolveVolcCredentials(config: {
+	asrApiKey?: string;
+	asrAppId?: string;
+	asrAccessToken?: string;
+	asrCredentialsFile?: string;
+}): VolcCredentials | undefined {
+	const apikey = typeof config.asrApiKey === "string" ? config.asrApiKey.trim() : "";
+	const appid = typeof config.asrAppId === "string" ? config.asrAppId.trim() : "";
+	const accessToken = typeof config.asrAccessToken === "string" ? config.asrAccessToken.trim() : "";
+	if (apikey || (appid && accessToken)) {
+		return { apikey: apikey || undefined, appid, accessToken };
+	}
+	if (typeof config.asrCredentialsFile === "string" && config.asrCredentialsFile) {
+		return loadVolcCredentials(config.asrCredentialsFile);
+	}
+	return undefined;
+}
+
 interface VolcUtterance {
 	text: string;
 	definite?: boolean;
