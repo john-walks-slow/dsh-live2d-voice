@@ -1,25 +1,26 @@
 #!/usr/bin/env node
 /**
- * Signed look-gain sliders e2e — against the e2e instance (:4188).
+ * Look-parameter sliders e2e — against the e2e instance (:4188).
  *
- * T1 surface: 摄像头 / 陀螺仪 groups each expose four rows (转头 / 眼球 /
- *    旋转 / 位移增益); 整体幅度 keeps its three non-signed amplitude rows.
- * T2 signed ranges: every gain slider spans negative→positive (min < 0) and
- *    carries the lv-signed class that draws the zero notch; amplitude
- *    sliders stay unsigned; every gain slider explains itself in a tooltip.
- * T3 third-person stage: with a player avatar on stage the head-facing gains
- *    (转头 + the new 旋转) are disabled with a 对视停用 hint, 位移 stays live.
- * T4 single model: drop the player avatar → gains become editable; typing
- *    negative values persists them and renders the sign.
- * T5 preset round-trip: 标准 restores the default gains (+1, explicit sign).
+ * T1 surface: 灵敏度 exposes the two source multipliers (+ 身体侧倾联动);
+ *    动作幅度 exposes one amplitude per channel (转头 / 眼球 / 侧倾 / 位移),
+ *    with no separate gain + max-range pair left.
+ * T2 unsigned ranges: every slider starts at 0 (magnitudes only) and explains
+ *    itself in a tooltip; angle amplitudes render in degrees.
+ * T3 third-person stage: with a player avatar on stage the head-facing
+ *    amplitudes (转头 / 眼球 / 侧倾) are disabled with a 对视停用 hint,
+ *    位移 stays live.
+ * T4 single model: drop the player avatar → amplitudes become editable; a
+ *    changed value persists and renders back in its own unit.
+ * T5 preset round-trip: 标准 restores the default amplitudes.
  * T6 no page errors; the e2e config is restored before exiting.
  */
 import pw from '/root/projects/camoufox-mcp/node_modules/playwright-core/index.js';
 const { chromium } = pw;
 
 const url = process.env.E2E_URL ?? `http://127.0.0.1:${process.env.DSH_E2E_PORT}/?token=${process.env.DSH_E2E_TOKEN || 'e2etest'}`;
-const STORE = 'lv-look-params-v4';
-const LOOK_GROUPS = ['灵敏度', '动作增益', '整体幅度'];
+const STORE = 'lv-look-params-v5';
+const LOOK_GROUPS = ['灵敏度', '动作幅度'];
 const SHOT = (n) => `/tmp/lvlook-${n}.png`;
 const results = [];
 const check = (id, ok, note = '') => { results.push({ id, ok }); console.log(`${ok ? '✓' : '✗'} ${id} ${note}`); };
@@ -154,40 +155,39 @@ try {
   check('T0b', await openLookPanel(), '⚙ popover + 详细参数 open');
   await sleep(800);
   let rows = await readSliders();
-  check('T0c', rows.length === 11, `${rows.length}/11 look slider rows rendered`);
+  check('T0c', rows.length === 7, `${rows.length}/7 look slider rows rendered`);
 
   console.log('=== T1 surface ===');
   const sens = rows.filter((r) => r.group === '灵敏度');
-  const act = rows.filter((r) => r.group === '动作增益');
-  const amp = rows.filter((r) => r.group === '整体幅度');
-  check('T1a', sens.length === 3, `灵敏度 rows = ${JSON.stringify(labelsOf(sens))}`);
-  check('T1b', act.length === 4, `动作增益 rows = ${JSON.stringify(labelsOf(act))}`);
-  check('T1c', labelsOf(sens).join(',') === '摄像头灵敏度,陀螺仪灵敏度,身体侧倾联动', '灵敏度 order 摄像头/陀螺仪/身体联动');
-  check('T1d', labelsOf(act).join(',') === '转头增益,眼球增益,侧倾增益,位移增益', '动作增益 order 转头/眼球/侧倾/位移');
-  check('T1e', amp.length === 3 && labelsOf(amp).join(',') === '最大转头角度,最大位移,最大侧倾', `整体幅度 unchanged = ${JSON.stringify(labelsOf(amp))}`);
+  const act = rows.filter((r) => r.group === '动作幅度');
+  check('T1a', sens.length === 2, `灵敏度 rows = ${JSON.stringify(labelsOf(sens))}`);
+  check('T1b', act.length === 5, `动作幅度 rows = ${JSON.stringify(labelsOf(act))}`);
+  check('T1c', labelsOf(sens).join(',') === '摄像头灵敏度,陀螺仪灵敏度', '灵敏度 holds the two source multipliers only');
+  check('T1d', labelsOf(act).join(',') === '转头幅度,眼球幅度,侧倾幅度,位移幅度,身体侧倾联动', '动作幅度 order 转头/眼球/侧倾/位移/身体联动');
+  check('T1e', !rows.some((r) => /增益|整体幅度|最大/.test(r.label) || r.group === '整体幅度'), 'gain + max-range pair merged away');
   check('T1f', !rows.some((r) => r.group === '扩展可动性'), '扩展可动性 group merged into 灵敏度');
 
-  console.log('=== T2 signed ranges ===');
-  const gains = rows.filter((r) => /增益/.test(r.label));
-  check('T2a', gains.length === 4 && gains.every((r) => r.min < 0), `4 gain sliders, all min<0 (${gains.map((r) => r.min).join(',')})`);
-  check('T2b', gains.every((r) => r.signed), 'gains carry lv-signed (zero notch)');
-  check('T2c', amp.every((r) => r.min >= 0 && !r.signed), 'amplitude sliders stay unsigned');
-  check('T2d', gains.every((r) => r.tip.length > 0), 'every gain slider has a tooltip (dual mode: the 对视停用 note)');
+  console.log('=== T2 unsigned magnitude ranges ===');
+  check('T2a', rows.every((r) => r.min === 0), `every slider is a magnitude starting at 0 (${rows.map((r) => r.min).join(',')})`);
+  check('T2b', rows.every((r) => !r.signed), 'no slider carries the signed zero-notch class any more');
+  check('T2c', rows.every((r) => r.tip.length > 0), 'every slider has a tooltip (dual mode: the 对视停用 note)');
+  check('T2d', pick(rows, '动作幅度', '转头幅度')?.shown === '20°' && pick(rows, '动作幅度', '侧倾幅度')?.shown === '6°',
+    `angle amplitudes render in degrees (${pick(rows, '动作幅度', '转头幅度')?.shown} / ${pick(rows, '动作幅度', '侧倾幅度')?.shown})`);
 
   console.log('=== T3 third-person stage ===');
   if (dual) {
     const off = rows.filter((r) => r.disabled);
-    check('T3a', off.length === 3, `3 head-facing gains disabled (${off.map((r) => r.label).join('/')})`);
-    check('T3b', off.every((r) => /转头增益|眼球增益|侧倾增益/.test(r.label)), '眼球 + 侧倾 join 转头增益 in the 对视停用 set');
-    check('T3c', rows.filter((r) => r.group !== '整体幅度' && /位移增益/.test(r.label)).every((r) => !r.disabled), '位移增益 stays live in dual mode');
+    check('T3a', off.length === 4, `4 head-facing rows disabled (${off.map((r) => r.label).join('/')})`);
+    check('T3b', off.every((r) => /转头幅度|眼球幅度|侧倾幅度|身体侧倾联动/.test(r.label)), '眼球 + 侧倾 + 身体联动 join 转头幅度 in the 对视停用 set');
+    check('T3c', pick(rows, '动作幅度', '位移幅度')?.disabled === false, '位移幅度 stays live in dual mode');
   } else {
-    check('T3a', rows.every((r) => !r.disabled), 'single model: no gain disabled');
+    check('T3a', rows.every((r) => !r.disabled), 'single model: nothing disabled');
     check('T3b', true, 'dual-stage assertions skipped (config is single model)');
     check('T3c', true, 'dual-stage assertions skipped (config is single model)');
   }
   await shot('01-panel');
 
-  console.log('=== T4 negative interaction (single model) ===');
+  console.log('=== T4 amplitude interaction (single model) ===');
   if (dual) {
     await patchCfg({ thirdPerson: false, playerModelSelection: '' });
     await backToChat();
@@ -197,29 +197,30 @@ try {
     await sleep(800);
     rows = await readSliders();
   }
-  check('T4c', rows.filter((r) => r.group !== '整体幅度').every((r) => !r.disabled), 'all gain sliders editable');
-  const panBounds = await setRange('位移增益', -0.5);
+  check('T4c', rows.every((r) => !r.disabled), 'every slider is editable outside the dual stage');
+  const panBounds = await setRange('位移幅度', 0.012);
   await sleep(500);
-  const rollBounds = await setRange('侧倾增益', -1.5);
+  const rollBounds = await setRange('侧倾幅度', 9);
   await sleep(500);
   rows = await readSliders();
   const st = await stored();
-  check('T4d', st.panGain === -0.5, `panGain persisted = ${st.panGain}`);
-  check('T4e', st.rollGain === -1.5, `rollGain persisted = ${st.rollGain}`);
-  check('T4f', pick(rows, '动作增益', '侧倾增益')?.shown === '-1.5', `negative roll renders with the sign (${pick(rows, '动作增益', '侧倾增益')?.shown})`);
-  check('T4g', panBounds?.min === -1 && rollBounds?.min === -2, `ranges: 位移 -1..1 (min=${panBounds?.min}), 侧倾 -2..2 (min=${rollBounds?.min})`);
-  const rollTip = pick(rows, '动作增益', '侧倾增益')?.tip ?? '';
+  check('T4d', st.panAmp === 0.012, `panAmp persisted = ${st.panAmp}`);
+  check('T4e', st.rollAmp === 9, `rollAmp persisted = ${st.rollAmp}`);
+  check('T4f', pick(rows, '动作幅度', '侧倾幅度')?.shown === '9°', `roll amplitude renders in degrees (${pick(rows, '动作幅度', '侧倾幅度')?.shown})`);
+  check('T4g', panBounds?.min === 0 && panBounds?.max === 0.05 && rollBounds?.min === 0 && rollBounds?.max === 20,
+    `ranges: 位移 0..0.05 (${panBounds?.min}..${panBounds?.max}), 侧倾 0..20 (${rollBounds?.min}..${rollBounds?.max})`);
+  const rollTip = pick(rows, '动作幅度', '侧倾幅度')?.tip ?? '';
   check('T4h', /AngleZ|侧倾/.test(rollTip), `roll tooltip names ParamAngleZ / 侧倾 (${rollTip})`);
-  await shot('02-negative-gains');
+  await shot('02-amplitudes');
 
   console.log('=== T5 preset round-trip ===');
   await clickPreset('标准');
   await sleep(600);
   const st2 = await stored();
   rows = await readSliders();
-  check('T5a', st2.rollGain === 1 && st2.panGain === 0.1, `标准 preset restores roll & pan (${st2.rollGain}/${st2.panGain})`);
-  check('T5b', st2.angleGain === 1.2 && st2.eyeGain === 0.7 && st2.camSensitivity === 1 && st2.gyroSensitivity === 1, '标准 preset restores default gains');
-  check('T5c', pick(rows, '动作增益', '转头增益')?.shown === '+1.2', `positive angle gain renders with a plus sign (${pick(rows, '动作增益', '转头增益')?.shown})`);
+  check('T5a', st2.rollAmp === 6 && st2.panAmp === 0.005, `标准 preset restores roll & pan amplitudes (${st2.rollAmp}/${st2.panAmp})`);
+  check('T5b', st2.angleAmp === 20 && st2.eyeAmp === 0.7 && st2.camSensitivity === 1 && st2.gyroSensitivity === 1, '标准 preset restores the default amplitudes');
+  check('T5c', pick(rows, '动作幅度', '转头幅度')?.shown === '20°', `angle amplitude renders in degrees (${pick(rows, '动作幅度', '转头幅度')?.shown})`);
 
   // Restore whatever the e2e instance was configured with before the run.
   await patchCfg({ thirdPerson: orig.thirdPerson, playerModelSelection: orig.playerModelSelection });

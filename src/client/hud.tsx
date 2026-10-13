@@ -134,7 +134,6 @@ const LOOK_SLIDER_GROUPS: ReadonlyArray<{
 		sliders: [
 			{ key: "camSensitivity", label: "摄像头灵敏度", min: 0, max: 2, step: 0.05, tip: "摄像头视线追踪的全局响应灵敏度倍率：0 = 不参与，1 = 标准" },
 			{ key: "gyroSensitivity", label: "陀螺仪灵敏度", min: 0, max: 2, step: 0.05, tip: "陀螺仪设备倾斜视差的全局响应灵敏度倍率：0 = 不参与，1 = 标准" },
-			{ key: "bodyZGain", label: "身体侧倾联动", min: 0, max: 1, step: 0.05, tip: "头部侧倾时身体 Z 轴旋转 (ParamBodyAngleZ) 的联动比例" },
 		],
 	},
 	{
@@ -144,6 +143,7 @@ const LOOK_SLIDER_GROUPS: ReadonlyArray<{
 			{ key: "eyeAmp", label: "眼球幅度", min: 0, max: 1, step: 0.05, tip: "满偏时眼球 (ParamEyeBallX/Y) 的偏移量：比转头小 = 眼神更含蓄" },
 			{ key: "rollAmp", label: "侧倾幅度", min: 0, max: 20, step: 1, tip: "满偏时头部侧倾（ParamAngleZ）的角度上限（度）" },
 			{ key: "panAmp", label: "位移幅度", min: 0, max: 0.05, step: 0.001, tip: "满偏时模型整体平移占容器宽 / 高的比例（微视差）" },
+			{ key: "bodyZGain", label: "身体侧倾联动", min: 0, max: 1, step: 0.05, tip: "头部侧倾时身体 Z 轴旋转 (ParamBodyAngleZ) 的联动比例" },
 		],
 	},
 ];
@@ -618,13 +618,13 @@ export function Hud(props: HudProps) {
 										<div className="lv-slider-group-title">{group.group}</div>
 										{group.sliders.map((slider) => {
 											// Third-person stage: characters face each other and camera/gyro only
-											// drive position parallax, so the head angle / eye / roll gains are
-											// forced to 0 — disable the sliders instead of showing values that
-											// silently do nothing.
+											// drive position parallax, so the head angle / eye / roll channels
+											// (and the body roll that couples to them) are forced to 0 — disable
+											// the sliders instead of showing values that silently do nothing.
 											const stageAngleOff =
 												props.liveMode === "third" &&
 												Boolean(props.currentPlayerModel) &&
-												(slider.key === "angleAmp" || slider.key === "eyeAmp" || slider.key === "rollAmp");
+												(slider.key === "angleAmp" || slider.key === "eyeAmp" || slider.key === "rollAmp" || slider.key === "bodyZGain");
 											return (
 												<label key={slider.key} className="lv-slider-row">
 													<span className="lv-slider-label">

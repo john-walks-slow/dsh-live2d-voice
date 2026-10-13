@@ -9,7 +9,7 @@
 - `view.tsx` — 视图主组件：SSE 事件分发（按 speaker 分流 assistant/player）、双模型挂载与布局、字幕/输入/回声参照
 - `engine.ts` — SpeechEngine：AudioContext 播放队列、RMS 包络、说话人感知（speakerSpans / currentSpeaker / mouthValue(speaker)）
 - `model.ts` — Live2D 模型挂载：createLive2DStage（共享 Pixi Application）、mountModel(shared?)、setLayout
-- `look-math.ts` — 视线/陀螺仪混合的纯函数（`mixLookChannel`，带符号增益），可被 node 直接跑测试
+- `look-math.ts` — 视线/陀螺仪混合的纯函数（`mixLookChannel`：灵敏度加权 + 饱和）与 look 参数默认值/预设，可被 node 直接跑测试
 - `hud.tsx` — HUD 按钮与 ⚙ 快捷面板（音色/模型/语言/第三人称等）
 - `settings-section.tsx` — 系统设置里的插件设置卡
 - `voice-library.tsx` — 音色库浮层：检索/试听/选用 Fish 公共音色（portal 到 `document.body`）
@@ -48,6 +48,6 @@
 - **运行时注入的 `<style>` 必须打 `data-plugin="dsh-live2d-voice"` 标**（styles.ts `injectLiveStyles` 已做）：宿主在 materialize 时机用 `claimStyles` 把未打标 style 认领给下一个 materialize 的插件，该插件 HMR 重载时会 `removeOwnedStyles` 连带删除——任何插件连续两次 rebuild 就能让本插件全部样式消失（260925 Live 按钮失样式 bug，回归 `e2e/verify-style-claim.mjs`）。新增任何 DOM 注入样式的路径时同样处理。
 - 字幕 DOM 类名（`.lv-sub-card` / `.lv-sub-old` / `.lv-sub-pending`）是 e2e 脚本的断言契约，改名或重构字幕结构时同步更新 `e2e/verify-*.mjs` 选择器。
 - audioSeq 字幕 hold 的 seq 空间**按 speaker 隔离**：assistant 与 player 的 seq 计数器各自每轮从 0 起，engine 的 `currentSeq(speaker)` 按 speaker 过滤——跨 speaker 比较 seq 会击穿 hold（字幕提前或立即释放）。
-- **第三人称对视世界观**：双模型是"舞台剧"，两角色基准朝向对方（faceBiasX ±0.6 → ±13.2°（faceBiasAngle 固定 22°，与 angleRange 解耦））、仿佛不知道玩家存在；视线/陀螺仪输入在 dual 下只做 panRange 位置视差（angleGain/eyeGain/rollGain 归零，HUD 对应滑条禁用并标注"对视停用"），不驱动转头看用户；单模型模式保持"角色看你"不变。改 look 管线时保住这个分界。
-- **look 参数结构**：统一动作增益（`angleGain`/`eyeGain`/`rollGain`/`panGain`）+ 源灵敏度倍率（`camSensitivity`/`gyroSensitivity`）；陀螺仪输入底层自带负基数（-0.3），逆向视差与量级校准由底层收口，配置层无需填负数。`mixLookChannel` 把两路 `输入 × 增益` 相加并饱和到 ±1，`angleRange`/`rollRange`/`panRange` 仍是硬上限。新增 look 通道时同步 `LOOK_SLIDER_GROUPS`、`SIGNED_LOOK_KEYS`、第三人称停用集合，并跑 `e2e/verify-look-math.mjs`（纯数学）与 `e2e/verify-look-sliders.mjs`（面板契约）。
+- **第三人称对视世界观**：双模型是"舞台剧"，两角色基准朝向对方（faceBiasX ±0.6 → ±13.2°（faceBiasAngle 固定 22°，与 angleAmp 解耦））、仿佛不知道玩家存在；视线/陀螺仪输入在 dual 下只做位置视差（angleAmp/eyeAmp/rollAmp 归零，HUD 对应滑条禁用并标注"对视停用"），不驱动转头看用户；单模型模式保持"角色看你"不变。改 look 管线时保住这个分界。
+- **look 参数只有一层幅度**：`LookParams` = 两路灵敏度倍率（`camSensitivity`/`gyroSensitivity`，0 = 不参与）+ 四条通道幅度（`angleAmp` 度 / `eyeAmp` 归一化眼球 / `rollAmp` 度 / `panAmp` 容器比例）+ `bodyZGain`。**不要再引入「增益 × 最大上限」两层结构**：`mixLookChannel` 先按灵敏度加权相加并饱和到 ±1，再乘该通道幅度得到物理量，滑条值即上限。方向（陀螺仪逆向视差、上下不反）全部由底层输入符号收口——摄像头在 `gaze.ts`/`view.tsx`，陀螺仪在 `tilt.ts` 的负基数 `GYRO_BASE_SCALE`，配置层一律非负。位移必须 `baseX + panX` / `baseY − panY`（canvas Y 轴向下，向上看要减小 Y）。新增 look 通道时同步 `LOOK_SLIDER_GROUPS`、第三人称停用集合，并跑 `e2e/verify-look-math.mjs`（纯数学）与 `e2e/verify-look-sliders.mjs`（面板契约）。
 - **portal 出去的浮层要自带 `.lv-vlib-scope`**：设计令牌（`--lv-*`）定义在 `.lv-root` 上，portal 到 `document.body` 的 DOM 不在该子树里，不加这个类就拿不到任何主题变量（浅色/深色都失效）。同时 `.lv-stage` 带 CSS transform，`position: fixed` 的浮层若留在它子树内会被 transform 劫持成相对定位——浮层一律 portal 到 body。
