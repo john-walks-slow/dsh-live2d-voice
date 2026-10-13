@@ -309,3 +309,7 @@ node e2e/verify-video-call.mjs   # 视频通话模式 29 项（三态切换/PiP 
 ## License
 
 MIT
+
+## 社区
+
+- 感谢 [LINUX DO](https://linux.do/) 社区提供的交流环境。
