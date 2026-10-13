@@ -233,6 +233,43 @@ export function fetchModelCatalog(): Promise<ModelCatalog> {
 	return getJson("/live2d-voice/model-catalog");
 }
 
+/** Upload a Live2D model .zip for one-click import. */
+export async function importModelZip(file: File): Promise<{
+	ok: boolean;
+	name?: string;
+	label?: string;
+	kind?: "moc2" | "moc3";
+	group?: string;
+	current?: string;
+	catalog?: NonNullable<ModelInfo["models"]>;
+	code?: string;
+	message?: string;
+}> {
+	const response = await fetch(`/live2d-voice/model/import?name=${encodeURIComponent(file.name)}`, {
+		method: "POST",
+		headers: {
+			"content-type": "application/zip",
+			"x-filename": encodeURIComponent(file.name),
+		},
+		body: file,
+	});
+	const data = (await response.json().catch(() => ({}))) as {
+		ok: boolean;
+		name?: string;
+		label?: string;
+		kind?: "moc2" | "moc3";
+		group?: string;
+		current?: string;
+		catalog?: NonNullable<ModelInfo["models"]>;
+		code?: string;
+		message?: string;
+	};
+	if (!response.ok) {
+		throw new Error(data.message ?? `POST /live2d-voice/model/import → HTTP ${response.status}`);
+	}
+	return data;
+}
+
 /** Fetch the current model selection for one session. */
 export function fetchModelSelection(sessionId: string): Promise<ModelSelection> {
 	return getJson(`/live2d-voice/model-selection?session=${encodeURIComponent(sessionId)}`);

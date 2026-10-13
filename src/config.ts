@@ -475,6 +475,8 @@ export const GROUP_LABELS: Record<string, string> = {
 	"game-girls-frontline": "游戏拆包 · 少女前线",
 	"game-fantastic-days": "游戏拆包 · 素晴日",
 	"game-azur-lane": "游戏拆包 · 碧蓝航线",
+	"vtuber-free": "VTuber 免费模型",
+	imported: "已导入模型",
 };
 
 /** 探测一个目录的模型设置文件（moc3 优先，其次任意 moc2 设置 JSON）。 */

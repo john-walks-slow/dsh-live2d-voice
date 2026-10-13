@@ -37,7 +37,7 @@ export const MODULES = {
 	},
 	settings: {
 		description: '设置面板、模型与音色库',
-		suites: ['verify-settings-model', 'verify-voice-library'],
+		suites: ['verify-settings-model', 'verify-voice-library', 'verify-model-import'],
 	},
 	styles: {
 		description: '样式注入与插件间 CSS 认领隔离',

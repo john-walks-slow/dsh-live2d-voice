@@ -33,7 +33,7 @@ import { readFileSync, statSync, existsSync, mkdirSync, writeFileSync, createWri
 import { createRequire } from "node:module";
 import { pipeline } from "node:stream/promises";
 import { join, resolve, sep, dirname } from "node:path";
-import { homedir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { Duplex } from "node:stream";
@@ -50,6 +50,7 @@ import { loadVolcCredentials, resolveVolcCredentials, recognizeUtterance, Stream
 import { synthesize, PCM_SAMPLE_RATE } from "./tts.js";
 import { previewText, VoiceCatalogService } from "./voice-catalog.js";
 import { pcmToWav } from "./wav.js";
+import { installModelZip } from "./model-importer.js";
 
 const BODY_MAX_BYTES = 64 * 1024;
 /** 16kHz s16le mono ≈ 32KB/s — 2MB ≈ one minute of speech, far above the client's 20s cap. */
@@ -722,6 +723,80 @@ export function installRoutes(ctx: Context, deps: RouteDeps): (() => void) | und
 				liveMode: config.liveMode,
 				player,
 			});
+		} })
+	);
+
+	// Model import: upload a .zip file, unpack, validate, and install into modelPath.
+	disposers.push(
+		webServer.register({ kind: "exact", path: "/live2d-voice/model/import", handler: (req, res) => {
+			if (req.method !== "POST") {
+				writeJson(res, 405, { code: "method_not_allowed" });
+				return;
+			}
+			const url = new URL(req.url ?? "/", "http://localhost");
+			const rawFilename = req.headers["x-filename"]
+				? decodeURIComponent(String(req.headers["x-filename"]))
+				: (url.searchParams.get("name") || "model.zip");
+
+			const tmpZip = join(tmpdir(), `lv-upload-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.zip`);
+			const fileStream = createWriteStream(tmpZip);
+			let size = 0;
+			const maxBytes = 100 * 1024 * 1024;
+			let exceeded = false;
+
+			req.on("data", (chunk: Buffer) => {
+				size += chunk.length;
+				if (size > maxBytes && !exceeded) {
+					exceeded = true;
+					req.destroy(new Error("File too large"));
+				}
+			});
+
+			pipeline(req, fileStream)
+				.then(async () => {
+					if (exceeded) {
+						if (existsSync(tmpZip)) rmSync(tmpZip, { force: true });
+						writeJson(res, 413, { ok: false, code: "file_too_large", message: "压缩包大小不能超过 100MB" });
+						return;
+					}
+					const currentConfig = deps.getConfig();
+					const result = await installModelZip(tmpZip, rawFilename, currentConfig.modelPath);
+					if (existsSync(tmpZip)) rmSync(tmpZip, { force: true });
+
+					if (!result.ok) {
+						writeJson(res, 400, { ok: false, code: "import_failed", message: result.error, details: result.details });
+						return;
+					}
+
+					// 导入成功：如果 modelPath 原先为空，将默认路径持久化；同时选中新导入的模型
+					const targetRoot = currentConfig.modelPath || join(process.env.DSH_HOME ?? join(homedir(), ".dsh"), "live2d-voice-models");
+					const nextConfig = deps.saveConfig({
+						modelPath: targetRoot,
+						modelSelection: result.name,
+					});
+					const catalog = resolveModelCatalog(nextConfig);
+
+					writeJson(res, 200, {
+						ok: true,
+						name: result.name,
+						label: result.label,
+						kind: result.kind,
+						group: result.group,
+						current: result.name,
+						catalog: catalog.map((m) => ({
+							name: m.name,
+							label: m.label,
+							kind: m.kind,
+							group: m.group,
+							groupLabel: m.group ? (GROUP_LABELS[m.group] ?? m.group) : undefined,
+							url: modelUrl(m),
+						})),
+					});
+				})
+				.catch((error: unknown) => {
+					if (existsSync(tmpZip)) rmSync(tmpZip, { force: true });
+					writeJson(res, 500, { ok: false, code: "upload_failed", message: error instanceof Error ? error.message : String(error) });
+				});
 		} })
 	);
 

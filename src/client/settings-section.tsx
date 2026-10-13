@@ -1,6 +1,6 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import type { PublicConfig, LanguageOption, ModelCatalog, ModelProviderGroup, ModelCatalogModel, LiveMode } from "./types.js";
-import { fetchConfig, saveConfig, fetchModelCatalog } from "./api.js";
+import { fetchConfig, saveConfig, fetchModelCatalog, importModelZip } from "./api.js";
 import {
 	IconRefresh,
 	IconCheck,
@@ -252,6 +252,46 @@ body[data-ds-dark-theme] .lv-set-wrap .lv-model-select optgroup {
 .lv-set-link:hover {
 	text-decoration: underline;
 }
+
+.lv-set-drop {
+	padding: 16px;
+	border: 1px dashed var(--dsw-alias-border-l2, rgba(0,0,0,0.18));
+	border-radius: 8px;
+	background: var(--dsw-alias-bg-layer-1, rgba(0,0,0,0.02));
+	cursor: pointer;
+	text-align: center;
+	transition: all 120ms ease;
+}
+
+.lv-set-drop:hover {
+	border-color: var(--dsw-alias-state-business-primary, #4176e6);
+	background: var(--dsw-alias-bg-layer-1, rgba(0,0,0,0.04));
+}
+
+.lv-set-drop-hot {
+	border-color: var(--dsw-alias-state-business-primary, #4176e6);
+	background: var(--dsw-alias-bg-layer-1, rgba(65, 118, 230, 0.08));
+}
+
+.lv-set-drop-title {
+	font-size: 13px;
+	font-weight: 500;
+	margin-bottom: 4px;
+	color: var(--dsw-alias-label-primary, #0f1115);
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	gap: 6px;
+}
+
+.lv-set-drop-ok {
+	color: #16a34a;
+}
+
+.lv-set-drop-hint {
+	font-size: 11px;
+	color: var(--dsw-alias-label-secondary, #61666b);
+}
 `;
 
 export function Live2DSettingsSection() {
@@ -259,6 +299,9 @@ export function Live2DSettingsSection() {
 	const [models, setModels] = useState<{ name: string; label?: string; kind?: "moc2" | "moc3"; group?: string; groupLabel?: string; url: string }[]>([]);
 	const [loading, setLoading] = useState(true);
 	const [statusMsg, setStatusMsg] = useState<{ type: "success" | "warn"; text: string } | null>(null);
+	const [importStatus, setImportStatus] = useState<{ type: "idle" | "uploading" | "extracting" | "success" | "error"; text: string }>({ type: "idle", text: "" });
+	const fileInputRef = useRef<HTMLInputElement>(null);
+	const [isDragOver, setIsDragOver] = useState(false);
 
 	// Editable drafts
 	const [modelPath, setModelPath] = useState("");
@@ -349,6 +392,45 @@ export function Live2DSettingsSection() {
 			setSaving(false);
 		}
 	};
+
+	const handleImportFile = useCallback(async (file: File | undefined) => {
+		if (!file) return;
+		if (!/\.zip$/i.test(file.name)) {
+			setImportStatus({ type: "error", text: "请上传 .zip 格式的模型压缩包" });
+			return;
+		}
+		setImportStatus({ type: "uploading", text: `正在上传 ${file.name} (${(file.size / 1048576).toFixed(1)} MB)…` });
+		try {
+			setImportStatus({ type: "extracting", text: "上传完成，正在解压并校验模型结构…" });
+			const result = await importModelZip(file);
+			if (result.ok) {
+				setImportStatus({ type: "success", text: `导入成功：${result.label ?? result.name}（已切换为当前模型）` });
+				setStatusMsg({ type: "success", text: `模型已导入：${result.label ?? result.name}` });
+				// Refresh the model list and selection
+				await loadAll();
+			} else {
+				setImportStatus({ type: "error", text: result.message ?? "导入失败" });
+			}
+		} catch (err) {
+			setImportStatus({ type: "error", text: `导入失败：${String(err instanceof Error ? err.message : err)}` });
+		}
+	}, [loadAll]);
+
+	const onDragOver = useCallback((e: React.DragEvent) => {
+		e.preventDefault();
+		setIsDragOver(true);
+	}, []);
+
+	const onDragLeave = useCallback(() => {
+		setIsDragOver(false);
+	}, []);
+
+	const onDrop = useCallback((e: React.DragEvent) => {
+		e.preventDefault();
+		setIsDragOver(false);
+		const file = e.dataTransfer.files?.[0];
+		void handleImportFile(file);
+	}, [handleImportFile]);
 
 	if (loading) {
 		return (
@@ -444,6 +526,44 @@ export function Live2DSettingsSection() {
 						)}
 					</div>
 				)}
+				<div className="lv-set-field" style={{ marginTop: "12px" }}>
+					<label className="lv-set-label">导入模型包 (.zip)</label>
+					<div
+						className={`lv-set-drop ${isDragOver ? "lv-set-drop-hot" : ""}`}
+						onDragOver={onDragOver}
+						onDragLeave={onDragLeave}
+						onDrop={onDrop}
+						onClick={() => fileInputRef.current?.click()}
+					>
+						<input
+							ref={fileInputRef}
+							type="file"
+							accept=".zip"
+							style={{ display: "none" }}
+							onChange={(e) => {
+								const file = e.target.files?.[0];
+								void handleImportFile(file);
+								e.target.value = "";
+							}}
+						/>
+						{importStatus.type === "idle" || importStatus.type === "error" ? (
+							<>
+								<div className="lv-set-drop-title">拖拽模型 zip 到这里 / 点击选择文件</div>
+								<div className="lv-set-drop-hint">自动解压 · 校验格式与版本 · 复制到「已导入模型」分类并设为当前</div>
+							</>
+						) : importStatus.type === "success" ? (
+							<>
+								<div className="lv-set-drop-title lv-set-drop-ok"><IconCheck size={16} /> {importStatus.text}</div>
+								<div className="lv-set-drop-hint">可继续拖入其他模型包批量导入</div>
+							</>
+						) : (
+							<>
+								<div className="lv-set-drop-title">{importStatus.text}</div>
+								<div className="lv-set-drop-hint">请稍候…</div>
+							</>
+						)}
+					</div>
+				</div>
 			</div>
 
 			{/* 模块 2：语音合成 TTS */}
@@ -778,42 +898,37 @@ export function Live2DSettingsSection() {
 				saving={saving}
 				onSave={(v) => handleSave({ polishModel: v })}
 			/>
-			{/* 模块 8：找更多模型与音色 */}
+			{/* 模块 8：找更多模型 */}
 			<div className="lv-set-card">
 				<div className="lv-set-card-head">
-					<h3 className="lv-set-card-title">⑧ 找更多模型与音色</h3>
+					<h3 className="lv-set-card-title">⑧ 找更多模型</h3>
 				</div>
 				<div className="lv-set-field">
-					<label className="lv-set-label">Live2D 模型来源</label>
+					<label className="lv-set-label">免费模型与素材仓库</label>
 					<div className="lv-set-links">
+						<a className="lv-set-link" href="https://booth.pm/ja/search/Live2D%20%E3%83%A2%E3%83%87%E3%83%AB?max_price=0" target="_blank" rel="noreferrer">
+							↗ BOOTH 免费 Live2D 模型专区（VTube Studio 对应 · 日语圈首选）
+						</a>
+						<a className="lv-set-link" href="https://booth.pm/ja/search/VTubeStudio%20%E3%83%A2%E3%83%87%E3%83%AB?max_price=0" target="_blank" rel="noreferrer">
+							↗ BOOTH 免费 VTS 专用模型（明确标注面捕可用）
+						</a>
 						<a className="lv-set-link" href="https://www.live2d.com/zh-CHS/learn/sample/" target="_blank" rel="noreferrer">
-							↗ Live2D 官方示例模型库（免费素材，本机 34 个模型的主要来源）
+							↗ Live2D 官方免费素材站（自营 IP · 含 VTS 设定）
 						</a>
 						<a className="lv-set-link" href="https://github.com/Live2D/CubismNativeSamples/tree/main/Samples/Resources" target="_blank" rel="noreferrer">
 							↗ Live2D GitHub 官方样例仓库 (CubismNativeSamples)
 						</a>
+						<a className="lv-set-link" href="https://nizima.com/Search/Result?typeId=1&priceMin=0&priceMax=0" target="_blank" rel="noreferrer">
+							↗ nizima 免费模型（Live2D 官方社区 · 授权透明）
+						</a>
 						<a className="lv-set-link" href="https://github.com/Eikanya/Live2d-model" target="_blank" rel="noreferrer">
-							↗ 第三方模型合集 Eikanya/Live2d-model（游戏提取，仅限个人学习，注意版权）
+							↗ 第三方模型合集 Eikanya/Live2d-model（游戏拆包，仅限个人学习，注意版权）
 						</a>
 					</div>
 					<div className="lv-set-help">
-						下载 zip 解压后，把含 <code>.model3.json</code> 的角色文件夹放进模型目录（默认
-						<code>/root/.dsh/live2d-voice-models</code>），回本页点「刷新扫描」即可在 ① 与 HUD 中切换。
-					</div>
-				</div>
-				<div className="lv-set-field">
-					<label className="lv-set-label">Fish Audio 音色来源</label>
-					<div className="lv-set-links">
-						<a className="lv-set-link" href="https://fish.audio/zh-CN/discovery/" target="_blank" rel="noreferrer">
-							↗ Fish Audio 公共音色库发现页（浏览 / 试听全部公开音色）
-						</a>
-						<a className="lv-set-link" href="https://docs.fish.audio/" target="_blank" rel="noreferrer">
-							↗ Fish Audio 开发者文档（含公共音色库 API 检索方式）
-						</a>
-					</div>
-					<div className="lv-set-help">
-						音色详情页地址形如 <code>fish.audio/m/&#123;32位ID&#125;/</code>——把其中的 32 位十六进制 ID
-						填入 ② 的默认音色，即可在 HUD 音色选择器中选用（或直接挑选已有预设）。
+						下载的 <code>.zip</code> 压缩包可直接在 ① 的「导入模型包」拖拽上传，无需手动解压与挪动文件。
+						<br />
+						各条目请遵守作者的使用条款（个人活动 / 商用 / 二次创作规定可能不同），本插件不替你做授权判断。
 					</div>
 				</div>
 			</div>
