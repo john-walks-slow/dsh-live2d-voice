@@ -33,7 +33,7 @@ export const MODULES = {
 	},
 	gaze: {
 		description: '视线追踪、数学计算、参数解析、点击互动、触摸模式与调节滑块',
-		suites: ['verify-look-math', 'verify-look-sliders', 'verify-param-ids', 'verify-tap', 'verify-touch-mode'],
+		suites: ['verify-look-math', 'verify-look-sliders', 'verify-param-ids', 'verify-tap', 'verify-tap-motion', 'verify-touch-mode'],
 	},
 	settings: {
 		description: '设置面板、模型与音色库',

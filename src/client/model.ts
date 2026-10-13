@@ -22,6 +22,7 @@ import { Live2DModel as Live2DModelCubism2 } from "pixi-live2d-display-lipsyncpa
 import { logger } from "./logger.js";
 import { resolveParamIds } from "./param-ids.js";
 import { SWIPE_MIN_DISTANCE_PX, isSwipe, resolveGestureGroup, swipeDirection } from "./gesture-math.js";
+import { resolveTapMotion } from "./tap-motion.js";
 import {
 	mixLookChannel,
 	type LookVector,
@@ -320,6 +321,7 @@ export async function mountModel({
 	let userPanY = 0;
 	let lastNormalWidth = 0;
 	let lastNormalHeight = 0;
+	let touchMode = false;
 
 	const applyTransform = () => {
 		// Window mode (video-call PiP): the window owns the geometry — user
@@ -343,7 +345,11 @@ export async function mountModel({
 		const h = (container.closest(".lv-root")?.classList.contains("lv-keyboard-open") && lastNormalHeight > 0)
 			? lastNormalHeight
 			: (container.clientHeight || 1);
-		model.position.set(baseX + userPanX - lookX * lookParams.panRange * w, baseY + userPanY - lookY * lookParams.panRange * h);
+		// In touch mode, the user interacts with the avatar directly — camera
+		// parallax pan is disabled so tapping or dragging never jerks the scene.
+		const effectivePanX = touchMode ? 0 : (lookX * lookParams.panRange * w);
+		const effectivePanY = touchMode ? 0 : (lookY * lookParams.panRange * h);
+		model.position.set(baseX + userPanX - effectivePanX, baseY + userPanY - effectivePanY);
 		// Gesture/zoom state as DOM observables — the e2e suite asserts
 		// against them (same convention as dataset.lvPlayer).
 		const next = `${Math.round(userPanX)},${Math.round(userPanY)},${userScale.toFixed(3)}`;
@@ -586,10 +592,9 @@ export async function mountModel({
 	// pan/zoom semantics. Only the avatar the press landed on responds, and
 	// only when the point actually hits it (declared HitAreas, or its visible
 	// bounds for the many models that ship without HitAreas).
-	const TAP_SLOP_PX = 8;
-	const TAP_MAX_MS = 500;
+	const TAP_SLOP_PX = 16;
+	const TAP_MAX_MS = 600;
 	let press: { x: number; y: number; lastX: number; lastY: number; at: number; onModel: boolean; moved: boolean } | null = null;
-	let touchMode = false;
 	/** Which subsystem started a motion: the idle scheduler, a scripted (LLM or
 	 * HUD-picked) motion, or the user's own tap/flick. */
 	type MotionSource = "idle" | "script" | "gesture";
@@ -699,17 +704,10 @@ export async function mountModel({
 		touchLook?.onTouchLook(null);
 	};
 
-	/** Which motion group answers a tap on `area` (null = no declared areas). */
-	const tapGroupFor = (area: string | null): string | null => {
-		const groups = Object.keys(internal.motionManager.definitions ?? {});
-		const byName = (want: string) => groups.find((g) => g.toLowerCase() === want.toLowerCase()) ?? null;
-		return (area ? byName(`Tap${area}`) : null) ?? byName("Tap") ?? byName("TapBody");
-	};
-
 	/**
 	 * Handle a tap at stage coordinates. Writes `dataset.lvTap` (`area:group`)
 	 * only when a motion is actually started, so e2e can tell "responded" from
-	 * "no response" (blank space, no Tap group, or a scripted motion holding
+	 * "no response" (blank space, no matching motion, or a scripted motion holding
 	 * the priority lane).
 	 */
 	const handleTap = (clientX: number, clientY: number): void => {
@@ -718,24 +716,19 @@ export async function mountModel({
 		const y = clientY - rect.top;
 		const names = typeof model.hitTest === "function" ? model.hitTest(x, y) : [];
 		// Overlapping hit areas (e.g. Body over Head) are rare but real: prefer the
-		// first one that actually has a Tap group, then fall back to the first hit.
-		let area: string | null = names.find((name) => tapGroupFor(name)) ?? names[0] ?? null;
+		// first one that actually has an answering motion, then fall back to the first hit.
+		let area: string | null = names.find((name) => resolveTapMotion(internal.motionManager.definitions, name)) ?? names[0] ?? null;
 		if (!area) {
-			// Models that declare HitAreas and miss: no response. Models without
-			// any declared area fall back to "did the tap land on the avatar".
-			if (Object.keys(internal.hitAreas ?? {}).length > 0) return;
 			const bounds = model.getBounds();
 			const inside = x >= bounds.x && x <= bounds.x + bounds.width && y >= bounds.y && y <= bounds.y + bounds.height;
 			if (!inside) return;
 		}
-		const group = tapGroupFor(area);
-		if (!group) return;
-		const list = internal.motionManager.definitions?.[group] ?? [];
-		if (list.length === 0) return;
-		const index = Math.floor(Math.random() * list.length);
-		startGesture(group, index, (started) => {
+		const resolved = resolveTapMotion(internal.motionManager.definitions, area) ??
+			resolveTapMotion(internal.motionManager.definitions, null);
+		if (!resolved) return;
+		startGesture(resolved.group, resolved.index, (started) => {
 			if (!started) return;
-			const value = `${area ?? "body"}:${group}`;
+			const value = `${area ?? "body"}:${resolved.group}`;
 			if (tag) container.dataset[`lv${tag}Tap`] = value;
 			container.dataset.lvTap = value;
 		});
@@ -822,15 +815,18 @@ export async function mountModel({
 				lastPinchMidY = (points[0].y + points[1].y) / 2;
 			}
 		} else if (event.button === 0 || event.button === 1 || event.button === 2) {
-			// Left click drags the avatar under the cursor in third-person
-			// mode; middle/right click always pans the whole camera.
-			isMousePanning = true;
+			// In touch mode, left-click is purely for avatar interaction (no camera pan).
+			// Middle/right click keeps panning the camera.
+			isMousePanning = !touchMode || event.button !== 0;
 			lastMouseX = event.clientX;
 			lastMouseY = event.clientY;
 			gestures.dragOwner = event.button === 0 ? hitAvatar(event) : null;
 			press = event.button === 0
 				? { x: event.clientX, y: event.clientY, lastX: event.clientX, lastY: event.clientY, at: Date.now(), onModel: gestures.dragOwner === model, moved: false }
 				: null;
+			if (touchMode && event.button === 0) {
+				publishTouchLook(event.clientX, event.clientY);
+			}
 			try {
 				stage.setPointerCapture(event.pointerId);
 			} catch {}
@@ -893,6 +889,7 @@ export async function mountModel({
 		}
 
 		if (isMousePanning) {
+			if (touchMode && event.button === 0) return;
 			// Middle/right drag (owner null) and empty-space hits pan the
 			// whole camera; a left-drag owned by a sibling avatar must NOT
 			// move this one — that is the per-avatar drag in third-person.
@@ -1045,6 +1042,7 @@ export async function mountModel({
 		setTouchMode(on) {
 			touchMode = on;
 			if (!on) releaseTouchLook();
+			applyTransform();
 		},
 		getEyePosition() {
 			const width = container.clientWidth || 1;
