@@ -18,8 +18,8 @@ import pw from '/root/projects/camoufox-mcp/node_modules/playwright-core/index.j
 const { chromium } = pw;
 
 const url = process.env.E2E_URL ?? `http://127.0.0.1:${process.env.DSH_E2E_PORT}/?token=${process.env.DSH_E2E_TOKEN || 'e2etest'}`;
-const STORE = 'lv-look-params-v2';
-const LOOK_GROUPS = ['摄像头', '陀螺仪', '整体幅度'];
+const STORE = 'lv-look-params-v4';
+const LOOK_GROUPS = ['灵敏度', '动作增益', '整体幅度'];
 const SHOT = (n) => `/tmp/lvlook-${n}.png`;
 const results = [];
 const check = (id, ok, note = '') => { results.push({ id, ok }); console.log(`${ok ? '✓' : '✗'} ${id} ${note}`); };
@@ -157,18 +157,19 @@ try {
   check('T0c', rows.length === 11, `${rows.length}/11 look slider rows rendered`);
 
   console.log('=== T1 surface ===');
-  const cam = rows.filter((r) => r.group === '摄像头');
-  const gyro = rows.filter((r) => r.group === '陀螺仪');
+  const sens = rows.filter((r) => r.group === '灵敏度');
+  const act = rows.filter((r) => r.group === '动作增益');
   const amp = rows.filter((r) => r.group === '整体幅度');
-  check('T1a', cam.length === 4, `摄像头 rows = ${JSON.stringify(labelsOf(cam))}`);
-  check('T1b', gyro.length === 4, `陀螺仪 rows = ${JSON.stringify(labelsOf(gyro))}`);
-  check('T1c', labelsOf(cam).join(',') === '转头增益,眼球增益,旋转增益,位移增益', '摄像头 order 转头/眼球/旋转/位移');
-  check('T1d', labelsOf(gyro).join(',') === '转头增益,眼球增益,旋转增益,位移增益', '陀螺仪 order 转头/眼球/旋转/位移');
+  check('T1a', sens.length === 3, `灵敏度 rows = ${JSON.stringify(labelsOf(sens))}`);
+  check('T1b', act.length === 4, `动作增益 rows = ${JSON.stringify(labelsOf(act))}`);
+  check('T1c', labelsOf(sens).join(',') === '摄像头灵敏度,陀螺仪灵敏度,身体侧倾联动', '灵敏度 order 摄像头/陀螺仪/身体联动');
+  check('T1d', labelsOf(act).join(',') === '转头增益,眼球增益,侧倾增益,位移增益', '动作增益 order 转头/眼球/侧倾/位移');
   check('T1e', amp.length === 3 && labelsOf(amp).join(',') === '最大转头角度,最大位移,最大侧倾', `整体幅度 unchanged = ${JSON.stringify(labelsOf(amp))}`);
+  check('T1f', !rows.some((r) => r.group === '扩展可动性'), '扩展可动性 group merged into 灵敏度');
 
   console.log('=== T2 signed ranges ===');
   const gains = rows.filter((r) => /增益/.test(r.label));
-  check('T2a', gains.length === 8 && gains.every((r) => r.min < 0), `8 gain sliders, all min<0 (${gains.map((r) => r.min).join(',')})`);
+  check('T2a', gains.length === 4 && gains.every((r) => r.min < 0), `4 gain sliders, all min<0 (${gains.map((r) => r.min).join(',')})`);
   check('T2b', gains.every((r) => r.signed), 'gains carry lv-signed (zero notch)');
   check('T2c', amp.every((r) => r.min >= 0 && !r.signed), 'amplitude sliders stay unsigned');
   check('T2d', gains.every((r) => r.tip.length > 0), 'every gain slider has a tooltip (dual mode: the 对视停用 note)');
@@ -176,8 +177,8 @@ try {
   console.log('=== T3 third-person stage ===');
   if (dual) {
     const off = rows.filter((r) => r.disabled);
-    check('T3a', off.length === 6, `6 head-facing gains disabled (${off.map((r) => r.label).join('/')})`);
-    check('T3b', off.every((r) => /转头增益|眼球增益|旋转增益/.test(r.label)), '眼球 + 旋转 join 转头增益 in the 对视停用 set');
+    check('T3a', off.length === 3, `3 head-facing gains disabled (${off.map((r) => r.label).join('/')})`);
+    check('T3b', off.every((r) => /转头增益|眼球增益|侧倾增益/.test(r.label)), '眼球 + 侧倾 join 转头增益 in the 对视停用 set');
     check('T3c', rows.filter((r) => r.group !== '整体幅度' && /位移增益/.test(r.label)).every((r) => !r.disabled), '位移增益 stays live in dual mode');
   } else {
     check('T3a', rows.every((r) => !r.disabled), 'single model: no gain disabled');
@@ -199,15 +200,15 @@ try {
   check('T4c', rows.filter((r) => r.group !== '整体幅度').every((r) => !r.disabled), 'all gain sliders editable');
   const panBounds = await setRange('位移增益', -0.5);
   await sleep(500);
-  const rollBounds = await setRange('旋转增益', -1.5);
+  const rollBounds = await setRange('侧倾增益', -1.5);
   await sleep(500);
   rows = await readSliders();
   const st = await stored();
-  check('T4d', st.camPanGain === -0.5, `camPanGain persisted = ${st.camPanGain}`);
-  check('T4e', st.camRollGain === -1.5, `camRollGain persisted = ${st.camRollGain}`);
-  check('T4f', pick(rows, '摄像头', '旋转增益')?.shown === '-1.5', `negative roll renders with the sign (${pick(rows, '摄像头', '旋转增益')?.shown})`);
-  check('T4g', panBounds?.min === -3 && rollBounds?.min === -2, `ranges: 位移 -3..3 (min=${panBounds?.min}), 旋转 -2..2 (min=${rollBounds?.min})`);
-  const rollTip = pick(rows, '陀螺仪', '旋转增益')?.tip ?? '';
+  check('T4d', st.panGain === -0.5, `panGain persisted = ${st.panGain}`);
+  check('T4e', st.rollGain === -1.5, `rollGain persisted = ${st.rollGain}`);
+  check('T4f', pick(rows, '动作增益', '侧倾增益')?.shown === '-1.5', `negative roll renders with the sign (${pick(rows, '动作增益', '侧倾增益')?.shown})`);
+  check('T4g', panBounds?.min === -1 && rollBounds?.min === -2, `ranges: 位移 -1..1 (min=${panBounds?.min}), 侧倾 -2..2 (min=${rollBounds?.min})`);
+  const rollTip = pick(rows, '动作增益', '侧倾增益')?.tip ?? '';
   check('T4h', /AngleZ|侧倾/.test(rollTip), `roll tooltip names ParamAngleZ / 侧倾 (${rollTip})`);
   await shot('02-negative-gains');
 
@@ -216,9 +217,9 @@ try {
   await sleep(600);
   const st2 = await stored();
   rows = await readSliders();
-  check('T5a', st2.camRollGain === 1 && st2.gyroRollGain === 1, `标准 preset restores both roll gains (${st2.camRollGain}/${st2.gyroRollGain})`);
-  check('T5b', st2.camPanGain === -2 && st2.gyroPanGain === -2 && st2.camAngleGain === 0.6 && st2.camEyeGain === 0.4, '标准 preset restores the new default gains');
-  check('T5c', pick(rows, '陀螺仪', '旋转增益')?.shown === '+1', `positive roll gain renders with an explicit + (${pick(rows, '陀螺仪', '旋转增益')?.shown})`);
+  check('T5a', st2.rollGain === 1 && st2.panGain === 0.1, `标准 preset restores roll & pan (${st2.rollGain}/${st2.panGain})`);
+  check('T5b', st2.angleGain === 1.2 && st2.eyeGain === 0.7 && st2.camSensitivity === 1 && st2.gyroSensitivity === 1, '标准 preset restores default gains');
+  check('T5c', pick(rows, '动作增益', '转头增益')?.shown === '+1.2', `positive angle gain renders with a plus sign (${pick(rows, '动作增益', '转头增益')?.shown})`);
 
   // Restore whatever the e2e instance was configured with before the run.
   await patchCfg({ thirdPerson: orig.thirdPerson, playerModelSelection: orig.playerModelSelection });

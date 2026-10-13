@@ -34,9 +34,14 @@ type TiltEvents = {
 /** Neutral-pose capture window: average the first readings. */
 const CALIBRATION_SAMPLES = 8;
 /** EMA smoothing factor — higher = snappier, lower = floatier. */
-const SMOOTHING = 0.35;
-/** Max neutral-relative degrees counted. */
-const MAX_DEGREES = 30;
+const SMOOTHING = 0.25;
+/** Max neutral-relative degrees counted for full sweep. */
+const MAX_DEGREES = 45;
+/**
+ * Base scale for gyroscope input:
+ * Signed negative because device tilt operates in reverse perspective (viewing from the opposite angle).
+ */
+const GYRO_BASE_SCALE = -0.42;
 
 interface OrientationReading {
 	beta: number;
@@ -119,14 +124,12 @@ export class TiltParallax {
 		}
 		const clampNorm = (degrees: number): number => Math.max(-1, Math.min(1, degrees / MAX_DEGREES));
 		// Portrait assumption: gamma = roll, beta = pitch.
-		const dx = clampNorm(reading.gamma - this.neutral.gamma);
-		const dy = clampNorm(reading.beta - this.neutral.beta);
-		// Parallax design:
-		// Emphasize position PAN (px, py) to make the model float like an object inside a 3D box,
-		// and use subtle, gentle rotation (dx, dy) to avoid unnatural robotic head twisting.
+		const dx = clampNorm(reading.gamma - this.neutral.gamma) * GYRO_BASE_SCALE;
+		const dy = clampNorm(reading.beta - this.neutral.beta) * GYRO_BASE_SCALE;
+		// Normalized tilt driver in -1..1 shared space (scaled by GYRO_BASE_SCALE):
 		const target: TiltState = {
-			dx: dx * 0.45,
-			dy: dy * 0.45,
+			dx,
+			dy,
 			px: -dx * 1.2,
 			py: dy * 1.0,
 		};

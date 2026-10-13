@@ -45,24 +45,28 @@ check('zero gains -> 0', close(mixLookChannel(0, 0, CAM, GYRO, 'dy', true, true)
 // 6. dy channel is independent of dx.
 check('dy channel reads dy', close(mixLookChannel(1, 1, CAM, GYRO, 'dy', true, true), CAM.dy + GYRO.dy));
 
-// 7. Defaults: subtle head turn, -2 pan, head/eye split, removals.
-check('default angleRange stays subtle (<= 10°, >= 5°)', DEFAULT_LOOK_PARAMS.angleRange <= 10 && DEFAULT_LOOK_PARAMS.angleRange >= 5, `angleRange=${DEFAULT_LOOK_PARAMS.angleRange}`);
-check('both pan gains default to -2', DEFAULT_LOOK_PARAMS.camPanGain === -2 && DEFAULT_LOOK_PARAMS.gyroPanGain === -2);
-check('head and eye carry separate gain pairs',
-	['camAngleGain', 'camEyeGain', 'gyroAngleGain', 'gyroEyeGain', 'camRollGain', 'gyroRollGain', 'bodyZGain'].every((k) => Number.isFinite(DEFAULT_LOOK_PARAMS[k])));
-check('removed channels are gone (3D transform / brow / eyeball form)',
-	['transform3dCamGain', 'transform3dGyroGain', 'transform3dRange', 'browGain', 'eyeBallFormGain'].every((k) => !(k in DEFAULT_LOOK_PARAMS)));
+// 7. Defaults: one amplitude per channel, balanced sources, tiny pan.
+check('default head turn is noticeable (angleAmp >= 15°)', DEFAULT_LOOK_PARAMS.angleAmp >= 15, `angleAmp=${DEFAULT_LOOK_PARAMS.angleAmp}`);
+check('default eye amplitude stays under the head turn (0.4 <= eyeAmp <= 0.9)', DEFAULT_LOOK_PARAMS.eyeAmp >= 0.4 && DEFAULT_LOOK_PARAMS.eyeAmp <= 0.9, `eyeAmp=${DEFAULT_LOOK_PARAMS.eyeAmp}`);
+check('pan amplitude defaults to a barely visible parallax (panAmp <= 0.01)', DEFAULT_LOOK_PARAMS.panAmp <= 0.01, `panAmp=${DEFAULT_LOOK_PARAMS.panAmp}`);
+check('camera and gyro sensitivity default to 1.0 (base scaling lives in tilt.ts / gaze.ts)', DEFAULT_LOOK_PARAMS.camSensitivity === 1.0 && DEFAULT_LOOK_PARAMS.gyroSensitivity === 1.0);
+check('every slider value is finite',
+	['camSensitivity', 'gyroSensitivity', 'angleAmp', 'eyeAmp', 'rollAmp', 'panAmp', 'bodyZGain'].every((k) => Number.isFinite(DEFAULT_LOOK_PARAMS[k])));
+check('no split gain / max-range pair survives',
+	['angleGain', 'eyeGain', 'rollGain', 'panGain', 'angleRange', 'rollRange', 'panRange'].every((k) => !(k in DEFAULT_LOOK_PARAMS)));
+check('signed per-source channels are gone (3D transform / brow / eyeball form / cam-gyro pairs)',
+	['transform3dCamGain', 'transform3dGyroGain', 'transform3dRange', 'browGain', 'eyeBallFormGain', 'camAngleGain', 'gyroAngleGain'].every((k) => !(k in DEFAULT_LOOK_PARAMS)));
 check('presets carry exactly the live parameter set',
 	LOOK_PRESETS.every((p) => Object.keys(p.params).sort().join() === Object.keys(DEFAULT_LOOK_PARAMS).sort().join()));
-check('presets stay in range', LOOK_PRESETS.every((p) => p.params.angleRange <= 16 && Math.abs(p.params.camPanGain) <= 3 && Math.abs(p.params.gyroPanGain) <= 3));
+check('presets stay in range', LOOK_PRESETS.every((p) => p.params.angleAmp <= 30 && p.params.rollAmp <= 12 && p.params.panAmp <= 0.02));
 
 // 8. Center calibration math: offsets shift raw coords to 0.5 neutral center.
 const rawX = 0.42;
 const rawY = 0.65;
 const yawOffset = 0.5 - rawX; // 0.08
 const pitchOffset = 0.5 - rawY; // -0.15
-const calibratedScreenX = (rawX - 0.5 + yawOffset) * 1.3 + 0.5;
-const calibratedScreenY = (rawY - 0.5 + pitchOffset) * 1.2 + 0.5;
+const calibratedScreenX = (rawX - 0.5 + yawOffset) * 0.8 + 0.5;
+const calibratedScreenY = (rawY - 0.5 + pitchOffset) * 0.75 + 0.5;
 check('center calibration math maps current point to (0.5, 0.5)', close(calibratedScreenX, 0.5) && close(calibratedScreenY, 0.5));
 
 const failed = results.filter((r) => !r.ok);

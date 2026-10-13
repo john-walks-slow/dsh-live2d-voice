@@ -230,8 +230,8 @@ export class GazeTracker {
 		this.calibration = {
 			pitchOffset: -0.08, // default shift: phone camera is at top, looking down slightly
 			yawOffset: 0,
-			yawGain: 1.3,
-			pitchGain: 1.2,
+			yawGain: 0.8,
+			pitchGain: 0.75,
 			...calibration,
 		};
 	}
@@ -366,8 +366,8 @@ export class GazeTracker {
 							// Default prior: pitch & yaw offset & gains
 							const yawOff = this.calibration.yawOffset ?? 0;
 							const pitchOff = this.calibration.pitchOffset ?? -0.08;
-							screenX = (rawX - 0.5 + yawOff) * (this.calibration.yawGain ?? 1.3) + 0.5;
-							screenY = (rawY - 0.5 + pitchOff) * (this.calibration.pitchGain ?? 1.2) + 0.5;
+							screenX = (rawX - 0.5 + yawOff) * (this.calibration.yawGain ?? 0.8) + 0.5;
+							screenY = (rawY - 0.5 + pitchOff) * (this.calibration.pitchGain ?? 0.75) + 0.5;
 						}
 
 						this.events.onGaze(

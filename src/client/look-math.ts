@@ -2,13 +2,12 @@
  * Pure look-blending math, kept out of mountModel so the rules are testable
  * on their own (e2e/verify-look-math.mjs).
  *
- * Every *gain* in LookParams is a signed amplitude multiplier for that source:
- * a negative gain mirrors the channel (look away from the user, lean the head
- * the other way, parallax against the input), 0 switches that source off, and
- * the response is linear — 0.05 drives a tenth of what 0.5 does, all the way
- * down to 0.005. The live sources add up and the sum saturates at ±1, so the
- * 整体幅度 sliders (angleRange / rollRange / panRange) stay the hard ceiling
- * and toggling a second source on can never blow past the calibrated range.
+ * Each source is scaled by a non-negative sensitivity multiplier (camera /
+ * gyro), the two contributions are added and saturated to ±1, and that
+ * normalized look is then scaled by the per-channel amplitude (degrees for
+ * head turn and roll, normalized eyeball offset, container fraction for pan).
+ * So a slider value IS the physical ceiling: sensitivity only balances the two
+ * sources against each other, amplitude only sets how far the character moves.
  */
 
 /** A look vector in the -1..1 normalized space shared by the camera and gyro. */
@@ -20,8 +19,8 @@ export interface LookVector {
 /**
  * Combine one channel of the two (possibly lagged) look vectors.
  *
- * @param camGain  signed amplitude of the camera source
- * @param gyroGain signed amplitude of the gyro source
+ * @param camGain  sensitivity multiplier of the camera source
+ * @param gyroGain sensitivity multiplier of the gyro source
  * @param cam      vector to read for the camera side (eye / head / body lag chain)
  * @param gyro     vector to read for the gyro side
  * @param channel  "dx" (horizontal) or "dy" (vertical)
@@ -44,37 +43,29 @@ export function mixLookChannel(
 }
 
 export interface LookParams {
-	camPanGain: number;
-	/** Head + body turn (ParamAngleX/Y, ParamBodyAngleX/Y) amplitude from the camera. */
-	camAngleGain: number;
-	/** Head roll (ParamAngleZ, the 3D tilt) gain from the camera. Signed: negative mirrors the tilt. */
-	camRollGain: number;
-	/** Eyeball (ParamEyeBallX/Y) amplitude from the camera — separate from the head so the gaze can lead or trail the turn. */
-	camEyeGain: number;
-	gyroPanGain: number;
-	gyroAngleGain: number;
-	gyroRollGain: number;
-	/** Eyeball amplitude from the gyroscope. */
-	gyroEyeGain: number;
-	panRange: number;
-	angleRange: number;
-	rollRange: number;
-	/** Body roll (ParamBodyAngleZ) coupling gain with head roll. */
+	/** Camera tracking sensitivity multiplier (0 = off, 1 = balanced). */
+	camSensitivity: number;
+	/** Gyroscope tilt sensitivity multiplier (0 = off, 1 = balanced). */
+	gyroSensitivity: number;
+	/** Head + body turn at full input, in degrees. */
+	angleAmp: number;
+	/** Eyeball offset at full input (ParamEyeBallX/Y, -1..1). */
+	eyeAmp: number;
+	/** Head roll at full input (ParamAngleZ), in degrees. */
+	rollAmp: number;
+	/** Stage pan at full input, as a fraction of the container width / height. */
+	panAmp: number;
+	/** Body roll (ParamBodyAngleZ) coupling with the head roll, as a ratio of it. */
 	bodyZGain: number;
 }
 
 export const DEFAULT_LOOK_PARAMS: LookParams = {
-	camPanGain: -2,
-	camAngleGain: 0.6,
-	camRollGain: 1.0,
-	camEyeGain: 0.4,
-	gyroPanGain: -2,
-	gyroAngleGain: 0.5,
-	gyroRollGain: 1.0,
-	gyroEyeGain: 0.4,
-	panRange: 0.10,
-	angleRange: 8,
-	rollRange: 5,
+	camSensitivity: 1.0,
+	gyroSensitivity: 1.0,
+	angleAmp: 20,
+	eyeAmp: 0.7,
+	rollAmp: 6,
+	panAmp: 0.005,
 	bodyZGain: 0.4,
 };
 
@@ -84,17 +75,11 @@ export const LOOK_PRESETS: ReadonlyArray<{ id: string; label: string; params: Lo
 		id: "subtle",
 		label: "柔和",
 		params: {
-			camPanGain: -1.2,
-			camAngleGain: 0.3,
-			camRollGain: 0.5,
-			camEyeGain: 0.2,
-			gyroPanGain: -1.2,
-			gyroAngleGain: 0.25,
-			gyroRollGain: 0.5,
-			gyroEyeGain: 0.2,
-			panRange: 0.06,
-			angleRange: 5,
-			rollRange: 3,
+			...DEFAULT_LOOK_PARAMS,
+			angleAmp: 12,
+			eyeAmp: 0.5,
+			rollAmp: 4,
+			panAmp: 0.003,
 			bodyZGain: 0.2,
 		},
 	},
@@ -103,17 +88,11 @@ export const LOOK_PRESETS: ReadonlyArray<{ id: string; label: string; params: Lo
 		id: "vivid",
 		label: "灵敏",
 		params: {
-			camPanGain: -3,
-			camAngleGain: 1.0,
-			camRollGain: 1.5,
-			camEyeGain: 0.8,
-			gyroPanGain: -3,
-			gyroAngleGain: 0.8,
-			gyroRollGain: 1.5,
-			gyroEyeGain: 0.7,
-			panRange: 0.16,
-			angleRange: 14,
-			rollRange: 8,
+			...DEFAULT_LOOK_PARAMS,
+			angleAmp: 28,
+			eyeAmp: 0.9,
+			rollAmp: 10,
+			panAmp: 0.012,
 			bodyZGain: 0.6,
 		},
 	},

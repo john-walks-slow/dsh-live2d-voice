@@ -339,17 +339,21 @@ export async function mountModel({
 			return;
 		}
 		model.scale.set(baseScale * userScale);
-		const lookX = camSm.dx * lookParams.camPanGain + gyroSm.dx * lookParams.gyroPanGain;
-		const lookY = camSm.dy * lookParams.camPanGain + gyroSm.dy * lookParams.gyroPanGain;
+		const camSens = lookParams.camSensitivity ?? 1.0;
+		const gyroSens = lookParams.gyroSensitivity ?? 1.0;
+		const lookX = mixSigned(camSens, gyroSens, camSm, "dx");
+		const lookY = mixSigned(camSens, gyroSens, camSm, "dy");
 		const w = container.clientWidth || 1;
 		const h = (container.closest(".lv-root")?.classList.contains("lv-keyboard-open") && lastNormalHeight > 0)
 			? lastNormalHeight
 			: (container.clientHeight || 1);
 		// In touch mode, the user interacts with the avatar directly — camera
 		// parallax pan is disabled so tapping or dragging never jerks the scene.
-		const effectivePanX = touchMode ? 0 : (lookX * lookParams.panRange * w);
-		const effectivePanY = touchMode ? 0 : (lookY * lookParams.panRange * h);
-		model.position.set(baseX + userPanX - effectivePanX, baseY + userPanY - effectivePanY);
+		const effectivePanX = touchMode ? 0 : (lookX * lookParams.panAmp * w);
+		const effectivePanY = touchMode ? 0 : (lookY * lookParams.panAmp * h);
+		// Follow on X, counter-move on Y: the canvas Y axis points down, so a
+		// look that goes up (dy > 0) has to move the avatar to a smaller Y.
+		model.position.set(baseX + userPanX + effectivePanX, baseY + userPanY - effectivePanY);
 		// Gesture/zoom state as DOM observables — the e2e suite asserts
 		// against them (same convention as dataset.lvPlayer).
 		const next = `${Math.round(userPanX)},${Math.round(userPanY)},${userScale.toFixed(3)}`;
@@ -514,19 +518,22 @@ export async function mountModel({
 		// back to zero after both stop, so tracking loss glides home.
 		if (lookSettling()) {
 			smoothLook();
-			const lx = mixSigned(lookParams.camAngleGain, lookParams.gyroAngleGain, camSm, "dx");
-			const ly = mixSigned(lookParams.camAngleGain, lookParams.gyroAngleGain, camSm, "dy");
-			const lz = mixSigned(lookParams.camRollGain, lookParams.gyroRollGain, camSm, "dx");
-			// Eyes carry their own gain pair: the gaze can stay subtler than the
-			// head turn (or lead it) instead of always sharing the head mix.
-			const ex = mixSigned(lookParams.camEyeGain, lookParams.gyroEyeGain, camSm, "dx");
-			const ey = mixSigned(lookParams.camEyeGain, lookParams.gyroEyeGain, camSm, "dy");
-			const ar = lookParams.angleRange;
-			const rr = lookParams.rollRange;
+			const camSens = lookParams.camSensitivity ?? 1.0;
+			const gyroSens = lookParams.gyroSensitivity ?? 1.0;
+			// Sensitivity balances the two sources; the normalized result is then
+			// scaled by each channel's amplitude (the single per-channel slider).
+			const lx = mixSigned(camSens, gyroSens, camSm, "dx");
+			const ly = mixSigned(camSens, gyroSens, camSm, "dy");
+			const lz = mixSigned(camSens, gyroSens, camSm, "dx");
+			const ex = lx;
+			const ey = ly;
+			const ar = lookParams.angleAmp;
+			const er = lookParams.eyeAmp;
+			const rr = lookParams.rollAmp;
 
 			const bzGain = lookParams.bodyZGain ?? 0.4;
 			// Third-person base face angle (bias ±0.6 → ±13.2°) stays decoupled
-			// from angleRange so smaller dynamic head turns don't flatten the stage
+			// from angleAmp so smaller dynamic head turns don't flatten the stage
 			const faceBiasAngle = stageLayout.faceBiasX * 22;
 			const clamp1 = (v: number) => Math.max(-1, Math.min(1, v));
 
@@ -537,8 +544,8 @@ export async function mountModel({
 				[LOOK_IDS.bodyX, (faceBiasAngle + lx * ar) * 0.5],
 				[LOOK_IDS.bodyY, ly * ar * 0.5],
 				[LOOK_IDS.bodyZ, lz * rr * bzGain],
-				[LOOK_IDS.eyeX, clamp1(stageLayout.faceBiasX + ex)],
-				[LOOK_IDS.eyeY, clamp1(ey)],
+				[LOOK_IDS.eyeX, clamp1(stageLayout.faceBiasX + ex * er)],
+				[LOOK_IDS.eyeY, clamp1(ey * er)],
 			];
 			for (const [id, v] of angles) setParam(id, v);
 			applyTransform();
@@ -691,7 +698,7 @@ export async function mountModel({
 		const rect = stage.getBoundingClientRect();
 		if (rect.width <= 0 || rect.height <= 0) return;
 		const dx = Math.max(-1, Math.min(1, ((clientX - rect.left) / rect.width) * 2 - 1));
-		const dy = Math.max(-1, Math.min(1, ((clientY - rect.top) / rect.height) * 2 - 1));
+		const dy = Math.max(-1, Math.min(1, 1 - ((clientY - rect.top) / rect.height) * 2));
 		const value = `${dx.toFixed(3)},${dy.toFixed(3)}`;
 		if (tag) container.dataset[`lv${tag}TouchLook`] = value;
 		container.dataset.lvTouchLook = value;

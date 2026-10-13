@@ -130,35 +130,20 @@ const LOOK_SLIDER_GROUPS: ReadonlyArray<{
 	sliders: ReadonlyArray<{ key: keyof LookParams; label: string; min: number; max: number; step: number; tip?: string }>;
 }> = [
 	{
-		group: "摄像头",
+		group: "灵敏度",
 		sliders: [
-			{ key: "camAngleGain", label: "转头增益", min: -2, max: 2, step: 0.05, tip: "视线偏移驱动头 / 身体转动的振幅：0 = 不转头，负值 = 反向转头；可填很小的值（如 0.05）做极细微的跟随" },
-			{ key: "camEyeGain", label: "眼球增益", min: -2, max: 2, step: 0.05, tip: "视线偏移驱动眼球 (ParamEyeBallX/Y) 的振幅，与转头分开调：比转头小 = 眼神更含蓄，负值 = 眼球反向" },
-			{ key: "camRollGain", label: "旋转增益", min: -2, max: 2, step: 0.05, tip: "视线水平偏移在头部侧倾（ParamAngleZ）中的振幅：0 = 不侧倾，负值 = 侧倾反向" },
-			{ key: "camPanGain", label: "位移增益", min: -3, max: 3, step: 0.05, tip: "视线偏移换算成模型整体平移的倍率（直接相乘）：负值 = 视差方向相反" },
+			{ key: "camSensitivity", label: "摄像头灵敏度", min: 0, max: 2, step: 0.05, tip: "摄像头视线追踪的全局响应灵敏度倍率：0 = 不参与，1 = 标准" },
+			{ key: "gyroSensitivity", label: "陀螺仪灵敏度", min: 0, max: 2, step: 0.05, tip: "陀螺仪设备倾斜视差的全局响应灵敏度倍率：0 = 不参与，1 = 标准" },
+			{ key: "bodyZGain", label: "身体侧倾联动", min: 0, max: 1, step: 0.05, tip: "头部侧倾时身体 Z 轴旋转 (ParamBodyAngleZ) 的联动比例" },
 		],
 	},
 	{
-		group: "陀螺仪",
+		group: "动作幅度",
 		sliders: [
-			{ key: "gyroAngleGain", label: "转头增益", min: -2, max: 2, step: 0.05, tip: "陀螺仪偏移驱动头 / 身体转动的振幅：0 = 不转头，负值 = 反向转头；可填很小的值" },
-			{ key: "gyroEyeGain", label: "眼球增益", min: -2, max: 2, step: 0.05, tip: "陀螺仪偏移驱动眼球 (ParamEyeBallX/Y) 的振幅，与转头分开调；负值 = 眼球反向" },
-			{ key: "gyroRollGain", label: "旋转增益", min: -2, max: 2, step: 0.05, tip: "陀螺仪水平偏移在头部侧倾（ParamAngleZ）中的振幅：0 = 不侧倾，负值 = 侧倾反向" },
-			{ key: "gyroPanGain", label: "位移增益", min: -3, max: 3, step: 0.05, tip: "陀螺仪偏移换算成模型整体平移的倍率（直接相乘）：负值 = 视差方向相反" },
-		],
-	},
-	{
-		group: "整体幅度",
-		sliders: [
-			{ key: "angleRange", label: "最大转头角度", min: 2, max: 40, step: 1, tip: "转头角度上限（度）= 增益 × 输入 × 本上限" },
-			{ key: "panRange", label: "最大位移", min: 0.02, max: 0.3, step: 0.01, tip: "平移占容器宽/高的比例上限，与位移增益相乘" },
-			{ key: "rollRange", label: "最大侧倾", min: 0, max: 20, step: 1, tip: "侧倾角上限（度），与旋转增益相乘" },
-		],
-	},
-	{
-		group: "扩展可动性",
-		sliders: [
-			{ key: "bodyZGain", label: "身体侧倾联动", min: -1, max: 1, step: 0.05, tip: "头部侧倾时身体 Z 轴旋转 (ParamBodyAngleZ) 的联动增益" },
+			{ key: "angleAmp", label: "转头幅度", min: 0, max: 45, step: 1, tip: "视线 / 倾斜满偏时头和身体转动的角度上限（度）" },
+			{ key: "eyeAmp", label: "眼球幅度", min: 0, max: 1, step: 0.05, tip: "满偏时眼球 (ParamEyeBallX/Y) 的偏移量：比转头小 = 眼神更含蓄" },
+			{ key: "rollAmp", label: "侧倾幅度", min: 0, max: 20, step: 1, tip: "满偏时头部侧倾（ParamAngleZ）的角度上限（度）" },
+			{ key: "panAmp", label: "位移幅度", min: 0, max: 0.05, step: 0.001, tip: "满偏时模型整体平移占容器宽 / 高的比例（微视差）" },
 		],
 	},
 ];
@@ -172,21 +157,8 @@ function matchLookPreset(params: LookParams): string | null {
 	return null;
 }
 
-/** Signed gain channels — shown with an explicit + so the mirrored half reads as intentional. */
-const SIGNED_LOOK_KEYS: ReadonlySet<keyof LookParams> = new Set([
-	"camAngleGain",
-	"camRollGain",
-	"camPanGain",
-	"camEyeGain",
-	"gyroAngleGain",
-	"gyroRollGain",
-	"gyroPanGain",
-	"gyroEyeGain",
-	"bodyZGain",
-]);
-
 /**
- * Trim a gain/amplitude to the shortest text that still tells tiny values
+ * Trim a slider value to the shortest text that still tells tiny values
  * apart: 0.005 must not render as "0.01" (261010 — the 2-decimal rounding hid
  * exactly the subtle settings the sliders exist for).
  */
@@ -196,11 +168,10 @@ function trimNumber(value: number): string {
 	return String(Number(value.toFixed(digits)));
 }
 
-/** Compact display for slider values (0.20 → 0.2, 22 → 22°, +0.55). */
+/** Compact display for slider values (0.20 → 0.2, 22 → 22°, 0.005 → 0.005). */
 function formatLookValue(key: keyof LookParams, value: number): string {
-	if (key === "angleRange" || key === "rollRange") return `${Math.round(value)}°`;
-	const text = trimNumber(value);
-	return SIGNED_LOOK_KEYS.has(key) && value > 0 ? `+${text}` : text;
+	if (key === "angleAmp" || key === "rollAmp") return `${Math.round(value)}°`;
+	return trimNumber(value);
 }
 
 /** Direct number input allowing keyboard typing (including minus signs and decimals) without getting prematurely wiped. */
@@ -619,7 +590,7 @@ export function Hud(props: HudProps) {
 							{!props.eyeTracking && !props.gyroParallax && (
 								<div className="lv-look-hint">开启视线追踪或陀螺仪视差后生效</div>
 							)}
-							<div className="lv-look-hint">转头 / 眼球 / 旋转 / 位移增益均可为负：负值 = 与输入方向相反，0 = 该源不参与；填很小的值可获得极细微的跟随</div>
+							<div className="lv-look-hint">灵敏度平衡两路输入（摄像头 / 陀螺仪），动作幅度就是满偏时角色的实际动作大小</div>
 							<div className="lv-look-presets">
 								{LOOK_PRESETS.map((preset) => (
 									<button
@@ -653,10 +624,7 @@ export function Hud(props: HudProps) {
 											const stageAngleOff =
 												props.liveMode === "third" &&
 												Boolean(props.currentPlayerModel) &&
-												(slider.key === "camAngleGain" || slider.key === "gyroAngleGain" ||
-													slider.key === "camEyeGain" || slider.key === "gyroEyeGain" ||
-													slider.key === "camRollGain" || slider.key === "gyroRollGain");
-											const signed = SIGNED_LOOK_KEYS.has(slider.key);
+												(slider.key === "angleAmp" || slider.key === "eyeAmp" || slider.key === "rollAmp");
 											return (
 												<label key={slider.key} className="lv-slider-row">
 													<span className="lv-slider-label">
@@ -665,13 +633,12 @@ export function Hud(props: HudProps) {
 													</span>
 													<input
 														type="range"
-														className={signed ? "lv-signed" : undefined}
 														min={slider.min}
 														max={slider.max}
 														step={slider.step}
 														value={Math.max(slider.min, Math.min(slider.max, props.lookParams[slider.key]))}
 														disabled={stageAngleOff}
-														title={stageAngleOff ? "第三人称对视模式下转头/眼球/旋转增益固定为 0（视线输入只做位置视差）" : slider.tip}
+														title={stageAngleOff ? "第三人称对视模式下转头/眼球/侧倾幅度固定为 0（视线输入只做位置视差）" : slider.tip}
 														onChange={(event) =>
 															props.onLookParamsChange({ [slider.key]: Number(event.target.value) })
 														}

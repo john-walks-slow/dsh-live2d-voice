@@ -95,9 +95,8 @@ export type SubmitPrompt = (
 type ViewProps = ConvViewProps & { submitPrompt?: SubmitPrompt; standalone?: boolean };
 
 /** localStorage key for persisted look params (sliders / presets). */
-// v2: the look gains changed from blend weights to signed amplitudes and the
-// head/eye channels split — v1 values mean something else entirely now.
-const LOOK_PARAMS_STORE = "lv-look-params-v2";
+// v5: per-channel gain + max-range merged into a single amplitude value.
+const LOOK_PARAMS_STORE = "lv-look-params-v5";
 
 /** Restore persisted look params, falling back to defaults. */
 function loadLookParams(): LookParams {
@@ -492,17 +491,17 @@ const TOUCH_LOOK_DECAY_MS = 450;
 	const AI_FACE_BIAS = -0.6;
 	const PLAYER_FACE_BIAS = 0.6;
 	// In third-person the avatars must not turn toward the user: zero the
-	// head/body angle, eye and roll gains and keep only the positional
+	// head/body angle, eye and roll amplitudes and keep only the positional
 	// parallax so camera/gyro still add depth. Single-model (first / call)
 	// keeps the user's params — the character looks at you.
 	const stageLookParams = (): LookParams =>
 		modelInfo?.liveMode === "third" && Boolean(modelInfo?.player?.url)
-			? { ...lookParamsRef.current, camAngleGain: 0, gyroAngleGain: 0, camEyeGain: 0, gyroEyeGain: 0, camRollGain: 0, gyroRollGain: 0 }
+			? { ...lookParamsRef.current, angleAmp: 0, eyeAmp: 0, rollAmp: 0 }
 			: lookParamsRef.current;
-	// The call-mode PiP avatar MIMICS the user: keep the full head/roll gains
+	// The call-mode PiP avatar MIMICS the user: keep the full head/roll amplitudes
 	// so it visibly follows your movement, but zero the positional pan so the
 	// model never slides out of its mask.
-	const pipLookParams = (): LookParams => ({ ...lookParamsRef.current, camPanGain: 0, gyroPanGain: 0 });
+	const pipLookParams = (): LookParams => ({ ...lookParamsRef.current, panAmp: 0 });
 
 	// The stage's shared Pixi application — created once per view (both
 	// avatars mount into it; see sharedStageRef). Destroyed on unmount.
@@ -836,7 +835,7 @@ const TOUCH_LOOK_DECAY_MS = 450;
 		}
 		const tracker = new GazeTracker({
 			onGaze: (x, y) => {
-				camLookRef.current = x === null ? null : { dx: (x - 0.5) * 2, dy: (y - 0.5) * 2 };
+				camLookRef.current = x === null ? null : { dx: (x - 0.5) * 2, dy: (0.5 - y) * 2 };
 			},
 			onState: (state) => {
 				if (state === "starting") {
