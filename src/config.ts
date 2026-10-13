@@ -140,39 +140,12 @@ export interface PluginConfig {
 	 */
 	gyroParallax: boolean;
 	/**
-	 * Live2D idle motion trigger interval in seconds (default 20s).
-	 * 0 or negative disables automatic random idle motions (keeps breath/blink only).
-	 */
-	idleInterval: number;
-	/**
 	 * Touch mode: the avatar looks at the finger (mouse hover counts as a
 	 * finger) and tap/swipe gestures drive the model's own gesture motions.
 	 */
 	touchMode: boolean;
 	/** Emotion tag → model expression name/index map. */
 	emotionMap: Record<string, number | string>;
-	/**
-	 * Live stage mode: "first" (input straight to the agent, one avatar),
-	 * "third" (input polished + spoken by the player avatar first, two
-	 * avatars facing each other), or "call" (input straight to the agent;
-	 * the player avatar mirrors the user in a small video-call window).
-	 */
-	liveMode: "first" | "third" | "call";
-	/** The player avatar's model (a catalog entry name); empty = voice only. */
-	playerModelSelection: string;
-	/**
-	 * The player avatar's Fish Audio voice. Defaults to a preset distinct
-	 * from the AI's default voice so the two characters sound different.
-	 */
-	playerVoiceId: string;
-	/** Polish/translate the user's input into the player persona's line. */
-	playerPolish: boolean;
-	/** The language the player avatar speaks (polish target); auto = keep. */
-	playerSpeechLanguage: string;
-	/** The player persona description fed to the polish prompt. */
-	playerPrompt: string;
-	/** Emotion tag → player model expression name/index map. */
-	playerEmotionMap: Record<string, number | string>;
 	/**
 	 * When set, entering the Live2D view automatically switches the session
 	 * to this model; exiting restores the previous selection.  Null/undefined
@@ -187,12 +160,6 @@ export interface PluginConfig {
 	 * subtitle translation isn't bottlenecked by a slow thinking model.
 	 */
 	translateModel?: { provider: string; model: string; reasoningEffort?: string } | null;
-
-	/**
-	 * When set, third-person player-line polish uses this model instead of
-	 * the session's. Null/undefined means "follow the session" (default).
-	 */
-	polishModel?: { provider: string; model: string; reasoningEffort?: string } | null;
 
 	/** Per-workspace overrides keyed by the workspace root path (cwd). */
 	workspaces: Record<string, Partial<PluginConfig>>;
@@ -261,23 +228,33 @@ export const DEFAULT_CONFIG: PluginConfig = {
 	subtitleLanguage: "zh",
 	sentenceSubtitles: true,
 	speechPrompt: "",
-	idleInterval: 20,
 	touchMode: false,
 	eyeTracking: false,
 	gyroParallax: false,
 	emotionMap: { ...DEFAULT_EMOTION_MAP },
-	liveMode: "first",
-	playerModelSelection: "",
-	playerVoiceId: "ed3a1c523b524870a85a5a76cb1e0c3d",
-	playerPolish: true,
-	playerSpeechLanguage: "zh",
-	playerPrompt: "",
-	playerEmotionMap: { ...DEFAULT_EMOTION_MAP },
 	workspaces: {},
 	liveModel: null,
 	translateModel: null,
-	polishModel: null,
 };
+
+/**
+ * Config keys this plugin no longer owns. The load path spreads the raw
+ * file over the defaults, so without stripping them a stale key would ride
+ * along in every future save; the stage-mode / idle / player-avatar features
+ * were removed outright, so their settings are dropped on read.
+ */
+const REMOVED_CONFIG_KEYS = [
+	"thirdPerson",
+	"liveMode",
+	"idleInterval",
+	"playerModelSelection",
+	"playerVoiceId",
+	"playerPolish",
+	"playerSpeechLanguage",
+	"playerPrompt",
+	"playerEmotionMap",
+	"polishModel",
+] as const;
 
 function readKeysFromFile(filePath: string): string[] {
 	try {
@@ -307,8 +284,6 @@ export function loadConfig(): PluginConfig {
 			...structuredClone(DEFAULT_CONFIG),
 			...raw,
 			emotionMap: { ...DEFAULT_EMOTION_MAP, ...(raw.emotionMap ?? {}) },
-			playerEmotionMap: { ...DEFAULT_EMOTION_MAP, ...(raw.playerEmotionMap ?? {}) },
-			idleInterval: typeof raw.idleInterval === "number" ? raw.idleInterval : DEFAULT_CONFIG.idleInterval,
 			touchMode: typeof raw.touchMode === "boolean" ? raw.touchMode : DEFAULT_CONFIG.touchMode,
 			workspaces: raw.workspaces ?? {},
 			apiKeys: Array.isArray(raw.apiKeys) ? raw.apiKeys.filter((k) => typeof k === "string" && k) : [],
@@ -338,13 +313,10 @@ export function loadConfig(): PluginConfig {
 		if (raw.speechLanguage === undefined && config.sttLanguage === "zh") {
 			config.sttLanguage = "auto";
 		}
-		// thirdPerson → liveMode migration: pre-call-mode configs carried a
-		// boolean; map it once (any later save persists liveMode) and strip
-		// the legacy key so it does not ride along in every future save.
-		if (raw.liveMode === undefined && (raw as { thirdPerson?: unknown }).thirdPerson === true) {
-			config.liveMode = "third";
-		}
-		delete (config as unknown as Record<string, unknown>).thirdPerson;
+		// stage-mode / idle / player-avatar keys are no longer part of the
+		// schema — drop them so they do not ride along in every future save.
+		const mutable = config as unknown as Record<string, unknown>;
+		for (const key of REMOVED_CONFIG_KEYS) delete mutable[key];
 		return config;
 	} catch {
 		return structuredClone(DEFAULT_CONFIG);

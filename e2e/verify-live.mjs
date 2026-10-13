@@ -215,7 +215,7 @@ if (result.events) {
 }
 // The user line renders locally (no LLM dependency); the assistant DOM card
 // depends on the reply's TTFT, which the e2e gateway can push past any
-// sane window — its rendering is covered by verify-third-person's DOM
+// sane window — its rendering is covered by the standalone suite's DOM
 // assertions instead. Here we only hard-require the user line.
 check(domState.subs.length >= 1, `DOM user subtitle rendered (seen ${domState.subs.length}: ${domState.subs.length >= 2 ? 'user+assistant' : 'user only'})`);
 await page.screenshot({ path: '/tmp/lv-e2e-4-reply.png' });

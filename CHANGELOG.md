@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **移除舞台模式（第三人称 / 视频通话）**：回到单角色。删除 `liveMode`（含遗留 `thirdPerson`）、玩家化身全部设置（`playerModelSelection` / `playerVoiceId` / `playerPolish` / `playerSpeechLanguage` / `playerPrompt` / `playerEmotionMap` / `polishModel`）、host 侧玩家台词管线（`src/player.ts`、`POST /live2d-voice/player-line`）、双模型共享 Pixi stage 与小窗 PiP；SSE 事件不再带 `speaker` 字段（客户端 `Speaker` 类型、引擎说话人追踪、字幕「你」徽章一并删除）。旧配置里的这些键在加载时被清除，不再随保存回写。**host 改动，线上实例需重启 dsh 生效**
+- **移除待机动作设置，改为对话状态门控**：删除插件的空闲动作调度器与 `idleInterval`（HUD 滑条、系统设置项、`dataset.lvIdleInterval` 契约）。待机动作回到渲染库默认行为（`MotionManager` 自己连播模型的 `Idle` 组），并新增门控：麦克风聆听中或角色说话期间取消待机（正在播的立即停），回合结束后约 1 秒（防抖）恢复；契约 `dataset.lvIdleEnabled`
+- 设置页模块重新编号：原 ⑧「找更多模型」→ ⑦；舞台模式卡片（原 ⑨）与润色专用模型卡片（原 ⑦）移除。e2e：`verify-third-person.mjs` / `verify-video-call.mjs` 删除，`verify-nodup.mjs` 移入 `boot` 模块
+
+## Unreleased
+
 - **触摸模式**（工具条手指按钮 / ⚙ 面板同开关，配置持久化 `touchMode`）：打开后角色视线跟随手指——触屏单指按下即跟视线、松手 0.5 秒缓动回落到摄像头（无摄像头则回中位），鼠标无需按键 hover 即跟随；单指不再平移（平移缩放交给双指），鼠标拖拽保持平移；视线向量走既有 look 管线（相机/陀螺仪增益照旧生效），诊断契约 `dataset.lvTouchLook`；首次开启给一次性提示
 - **手势动作**：触摸模式下快速滑动触发模型自带的 `Flick<方向>` 动作（缺方向组 → `Flick` → `Shake`，都没有则不动），方向一律取主轴；判定 = 距离 ≥40px + 时长 <400ms + 速度 ≥0.5px/ms，起手必须命中角色；与点击同为 NORMAL 优先级（不打断剧本动作，撞上时静默不响应），400ms 冷却防刷屏；组选择抽成纯函数 `gesture-math.ts`（表驱动断言）；诊断契约 `dataset.lvGesture`
 - **HUD 拆层**：`.lv-hud` 从"胶囊本体"变成透明 root layer（`pointer-events:none`），底部胶囊 `.lv-capsule` 与右上角视图按钮簇 `.lv-corner`（全屏 / 独立入口，含 safe-area）分列；胶囊盒子与旧 `.lv-hud` 逐像素等价（rect 相同、像素差 0.14% 为抗锯齿），淡出改为子元素作用域，麦克风常显只抬胶囊；e2e 选择器零改动

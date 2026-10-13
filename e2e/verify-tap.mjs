@@ -10,11 +10,8 @@
  *      motion ("body:<group>"), outside is ignored.
  *   T3 gesture coexistence: a 200px press-and-drag pans the model and must
  *      NOT fire a tap.
- *   T4 motion sounds: an idle motion must not fetch/play the model's own
- *      `sounds/*.wav` (hibiki ships voice clips with its idle motions).
- *   T5 idle cadence: models without an "Idle" group fall back to <=6s
- *      (megumin: 29 short clips in the unnamed group), models with one keep
- *      the user's interval (haru: 20s).
+ *   T4 motion sounds: starting a motion must not fetch/play the model's own
+ *      `sounds/*.wav` (hibiki ships voice clips with its clips).
  *
  * Zero real API: POST /live2d-voice/session creates an empty session; no
  * message is ever sent, so no LLM/TTS/ASR call happens.
@@ -36,7 +33,7 @@ const check = (id, ok, note = '') => { results.push({ id, ok }); console.log(`${
 const BEFORE = CFG && existsSync(CFG) ? readFileSync(CFG, 'utf8') : null;
 const pinModel = (name, extra = {}) => {
   const cfg = JSON.parse(BEFORE ?? '{}');
-  Object.assign(cfg, { modelPath: LIB, modelSelection: name, liveMode: 'first', eyeTracking: false, gyroParallax: false, ...extra });
+  Object.assign(cfg, { modelPath: LIB, modelSelection: name, eyeTracking: false, gyroParallax: false, ...extra });
   writeFileSync(CFG, JSON.stringify(cfg, null, 2) + '\n');
 };
 
@@ -78,7 +75,6 @@ const canvasBox = () => page.evaluate(() => {
 const tapState = () => page.evaluate(() => ({
   tap: document.querySelector('.lv-stage')?.dataset?.lvTap ?? null,
   transform: document.querySelector('.lv-stage')?.dataset?.lvTransform ?? null,
-  idle: document.querySelector('.lv-stage')?.dataset?.lvIdleInterval ?? null,
 }));
 
 /** Click and wait for `dataset.lvTap` to change (a motion may be playing at first). */
@@ -96,7 +92,7 @@ const tapAndWait = async (x, y, timeoutMs = 8000) => {
 
 try {
   // ── T1: declared HitAreas ────────────────────────────────────────────────
-  await loadModel('haru', { idleInterval: 0 });
+  await loadModel('haru', {});
   const box = await canvasBox();
   const centerX = box.x + box.w / 2, centerY = box.y + box.h * 0.35;
   const tapped = await tapAndWait(centerX, centerY);
@@ -120,7 +116,7 @@ try {
   check('T3b drag still pans the model', afterDrag.transform !== afterBlank.transform, `${afterBlank.transform} → ${afterDrag.transform}`);
 
   // ── T2: no HitAreas → visible bounds ─────────────────────────────────────
-  await loadModel('tsumiki', { idleInterval: 0 });
+  await loadModel('tsumiki', {});
   const box2 = await canvasBox();
   const tapped2 = await tapAndWait(box2.x + box2.w / 2, box2.y + box2.h * 0.4);
   check('T2a tap inside bounds (no HitAreas) starts the motion', Boolean(tapped2) && tapped2.startsWith('body:'), String(tapped2));
@@ -129,18 +125,20 @@ try {
   await page.waitForTimeout(1200);
   check('T2b tap outside bounds is ignored', (await tapState()).tap === beforeBlank2.tap, String(beforeBlank2.tap));
 
-  // ── T5: idle cadence contract ────────────────────────────────────────────
-  await loadModel('megumin', { idleInterval: 20 });
-  check('T5a no Idle group → cadence tightens to 6s', (await tapState()).idle === '6', String((await tapState()).idle));
-  await loadModel('haru', { idleInterval: 20 });
-  check('T5b Idle group → keeps the configured 20s', (await tapState()).idle === '20', String((await tapState()).idle));
-
   // ── T4: motion sounds are stripped ───────────────────────────────────────
+  // Start a motion from the ⚙ popover's motion list (the framework would
+  // fetch the clip's own `Sound` on start if the reference were still bound).
   soundRequests.length = 0;
-  await loadModel('hibiki', { idleInterval: 2 });
-  await page.mouse.click(box2.x + 60, box2.y + 60); // user gesture so autoplay policy would allow audio
-  await page.waitForTimeout(9000);
-  check('T4 motion sounds never fetched (idle ran ≥3 cycles)', soundRequests.length === 0, soundRequests.slice(0, 3).join(' | '));
+  await loadModel('hibiki', {});
+  await page.click('.lv-capsule button[title*="快捷调整"]');
+  await page.waitForSelector('.lv-pop .lv-look-fold', { timeout: 10000 });
+  await page.click('.lv-pop .lv-look-fold'); // 动作调试 fold
+  await page.waitForTimeout(300);
+  const motionButtons = await page.$$('.lv-pop .lv-langs button.lv-lang');
+  check('T4a motion list is available', motionButtons.length > 0, `${motionButtons.length} motions`);
+  if (motionButtons.length > 0) await motionButtons[0].click();
+  await page.waitForTimeout(4000);
+  check('T4b motion sounds never fetched', soundRequests.length === 0, soundRequests.slice(0, 3).join(' | '));
 
   check('T6 no page errors during the suite', pageErrors.length === 0, pageErrors.slice(0, 2).join(' | '));
 } finally {

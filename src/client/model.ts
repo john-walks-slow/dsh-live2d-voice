@@ -16,7 +16,7 @@
  * CubismModel.setParameterValueById — both are routed through setParam().
  */
 
-import { Application, Graphics } from "pixi.js";
+import { Application } from "pixi.js";
 import { Live2DModel as Live2DModelCubism4 } from "pixi-live2d-display-lipsyncpatch/cubism4";
 import { Live2DModel as Live2DModelCubism2 } from "pixi-live2d-display-lipsyncpatch/cubism2";
 import { logger } from "./logger.js";
@@ -39,11 +39,9 @@ export interface Live2DHandle {
 	/**
 	 * Play a motion defined in the model's settings file. Returns true on
 	 * success, false if the motion could not be started (missing group,
-	 * out-of-range index, etc.). Priority decides what it may interrupt:
-	 * "idle" yields to everything, "normal" (default) interrupts idle clips
-	 * only, "force" interrupts anything.
+	 * out-of-range index, etc.). Scripted motions take the FORCE lane.
 	 */
-	playMotion(motion: { name: string; group: string; index: number }, priority?: "idle" | "normal" | "force"): Promise<boolean>;
+	playMotion(motion: { name: string; group: string; index: number }): Promise<boolean>;
 	/** Read the motion catalog baked into the loaded model. */
 	getMotions(): { name: string; group: string; index: number }[];
 	/**
@@ -52,52 +50,18 @@ export interface Live2DHandle {
 	 * gestures keep working either way.
 	 */
 	setTouchMode(on: boolean): void;
-	getEyePosition(): { x: number; y: number };
 	/**
 	 * Drive the look: camera gaze target + gyro parallax.
 	 */
 	setLook(camera: { dx: number; dy: number } | null, gyro: { dx: number; dy: number } | null): void;
 	setLookParams(params: Partial<LookParams>): void;
 	/**
-	 * Update the stage layout (third-person mode shifts the two avatars
-	 * apart) and refit — no model reload.
+	 * Gate the framework's automatic idle motions. While off, no new idle clip
+	 * starts and a playing one (IDLE priority) is stopped — the view turns it
+	 * off for the duration of a conversation turn.
 	 */
-	setLayout(layout: Partial<StageLayout>): void;
+	setIdleEnabled(on: boolean): void;
 	destroy(): void;
-}
-
-/**
- * Where a model sits on the stage: the horizontal anchor as a fraction of
- * the container width (0.5 = centered) and a scale multiplier. Third-person
- * mode puts the player's avatar left (~0.28) and the AI's right (~0.72),
- * both slightly smaller.
- */
-export interface StageLayout {
-	xFraction: number;
-	scaleGain: number;
-	/** Resting horizontal gaze bias (-1..1): 0 = face the viewer, negative = look left. Third-person gives the two avatars opposing biases so they face each other. */
-	faceBiasX: number;
-	/**
-	 * Video-call self-view window: the model is fill-fitted into a small
-	 * rounded rect (clipped by a Pixi mask) instead of standing on the
-	 * stage. Position/size are fractions of the container so window and
-	 * DOM chrome survive resizes; the DOM overlay (drag/snap/chrome) is
-	 * owned by the view, which feeds the same spec back via setLayout.
-	 */
-	window?: StageWindow;
-}
-
-/** The video-call self-view window spec (fractions of the stage container). */
-export interface StageWindow {
-	/** Top-left corner, as fractions of container width/height (0..1). */
-	x: number;
-	y: number;
-	/** Window width as a fraction of the container width. */
-	w: number;
-	/** width/height ratio (CSS aspect-ratio compatible, e.g. 0.75 = 3:4 portrait). */
-	aspectRatio: number;
-	/** Corner radius in px (matches the DOM chrome's border-radius). */
-	radius: number;
 }
 
 export function isCubismCoreLoaded(): boolean {
@@ -105,43 +69,8 @@ export function isCubismCoreLoaded(): boolean {
 	return typeof g.Live2DCubismCore === "object" || typeof g.Live2D === "object";
 }
 
-/**
- * A shared Pixi application (one canvas, one WebGL context) that can host
- * several Live2D models.
- *
- * Why shared: the Cubism SDK keeps a process-global WebGLManager whose `gl`
- * pointer is captured by the most recent context. Two Pixi applications =
- * two WebGL contexts, and the earlier model's per-frame texture binds then
- * fail with "object does not belong to this context" (the first avatar
- * renders blank). One application hosting both avatars keeps Cubism happy.
- */
-export interface SharedStage {
-	app: Application;
-	canvas: HTMLCanvasElement;
-	/** Cross-model gesture state: hit-testing and drag ownership. */
-	gestures: GestureRegistry;
-}
-
-/**
- * Per-stage gesture state shared by every model on the same stage.
- * Each mountModel instance registers into the SAME list, so a pointer-down
- * hit-test can tell which avatar the finger actually landed on; `dragOwner`
- * pins the owning model for the duration of the drag (null = whole-camera
- * pan on empty space / middle / right button). Without the shared list each
- * handler only knows its own bounds and treats "not me" as "empty space",
- * so dragging one avatar dragged BOTH.
- */
-export interface GestureRegistry {
-	mounts: Array<{ model: GestureTarget }>;
-	dragOwner: GestureTarget | null;
-}
-
-/** The minimal surface a model must expose for hit-testing. */
-export interface GestureTarget {
-	getBounds(skipUpdate?: boolean): { x: number; y: number; width: number; height: number };
-}
-
-export function createLive2DStage(container: HTMLElement): SharedStage {
+/** Create the stage's Pixi application (one canvas, one WebGL context). */
+function createStage(container: HTMLElement): Application {
 	const dpr = typeof window !== "undefined" ? (window.devicePixelRatio || 1) : 1;
 	const app = new Application({
 		backgroundAlpha: 0,
@@ -150,9 +79,8 @@ export function createLive2DStage(container: HTMLElement): SharedStage {
 		autoDensity: true,
 		resolution: Math.max(1, Math.min(dpr, 3)),
 	});
-	const canvas = app.view as unknown as HTMLCanvasElement;
-	container.appendChild(canvas);
-	return { app, canvas, gestures: { mounts: [], dragOwner: null } };
+	container.appendChild(app.view as unknown as HTMLCanvasElement);
+	return app;
 }
 
 /**
@@ -175,11 +103,6 @@ export interface MountModelOptions {
 	getMouth: () => number;
 	/** Fired when the WebGL context is lost or restored; remount from here. */
 	onContextLost?: () => void;
-	layout?: Partial<StageLayout>;
-	/** Shared stage (third-person / call mode) — omit to own the stage. */
-	shared?: SharedStage;
-	/** Per-model dataset key suffix ("Ai" / "Player") for dual-model stages. */
-	tag?: string;
 	/** Touch-mode gaze feed (finger / hover position). */
 	touchLook?: TouchLookChannel;
 	/** Called when a swipe was refused because a *scripted* motion is playing
@@ -193,18 +116,11 @@ export async function mountModel({
 	modelUrl,
 	getMouth,
 	onContextLost,
-	layout,
-	shared,
-	tag,
 	touchLook,
 	onGestureRefused,
 }: MountModelOptions): Promise<Live2DHandle> {
-	// Owner mode creates (and later destroys) its own application; shared
-	// mode reuses one — the model is just added to that stage and its
-	// destroy never touches the application or canvas.
-	const app = shared?.app ?? createLive2DStage(container).app;
+	const app = createStage(container);
 	const canvas = app.view as unknown as HTMLCanvasElement;
-	const stageLayout: StageLayout = { xFraction: 0.5, scaleGain: 1, faceBiasX: 0, ...layout };
 
 	const onWebglLost = (e: Event) => {
 		e.preventDefault();
@@ -259,25 +175,13 @@ export async function mountModel({
 		logger.info(`Live2D model loaded successfully (${model.internalModel.originalWidth}x${model.internalModel.originalHeight})`);
 	} catch (error) {
 		logger.error(`Failed to load Live2D model from ${modelUrl}`, error);
-		if (!shared) {
-			try {
-				app.destroy(true, { children: true });
-			} catch {}
-			if (canvas.parentNode) canvas.remove();
-		}
+		try {
+			app.destroy(true, { children: true });
+		} catch {}
+		if (canvas.parentNode) canvas.remove();
 		throw error;
 	}
 	app.stage.addChild(model as never);
-
-	// Video-call self-view: the model lives inside a small rounded-rect
-	// window (mask in stage coordinates; the DOM chrome overlay in the view
-	// draws the visible frame and owns the drag/snap gestures).
-	let windowMask: Graphics | null = null;
-	if (stageLayout.window) {
-		windowMask = new Graphics();
-		app.stage.addChild(windowMask);
-		(model as unknown as { mask: Graphics | null }).mask = windowMask;
-	}
 
 	let camInput: { dx: number; dy: number } | null = null;
 	let gyroInput: { dx: number; dy: number } | null = null;
@@ -310,7 +214,6 @@ export async function mountModel({
 	const lookSettling = () =>
 		camInput !== null ||
 		gyroInput !== null ||
-		stageLayout.faceBiasX !== 0 ||
 		Math.abs(camSm.dx) + Math.abs(camSm.dy) + Math.abs(gyroSm.dx) + Math.abs(gyroSm.dy) > 0.004;
 	let lookParams: LookParams = { ...DEFAULT_LOOK_PARAMS };
 	let baseX = 0;
@@ -319,25 +222,10 @@ export async function mountModel({
 	let userScale = 1;
 	let userPanX = 0;
 	let userPanY = 0;
-	let lastNormalWidth = 0;
 	let lastNormalHeight = 0;
 	let touchMode = false;
 
 	const applyTransform = () => {
-		// Window mode (video-call PiP): the window owns the geometry — user
-		// pan/zoom gestures move the stage camera, not the framed avatar.
-		// Only the per-model key is written; the shared lvTransform stays
-		// owned by the stage model so call-mode gesture assertions on it
-		// keep working.
-		if (stageLayout.window) {
-			model.scale.set(baseScale);
-			model.position.set(baseX, baseY);
-			if (tag) {
-				const key = `lv${tag}Transform`;
-				if (container.dataset[key] !== "0,0,1.000") container.dataset[key] = "0,0,1.000";
-			}
-			return;
-		}
 		model.scale.set(baseScale * userScale);
 		const camSens = lookParams.camSensitivity ?? 1.0;
 		const gyroSens = lookParams.gyroSensitivity ?? 1.0;
@@ -354,17 +242,9 @@ export async function mountModel({
 		// Follow on X, counter-move on Y: the canvas Y axis points down, so a
 		// look that goes up (dy > 0) has to move the avatar to a smaller Y.
 		model.position.set(baseX + userPanX + effectivePanX, baseY + userPanY - effectivePanY);
-		// Gesture/zoom state as DOM observables — the e2e suite asserts
-		// against them (same convention as dataset.lvPlayer).
+		// Gesture/zoom state as a DOM observable — the e2e suite asserts
+		// against it.
 		const next = `${Math.round(userPanX)},${Math.round(userPanY)},${userScale.toFixed(3)}`;
-		// Per-model key first: on the dual stage two models write the shared
-		// lvTransform every frame (last-writer-wins), so per-avatar keys are
-		// the stable contract for "which model moved". The shared
-		// lvTransform stays for single-model mode / legacy assertions.
-		if (tag) {
-			const key = `lv${tag}Transform`;
-			if (container.dataset[key] !== next) container.dataset[key] = next;
-		}
 		if (container.dataset.lvTransform !== next) container.dataset.lvTransform = next;
 	};
 
@@ -374,7 +254,6 @@ export async function mountModel({
 		if (width === 0 || height === 0) return;
 		const isKeyboardOpen = container.closest(".lv-root")?.classList.contains("lv-keyboard-open");
 		if (!isKeyboardOpen) {
-			lastNormalWidth = width;
 			lastNormalHeight = height;
 		} else if (lastNormalHeight > 0 && height < lastNormalHeight) {
 			// On mobile, on-screen keyboard shrinks the container: keep the pre-keyboard height
@@ -382,28 +261,9 @@ export async function mountModel({
 			height = lastNormalHeight;
 		}
 		const internal = model.internalModel;
-		if (stageLayout.window) {
-			// Fill-fit (cover) into the PiP window, anchored near its top so
-			// the avatar's head stays in frame; the mask crops the overflow.
-			const win = stageLayout.window;
-			const winX = width * win.x;
-			const winY = height * win.y;
-			const winW = width * win.w;
-			const winH = winW / win.aspectRatio;
-			baseScale = Math.max(winW / internal.originalWidth, winH / internal.originalHeight) * stageLayout.scaleGain;
-			model.anchor.set(0.5, 0.5);
-			baseX = winX + winW / 2;
-			baseY = winY + winH * 0.1 + (internal.originalHeight * baseScale) / 2;
-			if (windowMask) {
-				const radius = Math.min(win.radius, winW / 2, winH / 2);
-				windowMask.clear().beginFill(0xffffff).drawRoundedRect(winX, winY, winW, winH, radius).endFill();
-			}
-			applyTransform();
-			return;
-		}
-		baseScale = Math.min(width / internal.originalWidth, height / internal.originalHeight) * 0.98 * stageLayout.scaleGain;
+		baseScale = Math.min(width / internal.originalWidth, height / internal.originalHeight) * 0.98;
 		model.anchor.set(0.5, 0.5);
-		baseX = width * stageLayout.xFraction;
+		baseX = width / 2;
 		baseY = height / 2 + height * 0.02;
 		applyTransform();
 	};
@@ -463,13 +323,8 @@ export async function mountModel({
 	const resolved = resolveParamIds(kind, hasParam);
 	const MOUTH_FALLBACK = resolved.mouth;
 	const LOOK_IDS = resolved.look;
-	// Diagnostic contract: which ids the drive actually targets. Third-person
-	// mode mounts both avatars into the same container, so the per-tag key is
-	// the stable one (same convention as lvTransform) and the shared key is
-	// only meaningful in single-model mode.
-	const paramIdsJson = JSON.stringify(resolved);
-	if (tag) container.dataset[`lv${tag}ParamIds`] = paramIdsJson;
-	container.dataset.lvParamIds = paramIdsJson;
+	// Diagnostic contract: which ids the drive actually targets.
+	container.dataset.lvParamIds = JSON.stringify(resolved);
 	// The framework plays a motion's own `Sound` on every motion start — with
 	// motion sounds present (33 of the 37 references in the local library ship
 	// the file) an idle motion makes the avatar randomly speak recorded lines
@@ -481,6 +336,37 @@ export async function mountModel({
 			for (const definition of list) if (definition?.Sound) delete definition.Sound;
 		}
 	}
+	/** pixi-live2d-display MotionPriority (NONE=0, IDLE=1, NORMAL=2, FORCE=3). */
+	const IDLE_PRIORITY = 1;
+	const NORMAL_PRIORITY = 2;
+	const FORCE_PRIORITY = 3;
+
+	// Automatic idle motions are the framework's own behaviour: whenever the
+	// motion lane goes free it plays a random clip from `motionManager.groups.idle`
+	// (MotionManager.update → shouldRequestIdleMotion). The view gates that on
+	// conversation state — point the lookup at a group no model declares to
+	// suspend it, and stop a clip that is already playing so the character does
+	// not finish a random animation while you are talking to it. Breath and
+	// blink are separate features and keep running either way.
+	const IDLE_GROUP = "Idle";
+	const NO_IDLE_GROUP = "__idle_suspended__";
+	const motionGroups = (internal.motionManager as unknown as { groups?: { idle?: string } }).groups;
+	const applyIdleGate = (on: boolean) => {
+		if (motionGroups) motionGroups.idle = on ? IDLE_GROUP : NO_IDLE_GROUP;
+		// Diagnostic contract (e2e): whether idle clips may start right now.
+		const flag = on ? "1" : "0";
+		if (container.dataset.lvIdleEnabled !== flag) container.dataset.lvIdleEnabled = flag;
+		if (on) return;
+		const manager = internal.motionManager as unknown as {
+			state?: { currentPriority?: number };
+			stopAllMotions?: () => void;
+		};
+		if ((manager.state?.currentPriority ?? 0) === IDLE_PRIORITY) manager.stopAllMotions?.();
+	};
+	// Publish the contract at mount (the view re-applies its own gate right
+	// after the handle resolves).
+	applyIdleGate(true);
+
 	const setParam = (id: string, value: number) => {
 		const core = internal.coreModel;
 		if (typeof core.setParamFloat === "function") core.setParamFloat(id, value);
@@ -532,19 +418,16 @@ export async function mountModel({
 			const rr = lookParams.rollAmp;
 
 			const bzGain = lookParams.bodyZGain ?? 0.4;
-			// Third-person base face angle (bias ±0.6 → ±13.2°) stays decoupled
-			// from angleAmp so smaller dynamic head turns don't flatten the stage
-			const faceBiasAngle = stageLayout.faceBiasX * 22;
 			const clamp1 = (v: number) => Math.max(-1, Math.min(1, v));
 
 			const angles: Array<[string, number]> = [
-				[LOOK_IDS.angleX, faceBiasAngle + lx * ar],
+				[LOOK_IDS.angleX, lx * ar],
 				[LOOK_IDS.angleY, ly * ar],
 				[LOOK_IDS.angleZ, lz * rr],
-				[LOOK_IDS.bodyX, (faceBiasAngle + lx * ar) * 0.5],
+				[LOOK_IDS.bodyX, lx * ar * 0.5],
 				[LOOK_IDS.bodyY, ly * ar * 0.5],
 				[LOOK_IDS.bodyZ, lz * rr * bzGain],
-				[LOOK_IDS.eyeX, clamp1(stageLayout.faceBiasX + ex * er)],
+				[LOOK_IDS.eyeX, clamp1(ex * er)],
 				[LOOK_IDS.eyeY, clamp1(ey * er)],
 			];
 			for (const [id, v] of angles) setParam(id, v);
@@ -559,31 +442,14 @@ export async function mountModel({
 	// - Wheel: zoom around cursor
 	// - Double click/tap: reset zoom & pan
 	const stage = container;
-	// Cross-model gesture registry: every mounted model on the same (shared)
-	// stage registers into one list so a pointer-down can decide which avatar
-	// the finger landed on. In third-person mode a single-finger drag moves
-	// only the avatar the finger actually landed on; tapping empty space pans
-	// the whole camera (both avatars). Two-finger pinch, wheel and
-	// double-click always act on the whole stage regardless.
-	const gestures: GestureRegistry = shared?.gestures ?? { mounts: [], dragOwner: null };
-	const registerMount = (m: AnyLive2D) => {
-		if (!gestures.mounts.find((e) => e.model === m)) gestures.mounts.push({ model: m });
-	};
-	const unregisterMount = (m: AnyLive2D) => {
-		const i = gestures.mounts.findIndex((e) => e.model === m);
-		if (i >= 0) gestures.mounts.splice(i, 1);
-	};
-	const hitAvatar = (event: PointerEvent): GestureTarget | null => {
+	/** Whether a pointer event landed on the avatar (empty space pans the camera). */
+	const hitModel = (event: PointerEvent): boolean => {
 		const rect = stage.getBoundingClientRect();
 		const gx = event.clientX - rect.left;
 		const gy = event.clientY - rect.top;
-		for (const { model: m } of gestures.mounts) {
-			const b = m.getBounds();
-			if (gx >= b.x && gx <= b.x + b.width && gy >= b.y && gy <= b.y + b.height) return m;
-		}
-		return null;
+		const b = model.getBounds();
+		return gx >= b.x && gx <= b.x + b.width && gy >= b.y && gy <= b.y + b.height;
 	};
-	registerMount(model);
 	const activeTouches = new Map<number, { x: number; y: number }>();
 	let lastPinchDist = 0;
 	let lastPinchMidX = 0;
@@ -602,9 +468,9 @@ export async function mountModel({
 	const TAP_SLOP_PX = 16;
 	const TAP_MAX_MS = 600;
 	let press: { x: number; y: number; lastX: number; lastY: number; at: number; onModel: boolean; moved: boolean } | null = null;
-	/** Which subsystem started a motion: the idle scheduler, a scripted (LLM or
-	 * HUD-picked) motion, or the user's own tap/flick. */
-	type MotionSource = "idle" | "script" | "gesture";
+	/** Which subsystem started a motion: a scripted (LLM or HUD-picked)
+	 * motion, or the user's own tap/flick. */
+	type MotionSource = "script" | "gesture";
 	// Who started the motion that is playing right now. Written by every start
 	// path through startMotion(); never cleared on finish (a looping motion
 	// never fires onFinish, and the library does not even register that
@@ -662,7 +528,7 @@ export async function mountModel({
 	 * `onResult` reports whether the gesture motion actually started.
 	 */
 	const startGesture = (group: string, index: number, onResult: (started: boolean) => void) => {
-		const attempt = () => startMotion(group, index, priorityValue("normal"), "gesture");
+		const attempt = () => startMotion(group, index, NORMAL_PRIORITY, "gesture");
 		void attempt()
 			.then((started) => {
 				if (started) return onResult(true);
@@ -692,21 +558,18 @@ export async function mountModel({
 	 * Touch-mode gaze: normalize the pointer into the ±1 look space relative to
 	 * the stage (same space the camera source uses) and hand it to the view,
 	 * which blends it with camera/gyro. `dataset.lvTouchLook` is the e2e
-	 * contract (per-tag key is the stable one in third-person mode).
+	 * contract.
 	 */
 	const publishTouchLook = (clientX: number, clientY: number) => {
 		const rect = stage.getBoundingClientRect();
 		if (rect.width <= 0 || rect.height <= 0) return;
 		const dx = Math.max(-1, Math.min(1, ((clientX - rect.left) / rect.width) * 2 - 1));
 		const dy = Math.max(-1, Math.min(1, 1 - ((clientY - rect.top) / rect.height) * 2));
-		const value = `${dx.toFixed(3)},${dy.toFixed(3)}`;
-		if (tag) container.dataset[`lv${tag}TouchLook`] = value;
-		container.dataset.lvTouchLook = value;
+		container.dataset.lvTouchLook = `${dx.toFixed(3)},${dy.toFixed(3)}`;
 		touchLook?.onTouchLook({ dx, dy });
 	};
 
 	const releaseTouchLook = () => {
-		if (tag) delete container.dataset[`lv${tag}TouchLook`];
 		delete container.dataset.lvTouchLook;
 		touchLook?.onTouchLook(null);
 	};
@@ -735,9 +598,7 @@ export async function mountModel({
 		if (!resolved) return;
 		startGesture(resolved.group, resolved.index, (started) => {
 			if (!started) return;
-			const value = `${area ?? "body"}:${resolved.group}`;
-			if (tag) container.dataset[`lv${tag}Tap`] = value;
-			container.dataset.lvTap = value;
+			container.dataset.lvTap = `${area ?? "body"}:${resolved.group}`;
 		});
 	};
 
@@ -787,9 +648,7 @@ export async function mountModel({
 				gestureCooldownUntil = Date.now();
 				return;
 			}
-			const value = `${direction}:${group}`;
-			if (tag) container.dataset[`lv${tag}Gesture`] = value;
-			container.dataset.lvGesture = value;
+			container.dataset.lvGesture = `${direction}:${group}`;
 			// Monotonic acceptance counter: a swipe that was refused does not
 			// advance it, so a test can attribute a gesture to *its own* input
 			// instead of trusting a stale value.
@@ -810,8 +669,7 @@ export async function mountModel({
 			if (activeTouches.size === 1) {
 				lastSingleTouchX = event.clientX;
 				lastSingleTouchY = event.clientY;
-				gestures.dragOwner = hitAvatar(event);
-				press = { x: event.clientX, y: event.clientY, lastX: event.clientX, lastY: event.clientY, at: Date.now(), onModel: gestures.dragOwner === model, moved: false };
+				press = { x: event.clientX, y: event.clientY, lastX: event.clientX, lastY: event.clientY, at: Date.now(), onModel: hitModel(event), moved: false };
 				if (touchMode) publishTouchLook(event.clientX, event.clientY);
 			} else if (activeTouches.size === 2) {
 				press = null; // a second finger means pinch, never a tap
@@ -827,9 +685,8 @@ export async function mountModel({
 			isMousePanning = !touchMode || event.button !== 0;
 			lastMouseX = event.clientX;
 			lastMouseY = event.clientY;
-			gestures.dragOwner = event.button === 0 ? hitAvatar(event) : null;
 			press = event.button === 0
-				? { x: event.clientX, y: event.clientY, lastX: event.clientX, lastY: event.clientY, at: Date.now(), onModel: gestures.dragOwner === model, moved: false }
+				? { x: event.clientX, y: event.clientY, lastX: event.clientX, lastY: event.clientY, at: Date.now(), onModel: hitModel(event), moved: false }
 				: null;
 			if (touchMode && event.button === 0) {
 				publishTouchLook(event.clientX, event.clientY);
@@ -860,17 +717,14 @@ export async function mountModel({
 					publishTouchLook(event.clientX, event.clientY);
 					return;
 				}
-				// Single finger drag: move only the avatar the finger
-				// landed on (empty space pans the whole camera).
+				// Single finger drag pans the camera.
 				const deltaX = event.clientX - lastSingleTouchX;
 				const deltaY = event.clientY - lastSingleTouchY;
-				if (gestures.dragOwner === null || gestures.dragOwner === model) {
-					userPanX += deltaX;
-					userPanY += deltaY;
-					lastSingleTouchX = event.clientX;
-					lastSingleTouchY = event.clientY;
-					applyTransform();
-				}
+				userPanX += deltaX;
+				userPanY += deltaY;
+				lastSingleTouchX = event.clientX;
+				lastSingleTouchY = event.clientY;
+				applyTransform();
 				return;
 			} else if (activeTouches.size >= 2) {
 				// Two fingers pinch = zoom & pan
@@ -897,10 +751,7 @@ export async function mountModel({
 
 		if (isMousePanning) {
 			if (touchMode && event.button === 0) return;
-			// Middle/right drag (owner null) and empty-space hits pan the
-			// whole camera; a left-drag owned by a sibling avatar must NOT
-			// move this one — that is the per-avatar drag in third-person.
-			if (gestures.dragOwner !== null && gestures.dragOwner !== model) return;
+			// Middle/right drag and empty-space hits pan the camera.
 			userPanX += event.clientX - lastMouseX;
 			userPanY += event.clientY - lastMouseY;
 			lastMouseX = event.clientX;
@@ -944,7 +795,6 @@ export async function mountModel({
 		if (touchMode && (event.pointerType === "touch" || event.pointerType === "pen") && activeTouches.size === 0) {
 			releaseTouchLook();
 		}
-		gestures.dragOwner = null;
 		// pointercancel must not fire anything; a press that travelled beyond the
 		// tap slop first gets a chance to be a swipe gesture, otherwise a tap.
 		if (event.type === "pointerup" && pending && pending.onModel) {
@@ -973,12 +823,9 @@ export async function mountModel({
 		applyTransform();
 	};
 
-	// Every mounted model listens on the stage and keeps its own gesture
-	// state. Third-person rule: a single finger drags only the avatar it
-	// landed on (hit-test at pointer-down); empty-space drag pans the
-	// whole camera. Two-finger pinch, wheel and double-click always act
-	// on the entire stage. (Gating listener attach on !shared left NO
-	// listeners attached once every mount went through the shared stage.)
+	// Pointer gestures on the stage: single-finger / left-button drag pans the
+	// camera, two-finger pinch & wheel zoom, double-click resets, a press that
+	// neither travels nor lingers is a tap on the avatar.
 	stage.addEventListener("pointerdown", onPointerDown);
 	stage.addEventListener("pointermove", onPointerMove);
 	stage.addEventListener("pointerup", onPointerUp);
@@ -1014,30 +861,18 @@ export async function mountModel({
 		return out;
 	})();
 
-	const priorityValue = (priority?: "idle" | "normal" | "force"): number => {
-		// pixi-live2d-display MotionPriority enum (NONE=0, IDLE=1, NORMAL=2, FORCE=3)
-		switch (priority) {
-			case "normal": return 2;
-			case "force": return 3;
-			case "idle":
-			default: return 1;
-		}
-	};
-
 	return {
 		setExpression(expression) {
 			void model.expression(expression).catch((error) => {
 				logger.warn(`expression ${String(expression)} failed`, error);
 			});
 		},
-		async playMotion(motion, priority) {
+		async playMotion(motion) {
 			try {
-				// Scripted (LLM motion tag) and HUD-picked motions are FORCE;
-				// the idle scheduler passes "idle". Both are recorded as the
-				// source of whatever is playing so a later swipe can tell whose
+				// Scripted (LLM motion tag) and HUD-picked motions take the FORCE
+				// lane; the source is recorded so a later swipe can tell whose
 				// motion it is about to interrupt.
-				const resolved = priority ?? "force";
-				return await startMotion(motion.group, motion.index, priorityValue(resolved), resolved === "idle" ? "idle" : "script");
+				return await startMotion(motion.group, motion.index, FORCE_PRIORITY, "script");
 			} catch (error) {
 				logger.warn(`motion ${motion.name} failed`, error);
 				return false;
@@ -1051,21 +886,6 @@ export async function mountModel({
 			if (!on) releaseTouchLook();
 			applyTransform();
 		},
-		getEyePosition() {
-			const width = container.clientWidth || 1;
-			const height = container.clientHeight || 1;
-			const internal = model.internalModel;
-			const origH = internal.originalHeight || 1000;
-			const currentScale = baseScale * userScale;
-			// The eyes in standard models are approximately 22% of logical height above center anchor (0.5)
-			const currentCenterX = baseX + userPanX;
-			const currentCenterY = baseY + userPanY;
-			const eyeY = currentCenterY - 0.22 * origH * currentScale;
-			return {
-				x: Math.round(currentCenterX),
-				y: Math.round(Math.max(20, Math.min(height - 20, eyeY))),
-			};
-		},
 		setLook(cam, gyro) {
 			camInput = cam;
 			gyroInput = gyro;
@@ -1076,9 +896,8 @@ export async function mountModel({
 			lookParams = { ...lookParams, ...params };
 			applyTransform();
 		},
-		setLayout(next) {
-			Object.assign(stageLayout, next);
-			fit();
+		setIdleEnabled(on) {
+			applyIdleGate(on);
 		},
 		destroy() {
 			canvas.removeEventListener("webglcontextlost", onWebglLost);
@@ -1091,36 +910,17 @@ export async function mountModel({
 			stage.removeEventListener("wheel", onWheel);
 			stage.removeEventListener("dblclick", onDblClick);
 			observer.disconnect();
-			if (windowMask) {
-				// Detach the mask before destroying the model, then dispose
-				// it on the shared stage (owner destroy also covers it via
-				// children, but explicit removal keeps shared mode clean).
-				(model as unknown as { mask: Graphics | null }).mask = null;
-				try {
-					app.stage.removeChild(windowMask);
-					windowMask.destroy();
-				} catch {}
-				windowMask = null;
-			}
 			try {
 				if (model.parent) {
 					model.parent.removeChild(model as never);
 				}
 			} catch {}
-			unregisterMount(model);
-			if (gestures.dragOwner === model) gestures.dragOwner = null;
-			if (tag) delete container.dataset[`lv${tag}Transform`];
-			if (tag) delete container.dataset[`lv${tag}ParamIds`];
-			if (tag) delete container.dataset[`lv${tag}Tap`];
-			if (tag) delete container.dataset[`lv${tag}Gesture`];
 			delete container.dataset.lvGestureSeq;
 			delete container.dataset.lvMotionBusy;
 			delete container.dataset.lvPreemptGesture;
 			delete container.dataset.lvRejectScript;
 			delete container.dataset.lvRejectCooldown;
 			delete container.dataset.lvRejectInvalidGesture;
-			// The shared tap key is last-writer-wins in dual mode (see AGENTS.md);
-			// drop it with the model so a stale value cannot outlive its mount.
 			delete container.dataset.lvTap;
 			try {
 				(model as unknown as { destroy: (options?: unknown) => void }).destroy({
@@ -1131,7 +931,6 @@ export async function mountModel({
 				} catch (err) {
 				logger.warn("Live2DModel.destroy threw error, safely suppressed", err);
 			}
-			if (shared) return; // the owner owns the application + canvas
 			try {
 				const gl = (app.renderer as unknown as { gl?: WebGLRenderingContext })?.gl;
 				const ext = gl?.getExtension("WEBGL_lose_context");

@@ -87,11 +87,10 @@ class TranslationQueue {
 }
 
 /**
- * Install the tap. Returns `supersede(sessionId)`: abort the session's
- * in-flight assistant TTS — the third-person player pipeline calls it when
- * the user's new line interrupts the AI mid-speech.
+ * Install the tap: sentence the watched session's model stream into
+ * expression, subtitle and streamed TTS events.
  */
-export function applySpeechTap(ctx: Context, deps: SpeechDeps): (sessionId: string) => void {
+export function applySpeechTap(ctx: Context, deps: SpeechDeps): void {
 	const active = new Map<string, ActiveSpeech>();
 	const translations = new Map<string, TranslationQueue>();
 
@@ -174,11 +173,6 @@ export function applySpeechTap(ctx: Context, deps: SpeechDeps): (sessionId: stri
 		active.get(sessionId)?.abort.abort();
 		translations.delete(sessionId);
 	});
-
-	// Third-person: a new player line interrupts the AI's pending synthesis.
-	return (sessionId: string) => {
-		active.get(sessionId)?.abort.abort();
-	};
 }
 
 type TranslateOnceFn = (

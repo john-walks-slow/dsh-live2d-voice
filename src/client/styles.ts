@@ -113,47 +113,6 @@ body[data-live2d-active="true"] [class*="taskBoard"] {
 	display: block;
 }
 
-/* Video-call self-view PiP: the DOM chrome over the masked model. */
-.lv-call-pip {
-	position: absolute;
-	z-index: 5;
-	box-sizing: border-box;
-	border: 1px solid rgba(255, 255, 255, 0.25);
-	background: color-mix(in srgb, var(--lv-accent) 10%, rgba(10, 12, 18, 0.35));
-	box-shadow: 0 6px 24px rgba(0, 0, 0, 0.35);
-	overflow: hidden;
-	touch-action: none;
-	cursor: grab;
-	transition: left 0.18s ease-out, top 0.18s ease-out;
-}
-
-.lv-call-pip:active {
-	cursor: grabbing;
-}
-
-.lv-call-pip-dragging {
-	transition: none;
-	box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5);
-}
-
-.lv-call-pip-badge {
-	position: absolute;
-	left: 6px;
-	bottom: 6px;
-	max-width: calc(100% - 12px);
-	padding: 2px 8px;
-	border-radius: 999px;
-	background: rgba(0, 0, 0, 0.45);
-	border: 1px solid rgba(255, 255, 255, 0.18);
-	color: rgba(255, 255, 255, 0.92);
-	font-size: 11px;
-	line-height: 1.4;
-	white-space: nowrap;
-	overflow: hidden;
-	text-overflow: ellipsis;
-	pointer-events: none;
-}
-
 /* ==========================================================================
    3. Subtitle Cards (Refined Glass Overlay)
    ========================================================================== */
@@ -190,29 +149,6 @@ body[data-live2d-active="true"] [class*="taskBoard"] {
 	animation: lv-sub-enter 0.28s cubic-bezier(0.16, 1, 0.3, 1);
 	will-change: transform, opacity;
 }
-
-/* Third-person: transient "酝酿中…" placeholder while the player line is
-   being polished — grayed, italic, clearly not a real line yet. */
-.lv-sub-pending {
-	opacity: 0.55;
-	font-style: italic;
-}
-
-/* Third-person: the player avatar's lines carry a small "你" badge so the
-   two characters stay distinguishable at a glance. */
-.lv-sub-speaker {
-	display: inline-block;
-	font-size: 10px;
-	font-weight: 600;
-	line-height: 1;
-	padding: 3px 5px;
-	margin-right: 8px;
-	vertical-align: -0.1em;
-	border-radius: 6px;
-	background: color-mix(in srgb, var(--lv-accent) 18%, transparent);
-	color: var(--lv-accent);
-}
-
 
 .lv-sub-old {
 	font-size: 13px;
@@ -561,40 +497,6 @@ body[data-live2d-active="true"] [class*="taskBoard"] {
 	background: color-mix(in srgb, var(--lv-accent) 14%, transparent);
 	color: var(--lv-accent);
 	font-weight: 500;
-}
-
-/* Stage mode segmented control: first / third / call. */
-.lv-mode-seg {
-	display: flex;
-	gap: 4px;
-	padding: 3px;
-	border: 1px solid var(--lv-border);
-	border-radius: 10px;
-	background: var(--lv-surface-2);
-	margin: 4px 0 8px;
-}
-
-.lv-mode-seg-btn {
-	flex: 1;
-	padding: 5px 4px;
-	border: none;
-	border-radius: 7px;
-	background: transparent;
-	color: var(--lv-fg);
-	font-size: 12px;
-	line-height: 1.3;
-	cursor: pointer;
-	transition: background 0.15s ease-out, color 0.15s ease-out;
-}
-
-.lv-mode-seg-btn:hover {
-	background: var(--lv-hover);
-}
-
-.lv-mode-seg-btn.lv-on {
-	background: color-mix(in srgb, var(--lv-accent) 18%, transparent);
-	color: var(--lv-accent);
-	font-weight: 600;
 }
 
 .lv-switch-row {

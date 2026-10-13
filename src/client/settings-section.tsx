@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from "react";
-import type { PublicConfig, LanguageOption, ModelCatalog, ModelProviderGroup, ModelCatalogModel, LiveMode } from "./types.js";
+import type { PublicConfig, LanguageOption, ModelCatalog, ModelProviderGroup, ModelCatalogModel } from "./types.js";
 import { fetchConfig, saveConfig, fetchModelCatalog, importModelZip } from "./api.js";
 import {
 	IconRefresh,
@@ -314,20 +314,12 @@ export function Live2DSettingsSection() {
 	const [speechLang, setSpeechLang] = useState("ja");
 	const [subLang, setSubLang] = useState("zh");
 	const [sentenceSubs, setSentenceSubs] = useState(true);
-	const [idleSec, setIdleSec] = useState(20);
 	const [touchMode, setTouchMode] = useState(false);
 	const [sttLang, setSttLang] = useState("auto");
 	const [asrMode, setAsrMode] = useState("stream");
 	const [micNs, setMicNs] = useState(true);
 	const [prompt, setPrompt] = useState("");
 	const [saving, setSaving] = useState(false);
-	// Stage mode drafts
-	const [liveMode, setLiveMode] = useState<LiveMode>("first");
-	const [playerModelSel, setPlayerModelSel] = useState("");
-	const [playerVoiceId, setPlayerVoiceId] = useState("");
-	const [playerPolish, setPlayerPolish] = useState(true);
-	const [playerLang, setPlayerLang] = useState("zh");
-	const [playerPrompt, setPlayerPrompt] = useState("");
 	// Live model auto-switch config
 	const [modelCatalog, setModelCatalog] = useState<ModelCatalog | null>(null);
 
@@ -346,18 +338,11 @@ export function Live2DSettingsSection() {
 				setSpeechLang(data.config.speechLanguage || "ja");
 				setSubLang(data.config.subtitleLanguage || "zh");
 				setSentenceSubs(data.config.sentenceSubtitles ?? true);
-				setIdleSec(typeof data.config.idleInterval === "number" ? data.config.idleInterval : 20);
 				setTouchMode(data.config.touchMode === true);
 				setSttLang(data.config.sttLanguage || "auto");
 				setAsrMode(data.config.asrMode || "stream");
 				setMicNs(data.config.micNoiseSuppression !== false);
 				setPrompt(data.config.speechPrompt || "");
-				setLiveMode(data.config.liveMode ?? "first");
-				setPlayerModelSel(data.config.playerModelSelection || "");
-				setPlayerVoiceId(data.config.playerVoiceId || "");
-				setPlayerPolish(data.config.playerPolish !== false);
-				setPlayerLang(data.config.playerSpeechLanguage || "zh");
-				setPlayerPrompt(data.config.playerPrompt || "");
 				setLoading(false);
 			})
 			.catch((err: unknown) => {
@@ -829,29 +814,6 @@ export function Live2DSettingsSection() {
 					</div>
 				</div>
 				<div className="lv-set-field">
-					<label className="lv-set-label">待机动作触发间隔 (idleInterval, 秒)</label>
-					<select
-						className="lv-set-select"
-						value={String(idleSec)}
-						onChange={(e) => {
-							const next = Number(e.target.value);
-							setIdleSec(next);
-							handleSave({ idleInterval: next });
-						}}
-					>
-						<option value="0">关闭 (仅呼吸+眨眼)</option>
-						<option value="10">10 秒</option>
-						<option value="20">20 秒 (默认)</option>
-						<option value="30">30 秒</option>
-						<option value="45">45 秒</option>
-						<option value="60">60 秒</option>
-						<option value="90">90 秒</option>
-					</select>
-					<div className="lv-set-help">
-						角色长时间不互动时才轻微触发一次待机动作（系统提示词会同步告诉大模型当前可用的所有动作标签 [motion:xxx]）。
-					</div>
-				</div>
-				<div className="lv-set-field">
 					<label className="lv-set-label">触摸模式 (touchMode)</label>
 					<select
 						className="lv-set-select"
@@ -889,19 +851,10 @@ export function Live2DSettingsSection() {
 				saving={saving}
 				onSave={(v) => handleSave({ translateModel: v })}
 			/>
-			{/* 模块 7：润色专用模型 */}
-			<DedicatedModelCard
-				title="⑦ 润色专用模型"
-				help="第三人称模式下玩家台词的润色默认复用会话当前模型。指定专用模型可独立控制润色质量与速度；留空则跟随会话。"
-				modelCatalog={modelCatalog}
-				saved={config?.polishModel}
-				saving={saving}
-				onSave={(v) => handleSave({ polishModel: v })}
-			/>
-			{/* 模块 8：找更多模型 */}
+			{/* 模块 7：找更多模型 */}
 			<div className="lv-set-card">
 				<div className="lv-set-card-head">
-					<h3 className="lv-set-card-title">⑧ 找更多模型</h3>
+					<h3 className="lv-set-card-title">⑦ 找更多模型</h3>
 				</div>
 				<div className="lv-set-field">
 					<label className="lv-set-label">免费模型与素材仓库</label>
@@ -933,137 +886,6 @@ export function Live2DSettingsSection() {
 				</div>
 			</div>
 
-			{/* 模块 9：舞台模式 */}
-			<div className="lv-set-card">
-				<div className="lv-set-card-head">
-					<h3 className="lv-set-card-title">⑨ 舞台模式（第一人称 / 第三人称 / 视频通话）</h3>
-				</div>
-				<div className="lv-set-help" style={{ marginBottom: "12px" }}>
-					<b>第一人称</b>：输入直接交给 AI，角色面对你。<br />
-					<b>第三人称</b>：输入先润色成你角色的台词（可选），由<b>你的模型与音色</b>先说出来，AI 的角色再开口回应——像一场双人剧。<br />
-					<b>视频通话</b>：输入原样直达 AI（不润色、不代播），你的化身以小窗形式实时跟随你的口型与视线，像一场视频通话。
-				</div>
-				<div className="lv-set-field">
-					<label className="lv-set-label">舞台模式 (liveMode)</label>
-					<select
-						className="lv-set-select"
-						value={liveMode}
-						onChange={(e) => {
-							const next = e.target.value as LiveMode;
-							setLiveMode(next);
-							handleSave({ liveMode: next });
-						}}
-					>
-						<option value="first">第一人称（输入直接交给 AI）</option>
-						<option value="third">第三人称（玩家化身先说，AI 再答）</option>
-						<option value="call">视频通话（小窗化身实时跟随，语音直达）</option>
-					</select>
-				</div>
-				{liveMode === "third" && (
-				<div className="lv-set-field">
-					<label className="lv-set-label">台词润色 / 翻译 (playerPolish)</label>
-					<select
-						className="lv-set-select"
-						value={playerPolish ? "on" : "off"}
-						onChange={(e) => {
-							const next = e.target.value === "on";
-							setPlayerPolish(next);
-							handleSave({ playerPolish: next });
-						}}
-					>
-						<option value="on">开启（口语 / 外语输入润色成角色台词）</option>
-						<option value="off">关闭（原话直出）</option>
-					</select>
-					<div className="lv-set-help">润色使用当前会话的模型，保留全部信息点；关闭则你的原话就是台词。</div>
-				</div>
-				)}
-				{liveMode === "third" && (
-				<div className="lv-set-field">
-					<label className="lv-set-label">玩家台词语言 (playerSpeechLanguage)</label>
-					<select
-						className="lv-set-select"
-						value={playerLang}
-						onChange={(e) => {
-							setPlayerLang(e.target.value);
-							handleSave({ playerSpeechLanguage: e.target.value });
-						}}
-					>
-						<option value="auto">跟随输入语言</option>
-						<option value="zh">简体中文</option>
-						<option value="ja">日语</option>
-						<option value="en">English</option>
-					</select>
-					<div className="lv-set-help">润色开启时，台词最终用这种语言说出（例：中文输入 → 日语台词）。</div>
-				</div>
-				)}
-				{liveMode !== "first" && models.length > 0 && (
-					<div className="lv-set-field">
-						<label className="lv-set-label">玩家角色模型 (playerModelSelection)</label>
-						<Live2DModelSelector
-							models={models}
-							value={playerModelSel}
-							onChange={(modelName) => {
-								setPlayerModelSel(modelName);
-								handleSave({ playerModelSelection: modelName });
-							}}
-							allowEmpty={true}
-							emptyLabel="— 无独立模型（仅音色）—"
-							autoSelectFirstOnGroupChange={false}
-							layout="row"
-						/>
-						<div className="lv-set-help" style={{ marginTop: "6px" }}>
-							{playerModelSel
-								? `当前玩家模型：${playerModelSel}`
-								: liveMode === "third"
-									? "不选则第三人称只有玩家音色（无独立模型）；双人同台时玩家居左、AI 居右。"
-									: "不选则视频通话无小窗化身；小窗可拖动，松手自动吸附到最近的角落。"}
-						</div>
-					</div>
-				)}
-				{liveMode === "third" && (
-				<div className="lv-set-field">
-					<label className="lv-set-label">玩家音色 (playerVoiceId)</label>
-					<VoicePresetSelector
-						value={playerVoiceId}
-						onChange={(preset) => {
-							setPlayerVoiceId(preset.voiceId);
-							handleSave({ playerVoiceId: preset.voiceId });
-						}}
-					/>
-					<div className="lv-set-help" style={{ marginTop: "6px" }}>
-						{playerVoiceId === voiceId && (
-							<span style={{ color: "var(--dsw-alias-state-warn-label, #f59e0b)", marginRight: "8px" }}>
-								⚠️ 玩家音色与 AI 音色相同，建议选不同音色更好分辨。
-							</span>
-						)}
-						玩家化身的 Fish Audio 音色；双人同台时用于区分玩家台词发音。
-					</div>
-				</div>
-				)}
-				{liveMode === "third" && (
-				<div className="lv-set-field">
-					<label className="lv-set-label">玩家人设 (playerPrompt)</label>
-					<textarea
-						className="lv-set-textarea"
-						rows={3}
-						value={playerPrompt}
-						placeholder="例如：元气少年，说话爽朗带点冲劲，偶尔用「学长」称呼对方…"
-						onChange={(e) => setPlayerPrompt(e.target.value)}
-					/>
-					<div style={{ marginTop: "6px" }}>
-						<button
-							type="button"
-							className="lv-set-btn lv-set-btn-primary"
-							disabled={saving}
-							onClick={() => handleSave({ playerPrompt })}
-						>
-							保存人设
-						</button>
-					</div>
-					<div className="lv-set-help">润色时作为你角色的口吻参考；留空则只做通用润色。</div>
-				</div>
-				)}
-			</div>
 		</div>
 	);
 }

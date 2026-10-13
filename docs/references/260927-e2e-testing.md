@@ -23,7 +23,6 @@ node e2e/run.mjs fullscreen       # 全屏与虚拟键盘
 node e2e/run.mjs gaze             # 视线计算与滑块
 node e2e/run.mjs settings         # 设置与模型切换
 node e2e/run.mjs styles           # 样式隔离
-node e2e/run.mjs third-person     # 第三人称与防重
 
 # 2. 精准单点运行
 node e2e/run.mjs verify-boot
@@ -42,12 +41,11 @@ node e2e/run.mjs verify-live      # 单点跑真实语音链路
 
 | 模块名 | 覆盖业务 | 包含套件 | 说明 |
 | --- | --- | --- | --- |
-| `boot` | 启动生命周期 | `verify-boot`, `verify-standalone`, `verify-unload-cleanup` | 守护零 API boot、独立入口与卸载清理 |
+| `boot` | 启动生命周期 | `verify-boot`, `verify-standalone`, `verify-unload-cleanup`, `verify-nodup` | 守护零 API boot、独立入口、卸载清理与防重复提交 |
 | `fullscreen` | 视口与移动端适配 | `verify-fullscreen-usable`, `verify-fullscreen-keyboard`, `verify-keyboard-squish`, `verify-standalone-fullscreen` | 检查全屏样式、键盘避让与几何计算 |
 | `gaze` | 视线追踪与联动 | `verify-look-math`, `verify-look-sliders` | 纯数学计算与参数面板交互 |
 | `settings` | 设置与配置 | `verify-settings-model`, `verify-voice-library` | 设置页 Live2D 分组导航、模型切换与音色库（检索/试听/选用，路由全夹具拦截） |
 | `styles` | 样式隔离与 HMR | `verify-style-claim` | 守护 CSS bundle 防止被其他插件卸载 |
-| `third-person` | 双角色同台 | `verify-third-person`, `verify-nodup` | 双角色舞台布局与防重复提交 |
 
 ### 真实 API 孤立集合（`real-api`，默认不自动运行）
 

@@ -81,8 +81,6 @@ export interface RouteDeps {
 	resolveKeys: (config: PluginConfig) => string[];
 	/** The camera tool's pending-capture bridge. */
 	cameraBridge: { deliver(requestId: string, shot: { dataUrl: string; width: number; height: number } | null): boolean };
-	/** Third-person player pipeline (POST /live2d-voice/player-line). */
-	playerPipeline: { submit(sessionId: string, text: string, mode: "queue" | "steer"): void };
 	/** Fish Audio public voice catalog (voice library routes). */
 	voiceCatalog: VoiceCatalogService;
 }
@@ -371,16 +369,13 @@ export function installRoutes(ctx: Context, deps: RouteDeps): (() => void) | und
 			void readJsonBody(req)
 				.then((body) => {
 					const patch: Partial<PluginConfig> = {};
-					for (const key of ["modelPath", "modelSelection", "voiceId", "ttsModel", "asrAppId", "asrAccessToken", "asrApiKey", "sttLanguage", "asrMode", "speechLanguage", "subtitleLanguage", "speechPrompt", "playerModelSelection", "playerVoiceId", "playerSpeechLanguage", "playerPrompt"] as const) {
+					for (const key of ["modelPath", "modelSelection", "voiceId", "ttsModel", "asrAppId", "asrAccessToken", "asrApiKey", "sttLanguage", "asrMode", "speechLanguage", "subtitleLanguage", "speechPrompt"] as const) {
 						if (typeof body[key] === "string") patch[key] = body[key] as string;
 					}
 					if (typeof body.eyeTracking === "boolean") patch.eyeTracking = body.eyeTracking;
 					if (typeof body.gyroParallax === "boolean") patch.gyroParallax = body.gyroParallax;
-					if (typeof body.idleInterval === "number") patch.idleInterval = body.idleInterval;
 					if (typeof body.touchMode === "boolean") patch.touchMode = body.touchMode;
 					if (typeof body.sentenceSubtitles === "boolean") patch.sentenceSubtitles = body.sentenceSubtitles;
-					if (body.liveMode === "first" || body.liveMode === "third" || body.liveMode === "call") patch.liveMode = body.liveMode;
-					if (typeof body.playerPolish === "boolean") patch.playerPolish = body.playerPolish;
 					if (Array.isArray(body.apiKeys)) {
 						patch.apiKeys = body.apiKeys.filter((key): key is string => typeof key === "string" && key.length > 0);
 					} else if (typeof body.apiKey === "string") {
@@ -393,17 +388,9 @@ export function installRoutes(ctx: Context, deps: RouteDeps): (() => void) | und
 						}
 						patch.emotionMap = emotionMap;
 					}
-					// playerEmotionMap: third-person player avatar expression map.
-					if (typeof body.playerEmotionMap === "object" && body.playerEmotionMap !== null && !Array.isArray(body.playerEmotionMap)) {
-						const playerEmotionMap: Record<string, number | string> = {};
-						for (const [emotion, expression] of Object.entries(body.playerEmotionMap as Record<string, unknown>)) {
-							if (typeof expression === "number" || typeof expression === "string") playerEmotionMap[emotion] = expression;
-						}
-						patch.playerEmotionMap = playerEmotionMap;
-					}
-					// liveModel / translateModel / polishModel: object
-					// (provider+model+optional effort) or null to clear.
-					const modelPatchValue = (key: "liveModel" | "translateModel" | "polishModel") => {
+					// liveModel / translateModel: object (provider+model+optional
+					// effort) or null to clear.
+					const modelPatchValue = (key: "liveModel" | "translateModel") => {
 						const v = (body as Record<string, unknown>)[key];
 						if (v === null) return null;
 						if (typeof v === "object" && v !== null && !Array.isArray(v)) {
@@ -418,7 +405,7 @@ export function installRoutes(ctx: Context, deps: RouteDeps): (() => void) | und
 						}
 						return undefined;
 					};
-					for (const key of ["liveModel", "translateModel", "polishModel"] as const) {
+					for (const key of ["liveModel", "translateModel"] as const) {
 						const v = modelPatchValue(key);
 						if (v !== undefined) patch[key] = v;
 					}
@@ -616,33 +603,6 @@ export function installRoutes(ctx: Context, deps: RouteDeps): (() => void) | und
 		} })
 	);
 
-	// Third-person player line: enqueue into the player pipeline (polish →
-	// player TTS → agent submit). Accepted immediately — the polished line,
-	// its audio, and the reply all arrive over the session SSE.
-	disposers.push(
-		webServer.register({ kind: "exact", path: "/live2d-voice/player-line", handler: (req, res) => {
-			if (req.method !== "POST") {
-				writeJson(res, 405, { code: "method_not_allowed" });
-				return;
-			}
-			void readJsonBody(req)
-				.then((body) => {
-					const sessionId = typeof body.sessionId === "string" ? body.sessionId : "";
-					const text = typeof body.text === "string" ? body.text.trim() : "";
-					const mode = body.mode === "steer" ? "steer" : "queue";
-					if (!sessionId || !text) {
-						writeJson(res, 400, { code: "bad_message", message: "sessionId and text are required" });
-						return;
-					}
-					deps.playerPipeline.submit(sessionId, text, mode);
-					writeJson(res, 200, { accepted: true });
-				})
-				.catch((error: unknown) => {
-					writeJson(res, 400, { code: "bad_request", message: error instanceof Error ? error.message : String(error) });
-				});
-		} })
-	);
-
 	// Camera tool result: the browser delivers the captured frame for a
 	// pending `camera-capture` request (or reports failure with null).
 	disposers.push(
@@ -689,16 +649,8 @@ export function installRoutes(ctx: Context, deps: RouteDeps): (() => void) | und
 				: deps.getConfig();
 			const catalog = resolveModelCatalog(config);
 			const entry = resolveModelSelection(config, catalog);
-			// Modes that render the player avatar: the third-person stage
-			// duo and the video-call self-view window.
-			const playerEntry = config.playerModelSelection ? catalog.find((model) => model.name === config.playerModelSelection) : undefined;
-			const showsPlayer = config.liveMode === "third" || config.liveMode === "call";
-			const playerMotions = (showsPlayer && playerEntry) ? extractModelMotions(join(config.modelPath, playerEntry.relative)) : [];
-			const player = showsPlayer && playerEntry
-				? { name: playerEntry.name, label: playerEntry.label, kind: playerEntry.kind, url: modelUrl(playerEntry), motions: playerMotions }
-				: undefined;
 			if (entry === undefined) {
-				writeJson(res, 200, { configured: Boolean(config.modelPath), url: undefined, liveMode: config.liveMode, player });
+				writeJson(res, 200, { configured: Boolean(config.modelPath), url: undefined });
 				return;
 			}
 			const motions = extractModelMotions(join(config.modelPath, entry.relative));
@@ -720,8 +672,6 @@ export function installRoutes(ctx: Context, deps: RouteDeps): (() => void) | und
 					groupLabel: model.group ? (GROUP_LABELS[model.group] ?? model.group) : undefined,
 					url: modelUrl(model),
 				})),
-				liveMode: config.liveMode,
-				player,
 			});
 		} })
 	);

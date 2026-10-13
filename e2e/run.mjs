@@ -20,7 +20,7 @@ import { SKIP_EXIT_CODE } from './lib/skip.mjs';
 export const MODULES = {
 	boot: {
 		description: '启动流程、会话入口与卸载清理',
-		suites: ['verify-boot', 'verify-standalone', 'verify-unload-cleanup'],
+		suites: ['verify-boot', 'verify-standalone', 'verify-unload-cleanup', 'verify-nodup'],
 	},
 	fullscreen: {
 		description: '全屏、虚拟键盘与移动端适配',
@@ -42,10 +42,6 @@ export const MODULES = {
 	styles: {
 		description: '样式注入与插件间 CSS 认领隔离',
 		suites: ['verify-style-claim'],
-	},
-	'third-person': {
-		description: '第三人称双角色同台与事件防重',
-		suites: ['verify-third-person', 'verify-nodup'],
 	},
 };
 

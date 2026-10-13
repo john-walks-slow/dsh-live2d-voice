@@ -89,18 +89,6 @@ const settingsCheck = await page.evaluate(() => {
   const card6 = cards.find((c) => (c.textContent ?? '').includes('⑥ 翻译专用模型'));
   const card6Selects = card6 ? [...card6.querySelectorAll('select.lv-model-select')] : [];
 
-  const card7 = cards.find((c) => (c.textContent ?? '').includes('⑦ 润色专用模型'));
-  const card7Selects = card7 ? [...card7.querySelectorAll('select.lv-model-select')] : [];
-
-  // Check Module 9: stage mode (liveMode) card — post video-call merge the
-  // card is "⑨ 舞台模式" with a persistent liveMode select (first/third/call);
-  // player model/voice selects render conditionally under third/call.
-  const card9 = cards.find((c) => (c.textContent ?? '').includes('⑨ 舞台模式'));
-  const card9Selects = card9 ? [...card9.querySelectorAll('select')] : [];
-  const card9LiveMode = card9Selects.find((s) =>
-    [...s.options].some((o) => (o.textContent ?? '').includes('第三人称'))
-    && [...s.options].some((o) => (o.textContent ?? '').includes('视频通话')));
-
   return {
     cardTitles,
     card1: {
@@ -120,13 +108,6 @@ const settingsCheck = await page.evaluate(() => {
     card6: {
       selectCount: card6Selects.length,
     },
-    card7: {
-      selectCount: card7Selects.length,
-    },
-    card9: {
-      selectCount: card9Selects.length,
-      hasLiveModeSelect: Boolean(card9LiveMode),
-    },
   };
 });
 
@@ -135,8 +116,6 @@ console.log('  Card 1 (Model):', settingsCheck.card1);
 console.log('  Card 2 (Voice):', settingsCheck.card2);
 console.log('  Card 5 (Live Dedicated):', settingsCheck.card5);
 console.log('  Card 6 (Translate):', settingsCheck.card6);
-console.log('  Card 7 (Polish):', settingsCheck.card7);
-console.log('  Card 9 (Third-person):', settingsCheck.card9);
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Part 1b: Settings Interactive Tests (Category switch & Dedicated Model save)
@@ -255,8 +234,6 @@ const okSettings =
   settingsCheck.card2.selectCount >= 1 &&
   settingsCheck.card5.selectCount >= 1 &&
   settingsCheck.card6.selectCount >= 1 &&
-  settingsCheck.card7.selectCount >= 1 &&
-  settingsCheck.card9.hasLiveModeSelect &&
   interactiveCheck.groupSwitched &&
   interactiveCheck.saveBtnEnabled;
 

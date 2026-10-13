@@ -14,7 +14,7 @@
  * S6  zero pageerror
  */
 import pw from '/root/projects/camoufox-mcp/node_modules/playwright-core/index.js';
-import { existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { execSync } from 'node:child_process';
 const { chromium } = pw;
 
@@ -81,17 +81,6 @@ const ev = (fn, ...args) => page.evaluate(fn, ...args);
 const sleep = (ms) => page.waitForTimeout(ms);
 
 try {
-  // Pin first-person mode: this suite asserts the direct-input path — a
-  // leftover liveMode=third/call from another suite would reroute the
-  // submit through the player pipeline.
-  {
-    const cfgPath = `${process.env.DSH_E2E_HOME}/live2d-voice.json`;
-    const c = JSON.parse(readFileSync(cfgPath, 'utf8'));
-    if (c.liveMode !== 'first') {
-      c.liveMode = 'first';
-      writeFileSync(cfgPath, JSON.stringify(c, null, 2) + '\n');
-    }
-  }
   // ---- S0: session via the plugin route (铁律 #3: no message-for-id, no
   // GUI composer dance — the standalone page is opened directly below). ----
   const created = await fetch(`http://127.0.0.1:${process.env.DSH_E2E_PORT}/live2d-voice/session`, {

@@ -30,7 +30,6 @@
 		"e2e:gaze": "dsh-e2e run e2e/run.mjs gaze",
 		"e2e:settings": "dsh-e2e run e2e/run.mjs settings",
 		"e2e:styles": "dsh-e2e run e2e/run.mjs styles",
-		"e2e:third-person": "dsh-e2e run e2e/run.mjs third-person",
 		"e2e:real-api": "dsh-e2e run e2e/run.mjs real-api",
 		"e2e": "dsh-e2e run e2e/run.mjs --list"
 	},

@@ -1,5 +1,5 @@
-// Smoke test: open DSH system settings, confirm the Live2D translate/polish
-// dedicated-model picker cards render (new ModelPickerCard instances).
+// Smoke test: open DSH system settings, confirm the Live2D translate
+// dedicated-model picker card renders (new ModelPickerCard instances).
 import pw from '/root/projects/camoufox-mcp/node_modules/playwright-core/index.js';
 import { skip } from './lib/skip.mjs';
 const { chromium } = pw;
@@ -39,7 +39,7 @@ await page.waitForTimeout(3000);
 const result = await page.evaluate(() => {
   const cards = [...document.querySelectorAll('.lv-set-card-title')].map((e) => (e.textContent ?? '').trim());
   const has = (needle) => cards.some((c) => c.includes(needle));
-  return { cards, hasTranslate: has('翻译专用模型'), hasPolish: has('润色专用模型'), hasLive: has('Live 模式专用模型') };
+  return { cards, hasTranslate: has('翻译专用模型'), hasLive: has('Live 模式专用模型') };
 });
 if (result.cards.length === 0) {
   skip('verify-settings-model', '设置面板没渲染出 Live2D 设置卡（需要完整 GUI/设置导航状态；最小 e2e 实例达不到）');
@@ -82,7 +82,6 @@ console.log('settings clicked:', clicked, 'lv nav:', lvNav);
 
 console.log('titles:', JSON.stringify(result.cards));
 console.log('translate card:', result.hasTranslate ? '✓ renders' : '✗ MISSING');
-console.log('polish card:', result.hasPolish ? '✓ renders' : '✗ MISSING');
 console.log('live card (baseline):', result.hasLive ? '✓ renders' : '✗ MISSING');
 console.log('page errors:', errors.length ? JSON.stringify(errors.slice(0, 5)) : 'none');
 console.log('touchMode field:', JSON.stringify(result.touch));
@@ -92,4 +91,4 @@ const touchOk = Boolean(result.touch?.present) &&
 console.log('touchMode 开关往返:', touchOk ? '✓ 设置卡入口可用且落盘' : '✗ 缺失或未落盘');
 
 await browser.close();
-process.exit(result.hasTranslate && result.hasPolish && touchOk && !errors.length ? 0 : 1);
+process.exit(result.hasTranslate && touchOk && !errors.length ? 0 : 1);

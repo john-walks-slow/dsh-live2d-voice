@@ -3,12 +3,6 @@
  * config shape returned by /live2d-voice/config).
  */
 
-/** Who an utterance belongs to: the AI's avatar or the player's (third-person). */
-export type Speaker = "assistant" | "player";
-
-/** Live stage mode: single avatar / stage-play duo / video-call self-view PiP. */
-export type LiveMode = "first" | "third" | "call";
-
 export interface PublicConfig {
 	modelPath: string;
 	modelSelection: string;
@@ -31,8 +25,6 @@ export interface PublicConfig {
 	/** Per-sentence subtitles/TTS (on by default); off → paragraph chunks. */
 	sentenceSubtitles: boolean;
 	speechPrompt: string;
-	/** Seconds between automatic random idle motions (0 = off). */
-	idleInterval: number;
 	/**
 	 * Touch mode: the avatar looks at the finger (hover for the mouse) and
 	 * swipe/tap gestures drive the model's own gesture motions.
@@ -41,33 +33,12 @@ export interface PublicConfig {
 	eyeTracking: boolean;
 	gyroParallax: boolean;
 	emotionMap: Record<string, number | string>;
-	/**
-	 * Live stage mode: "first" = input straight to the agent (single
-	 * avatar); "third" = the player avatar speaks the polished user line
-	 * first; "call" = input straight to the agent, the player avatar
-	 * mirrors the user in a small video-call window.
-	 */
-	liveMode: LiveMode;
-	/** The player avatar's model (catalog entry name); empty = voice only. */
-	playerModelSelection: string;
-	/** The player avatar's Fish Audio voice. */
-	playerVoiceId: string;
-	/** Polish/translate the user's input into the player persona's line. */
-	playerPolish: boolean;
-	/** The language the player avatar speaks (polish target); auto = keep. */
-	playerSpeechLanguage: string;
-	/** The player persona description fed to the polish prompt. */
-	playerPrompt: string;
-	/** Emotion tag → player model expression map. */
-	playerEmotionMap: Record<string, number | string>;
 	apiKeyCount: number;
 	asrConfigured: boolean;
 	/** When set, the Live view auto-switches to this model on entry. */
 	liveModel?: { provider: string; model: string; reasoningEffort?: string } | null;
 	/** When set, subtitle translation uses this model instead of the session's. */
 	translateModel?: { provider: string; model: string; reasoningEffort?: string } | null;
-	/** When set, third-person player-line polish uses this model instead of the session's. */
-	polishModel?: { provider: string; model: string; reasoningEffort?: string } | null;
 }
 
 export interface VoicePreset {
@@ -133,18 +104,12 @@ export interface ModelInfo {
 	motions?: ModelMotion[];
 	/** The full catalog when modelPath is a directory of models. */
 	models?: { name: string; label?: string; kind?: "moc2" | "moc3"; group?: string; groupLabel?: string; url: string }[];
-	/** The live stage mode the view should render. */
-	liveMode?: LiveMode;
-	/** The player avatar's model when the mode shows one and a selection matches. */
-	player?: { name: string; label?: string; kind?: "moc2" | "moc3"; url: string; motions?: ModelMotion[] };
 }
 
 export interface ExpressionPayload {
 	utteranceId: string;
 	emotion: string;
 	expression: number | string;
-	/** Which avatar the expression drives (absent = assistant). */
-	speaker?: Speaker;
 }
 
 /** One motion definition extracted from a model's settings file. */
@@ -157,23 +122,17 @@ export interface ModelMotion {
 export interface MotionPayload {
 	utteranceId?: string;
 	motion: string;
-	/** Which avatar plays the motion (absent = assistant). */
-	speaker?: Speaker;
 }
 
 export interface AudioStartPayload {
 	utteranceId: string;
 	sampleRate: number;
-	/** Which avatar is about to speak (absent = assistant). */
-	speaker?: Speaker;
 }
 
 export interface AudioPayload {
 	utteranceId: string;
 	seq: number;
 	b64: string;
-	/** Which avatar's voice this chunk carries (absent = assistant). */
-	speaker?: Speaker;
 }
 
 export interface SubtitlePayload {
@@ -188,8 +147,6 @@ export interface SubtitlePayload {
 	 * playback). Undefined → show immediately (no audio: no keys / TTS fail).
 	 */
 	audioSeq?: number;
-	/** Which avatar said the line (absent = assistant). */
-	speaker?: Speaker;
 }
 
 /** The camera tool asks the page for a photo (host → browser). */
@@ -206,8 +163,6 @@ export interface SubtitleTranslationPayload {
 export interface SpeechEndPayload {
 	utteranceId: string;
 	reason: "finish" | "aborted";
-	/** Which avatar's speech ended (absent = assistant). */
-	speaker?: Speaker;
 }
 
 export interface ErrorPayload {
@@ -259,11 +214,11 @@ export interface ModelCatalog {
 export interface StreamHandlers {
 	onExpression?: (payload: ExpressionPayload) => void;
 	onMotion?: (payload: MotionPayload) => void;
-	onSpeechStart?: (payload: { utteranceId: string; speaker?: Speaker }) => void;
+	onSpeechStart?: (payload: { utteranceId: string }) => void;
 	onSpeechEnd?: (payload: SpeechEndPayload) => void;
 	onAudioStart?: (payload: AudioStartPayload) => void;
 	onAudio?: (payload: AudioPayload) => void;
-	onAudioEnd?: (payload: { utteranceId: string; speaker?: Speaker }) => void;
+	onAudioEnd?: (payload: { utteranceId: string }) => void;
 	onSubtitle?: (payload: SubtitlePayload) => void;
 	onSubtitleTranslation?: (payload: SubtitleTranslationPayload) => void;
 	onCameraCapture?: (payload: CameraCapturePayload) => void;

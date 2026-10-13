@@ -6,7 +6,7 @@
  */
 
 import type { MicState } from "./mic.js";
-import type { LanguageOption, LiveMode, VoicePreset } from "./types.js";
+import type { LanguageOption, VoicePreset } from "./types.js";
 import type { ModelCatalog, ModelProviderGroup, ModelSelection } from "./types.js";
 import type { LookParams } from "./model.js";
 import type { GazeCalibration } from "./gaze.js";
@@ -62,21 +62,6 @@ export interface HudProps {
 	currentModel?: string;
 	currentModelGroup: string;
 	onPickModelGroup: (id: string) => void;
-	/** Live stage mode: first = the AI faces you; third = stage duo (the player avatar speaks the polished line); call = video-call PiP self-view. */
-	liveMode: LiveMode;
-	/** Polish/translate the user's input into the player persona's line (third only). */
-	playerPolish: boolean;
-	onSetLiveMode: (mode: LiveMode) => void;
-	onTogglePlayerPolish: () => void;
-	/** The player avatar's current model (undefined = none selected). */
-	currentPlayerModel?: string;
-	onPickPlayerModel: (name: string) => void;
-	/** The player avatar's current voice preset id. */
-	currentPlayerVoiceId: string;
-	onPickPlayerVoice: (preset: VoicePreset) => void;
-	/** Idle motion trigger interval (seconds). */
-	idleInterval: number;
-	onChangeIdleInterval: (value: number) => void;
 	/** Motion definitions available on the current AI model. */
 	motions: { name: string; group: string; index: number }[];
 	/** Callback invoked when the user clicks a motion debug button. */
@@ -374,92 +359,6 @@ export function Hud(props: HudProps) {
 										</div>
 									)}
 								</div>
-
-								{/* Idle 间隔调节 */}
-								<div className="lv-look-params">
-									<div className="lv-look-header">
-										<span className="lv-look-title">待机动作间隔</span>
-										<span className="lv-look-hint">
-											{props.idleInterval <= 0 ? "关闭（仅呼吸+眨眼）" : `${props.idleInterval}s`}
-										</span>
-									</div>
-									<input
-										type="range"
-										min={0}
-										max={120}
-										step={5}
-										value={props.idleInterval}
-										onChange={(e) => props.onChangeIdleInterval(Number(e.target.value))}
-									/>
-								</div>
-							</>
-						)}
-
-						{/* 舞台模式：第一人称 / 第三人称 / 视频通话 */}
-						<h4>舞台模式</h4>
-						<div className="lv-mode-seg" role="radiogroup" aria-label="舞台模式">
-							{([
-								{ id: "first", label: "第一人称", hint: "角色直接面对你" },
-								{ id: "third", label: "第三人称", hint: "双人舞台剧，台词先润色再由你的化身说出" },
-								{ id: "call", label: "视频通话", hint: "你的化身在小窗中实时跟随你，语音直达不润色" },
-							] as Array<{ id: LiveMode; label: string; hint: string }>).map((opt) => (
-								<button
-									key={opt.id}
-									type="button"
-									role="radio"
-									aria-checked={props.liveMode === opt.id}
-									className={`lv-mode-seg-btn${props.liveMode === opt.id ? " lv-on" : ""}`}
-									title={opt.hint}
-									onClick={() => props.onSetLiveMode(opt.id)}
-								>
-									{opt.label}
-								</button>
-							))}
-						</div>
-						{props.liveMode !== "first" && (
-							<>
-								{props.models.length > 1 && (
-									<>
-										<div className="lv-look-hint">玩家角色</div>
-										<Live2DModelSelector
-											models={props.models}
-											value={props.currentPlayerModel}
-											onChange={props.onPickPlayerModel}
-											allowEmpty={true}
-											emptyLabel="— 无独立模型（仅音色）—"
-											layout="stack"
-										/>
-									</>
-								)}
-								{props.liveMode === "third" && (
-									<>
-										<div className="lv-look-hint">玩家音色</div>
-										<VoicePresetSelector
-											value={props.currentPlayerVoiceId}
-											onChange={(preset) => props.onPickPlayerVoice(preset)}
-										/>
-										{props.currentPlayerVoiceId === props.currentVoiceId && (
-											<div className="lv-look-hint">玩家音色与 AI 相同，建议换一个更好分辨</div>
-										)}
-										<div className="lv-switch-row">
-											<span>台词润色 / 翻译</span>
-											<button
-												type="button"
-												role="switch"
-												aria-checked={props.playerPolish}
-												className={`lv-switch${props.playerPolish ? " lv-on" : ""}`}
-												onClick={props.onTogglePlayerPolish}
-											>
-												<span className="lv-switch-knob" />
-											</button>
-										</div>
-									</>
-								)}
-								{props.liveMode === "call" && (
-									<div className="lv-look-hint">
-										视频通话模式：小窗化身跟随你的麦克风口型与视线，说话内容原样直达角色，不润色、不代播。
-									</div>
-								)}
 							</>
 						)}
 
@@ -616,46 +515,33 @@ export function Hud(props: HudProps) {
 								LOOK_SLIDER_GROUPS.map((group) => (
 									<div key={group.group} className="lv-slider-group">
 										<div className="lv-slider-group-title">{group.group}</div>
-										{group.sliders.map((slider) => {
-											// Third-person stage: characters face each other and camera/gyro only
-											// drive position parallax, so the head angle / eye / roll channels
-											// (and the body roll that couples to them) are forced to 0 — disable
-											// the sliders instead of showing values that silently do nothing.
-											const stageAngleOff =
-												props.liveMode === "third" &&
-												Boolean(props.currentPlayerModel) &&
-												(slider.key === "angleAmp" || slider.key === "eyeAmp" || slider.key === "rollAmp" || slider.key === "bodyZGain");
-											return (
-												<label key={slider.key} className="lv-slider-row">
-													<span className="lv-slider-label">
-														{slider.label}
-														{stageAngleOff ? "（对视停用）" : ""}
-													</span>
-													<input
-														type="range"
-														min={slider.min}
-														max={slider.max}
-														step={slider.step}
-														value={Math.max(slider.min, Math.min(slider.max, props.lookParams[slider.key]))}
-														disabled={stageAngleOff}
-														title={stageAngleOff ? "第三人称对视模式下转头/眼球/侧倾幅度固定为 0（视线输入只做位置视差）" : slider.tip}
-														onChange={(event) =>
-															props.onLookParamsChange({ [slider.key]: Number(event.target.value) })
-														}
-													/>
-													<LookParamInput
-														step={slider.step}
-														value={props.lookParams[slider.key]}
-														disabled={stageAngleOff}
-														title="手动输入数值（支持超出范围实验）"
-														onChange={(val) => props.onLookParamsChange({ [slider.key]: val })}
-													/>
-													<span className="lv-slider-value">
-														{formatLookValue(slider.key, props.lookParams[slider.key])}
-													</span>
-												</label>
-											);
-										})}
+										{group.sliders.map((slider) => (
+											<label key={slider.key} className="lv-slider-row">
+												<span className="lv-slider-label">
+													{slider.label}
+												</span>
+												<input
+													type="range"
+													min={slider.min}
+													max={slider.max}
+													step={slider.step}
+													value={Math.max(slider.min, Math.min(slider.max, props.lookParams[slider.key]))}
+													title={slider.tip}
+													onChange={(event) =>
+														props.onLookParamsChange({ [slider.key]: Number(event.target.value) })
+													}
+												/>
+												<LookParamInput
+													step={slider.step}
+													value={props.lookParams[slider.key]}
+													title="手动输入数值（支持超出范围实验）"
+													onChange={(val) => props.onLookParamsChange({ [slider.key]: val })}
+												/>
+												<span className="lv-slider-value">
+													{formatLookValue(slider.key, props.lookParams[slider.key])}
+												</span>
+											</label>
+										))}
 									</div>
 								))}
 						</div>

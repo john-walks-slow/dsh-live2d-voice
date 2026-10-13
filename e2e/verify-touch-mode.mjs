@@ -41,7 +41,7 @@ if (!PORT || !CFG) { console.log('… 需要 DSH_E2E_PORT/DSH_E2E_HOME（走 dsh
 const BEFORE = existsSync(CFG) ? readFileSync(CFG, 'utf8') : null;
 const pin = (extra = {}) => {
   const cfg = JSON.parse(BEFORE ?? '{}');
-  Object.assign(cfg, { modelPath: LIB, modelSelection: 'haru', liveMode: 'first', eyeTracking: false, gyroParallax: false, idleInterval: 0, ...extra });
+  Object.assign(cfg, { modelPath: LIB, modelSelection: 'haru', eyeTracking: false, gyroParallax: false, ...extra });
   writeFileSync(CFG, JSON.stringify(cfg, null, 2) + '\n');
 };
 
@@ -749,11 +749,11 @@ PY`, { encoding: 'utf8' }).trim();
   check('T6a 只有 Flick 的模型 → 回退 Flick', t6a.ok, `实际=${t6a.value} seq ${t6a.seq0}→${t6a.seq1}（${t6a.attempts} 次尝试）`);
 
   await load({ touchMode: true, modelSelection: 'izumi' });
-  const izBox = await page.evaluate(() => {
+  const izBoxT6 = await page.evaluate(() => {
     const c = document.querySelector('.lv-stage canvas').getBoundingClientRect();
     return { x: c.x, y: c.y, w: c.width, h: c.height };
   });
-  const t6b = await swipeOnce(izBox.x + izBox.w * 0.5, izBox.y + izBox.h * 0.4, 0, 160, 'Down:Shake');
+  const t6b = await swipeOnce(izBoxT6.x + izBoxT6.w * 0.5, izBoxT6.y + izBoxT6.h * 0.4, 0, 160, 'Down:Shake');
   check('T6b 缺方向组且无裸 Flick 的模型 → 回退 Shake', t6b.ok, `实际=${t6b.value} seq ${t6b.seq0}→${t6b.seq1}（${t6b.attempts} 次尝试）`);
 
   // T14 重试有硬上限 + 失败报真实状态；izumi 没有 FlickDown → 该期望永不出现。

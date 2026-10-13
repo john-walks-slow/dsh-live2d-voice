@@ -8,15 +8,15 @@
 
 import { useEffect, useRef, useState, useCallback, type FC } from "react";
 import type { ConvViewProps } from "@deepseek-ai/dsh-client-ui-conversation/client";
-import { fetchConfig, fetchModelInfo, fetchModelCatalog, fetchModelSelection, openStream, postMessage, postPlayerLine, recognizeUtterance, saveConfig, selectModel, postCameraResult, startAsrUpload, type AsrUpload } from "./api.js";
+import { fetchConfig, fetchModelInfo, fetchModelCatalog, fetchModelSelection, openStream, postMessage, recognizeUtterance, saveConfig, selectModel, postCameraResult, startAsrUpload, type AsrUpload } from "./api.js";
 import { SpeechEngine } from "./engine.js";
 import { Hud } from "./hud.js";
-import { isCubismCoreLoaded, mountModel, createLive2DStage, DEFAULT_LOOK_PARAMS, type Live2DHandle, type LookParams, type SharedStage, type StageWindow, type TouchLookChannel } from "./model.js";
+import { isCubismCoreLoaded, mountModel, DEFAULT_LOOK_PARAMS, type Live2DHandle, type LookParams, type TouchLookChannel } from "./model.js";
 import { MicCapture, type MicState } from "./mic.js";
 import { GazeTracker, capturePhoto, loadSavedCalibration, saveCalibration, type GazeCalibration } from "./gaze.js";
 import { TiltParallax } from "./tilt.js";
 import { SubtitleOverlay, SUBTITLE_TTL_MS, type SubtitleLine } from "./subtitle.js";
-import type { LanguageOption, LiveMode, ModelCatalog, ModelInfo, ModelSelection, Speaker, VoicePreset } from "./types.js";
+import type { LanguageOption, ModelCatalog, ModelInfo, ModelSelection, VoicePreset } from "./types.js";
 import { LevelMeter } from "./level-meter.js";
 import { IconSpinner, IconSend } from "./icons.js";
 import { logger } from "./logger.js";
@@ -30,54 +30,6 @@ interface SentinelLike {
 }
 
 const HUD_IDLE_FADE_MS = 2500;
-
-/** Video-call PiP window geometry: width fraction of the stage, w/h ratio, corner radius px, edge margin px. */
-const PIP_WIDTH_FRACTION = 0.26;
-const PIP_ASPECT_RATIO = 3 / 4;
-const PIP_RADIUS_PX = 16;
-const PIP_MARGIN_PX = 12;
-
-/** Build the PiP window spec for the player model from a fractional position. */
-const pipWindowOf = (pos: { x: number; y: number }): StageWindow => ({
-	x: pos.x,
-	y: pos.y,
-	w: PIP_WIDTH_FRACTION,
-	aspectRatio: PIP_ASPECT_RATIO,
-	radius: PIP_RADIUS_PX,
-});
-
-/** Clamp a PiP top-left (stage fractions) so the whole window stays on-screen. */
-const clampPipPos = (pos: { x: number; y: number }, stageW: number, stageH: number) => {
-	const winH = (stageW * PIP_WIDTH_FRACTION) / PIP_ASPECT_RATIO;
-	return {
-		x: Math.min(Math.max(pos.x, 0), 1 - PIP_WIDTH_FRACTION),
-		y: Math.min(Math.max(pos.y, 0), 1 - winH / stageH),
-	};
-};
-
-/** Snap to the nearest on-screen corner (inset by the edge margin). */
-const snapPipPos = (pos: { x: number; y: number }, stageW: number, stageH: number) => {
-	const w = PIP_WIDTH_FRACTION;
-	const h = (stageW * PIP_WIDTH_FRACTION) / PIP_ASPECT_RATIO / stageH;
-	const mx = PIP_MARGIN_PX / stageW;
-	const my = PIP_MARGIN_PX / stageH;
-	const corners = [
-		{ x: mx, y: my },
-		{ x: 1 - w - mx, y: my },
-		{ x: mx, y: 1 - h - my },
-		{ x: 1 - w - mx, y: 1 - h - my },
-	];
-	let best = corners[0];
-	let bestDist = Infinity;
-	for (const corner of corners) {
-		const dist = (corner.x - pos.x) ** 2 + (corner.y - pos.y) ** 2;
-		if (dist < bestDist) {
-			best = corner;
-			bestDist = dist;
-		}
-	}
-	return clampPipPos(best, stageW, stageH);
-};
 
 /**
  * Submit one user line through the host. The resolved result may carry
@@ -114,27 +66,16 @@ export function Live2DView(props: ViewProps) {
 	const rootRef = useRef<HTMLDivElement>(null);
 	const nativeFsRef = useRef(false); // 当前是否处于 root 的浏览器原生全屏（standalone 模式）
 	const stageRef = useRef<HTMLDivElement>(null);
-	/**
-	 * The stage's single Pixi application — one canvas, one WebGL context,
-	 * hosting BOTH avatars in third-person mode (the Cubism SDK keeps a
-	 * global gl pointer; a second context would blank the first model).
-	 */
-	const sharedStageRef = useRef<SharedStage | null>(null);
 	const inputRef = useRef<HTMLInputElement>(null);
 	const engineRef = useRef<SpeechEngine | null>(null);
 	const modelRef = useRef<Live2DHandle | null>(null);
-	/** The player's own avatar (third-person mode); null = voice only. */
-	const playerModelRef = useRef<Live2DHandle | null>(null);
-	/** Latest player expression that arrived before the avatar finished mounting. */
-	const pendingPlayerExpressionRef = useRef<number | string | null>(null);
 	const nextLineId = useRef(1);
 	/**
 	 * Subtitle lines held until their audio actually starts playing (host
-	 * synthesis runs ahead of browser playback) — assistant lines and
-	 * third-person player lines alike. Lines without audioSeq are shown
-	 * immediately and never enter this queue.
+	 * synthesis runs ahead of browser playback). Lines without audioSeq are
+	 * shown immediately and never enter this queue.
 	 */
-	const pendingSubsRef = useRef<Array<{ role: SubtitleLine["role"]; text: string; lineId?: string; utteranceId?: string; audioSeq: number; at: number; translation?: string; speaker?: Speaker }>>([]);
+	const pendingSubsRef = useRef<Array<{ role: SubtitleLine["role"]; text: string; lineId?: string; utteranceId?: string; audioSeq: number; at: number; translation?: string }>>([]);
 
 	useEffect(() => {
 		logger.setSessionId(sessionId);
@@ -161,7 +102,6 @@ export function Live2DView(props: ViewProps) {
 	};
 
 	const [languages, setLanguages] = useState<LanguageOption[]>([]);
-	const [idleInterval, setIdleInterval] = useState(20);
 	const [touchMode, setTouchMode] = useState(false);
 	// HUD finger button flashes for ~200ms when a swipe was refused because a
 	// scripted motion is playing (the one refusal with no other feedback).
@@ -194,39 +134,16 @@ export function Live2DView(props: ViewProps) {
 	const [popoverOpen, setPopoverOpen] = useState(false);
 	const [fullscreen, setFullscreen] = useState(false);
 	const [faded, setFaded] = useState(false);
-	/**
-	 * Per-speaker active utterance ids: which utterance's expression/audio is
-	 * still current for each avatar. A new player utterance interrupts
-	 * everything (the user said something new); a new assistant utterance
-	 * only supersedes the assistant's own audio.
-	 */
-	const activeAssistantUtterance = useRef("");
-	const activePlayerUtterance = useRef("");
-	// Live stage mode (drives submitText routing, stage layout + HUD).
-	const [liveMode, setLiveMode] = useState<LiveMode>("first");
-	const [playerVoiceId, setPlayerVoiceId] = useState("");
-	const [playerPolish, setPlayerPolish] = useState(true);
-	/** liveMode at submit time must match what the host believes. */
-	const liveModeRef = useRef<LiveMode>("first");
-	liveModeRef.current = liveMode;
-
-	// ---- Video-call self-view PiP (call mode) ----
-	/** Window top-left as fractions of the stage (size is a fixed fraction). */
-	const [pipPos, setPipPos] = useState({ x: 0.97 - PIP_WIDTH_FRACTION, y: 0.03 });
-	const pipPosRef = useRef(pipPos);
-	pipPosRef.current = pipPos;
-	const [pipDragging, setPipDragging] = useState(false);
-	/** Pointer grab offset inside the PiP window (px), held while dragging. */
-	const pipGrabRef = useRef({ dx: 0, dy: 0 });
-	/** Mic RMS (0..1, already ×6 amplified) feeding the PiP avatar's mouth. */
-	const micMouthRef = useRef(0);
-	/** Which role the mounted player model plays: stage duo / call window. */
-	const playerViewRef = useRef<"stage" | "window" | null>(null);
-	/** True while the stage runs the dual-avatar (third person) layout. */
-	const dualRef = useRef(false);
+	/** The utterance whose expression/audio is still current. A new utterance
+	 * supersedes the previous one's audio. */
+	const activeUtterance = useRef("");
 
 	// Voice input (continuous listening).
 	const [micState, setMicState] = useState<MicState>("idle");
+	/** True between the character's speech-start and speech-end (SSE-driven). */
+	const [speaking, setSpeaking] = useState(false);
+	/** Last idle-gate value pushed to the model (a remount re-applies it). */
+	const idleEnabledRef = useRef(true);
 	const [micLevel, setMicLevel] = useState(0);
 	const [asrPending, setAsrPending] = useState(false);
 	const [asrConfigured, setAsrConfigured] = useState(false);
@@ -272,8 +189,6 @@ export function Live2DView(props: ViewProps) {
 	const asrPendingCount = useRef(0);
 	const segmentWhileSpeakingRef = useRef(false);
 	const assistantEchoRef = useRef("");
-	/** Recent player lines (third-person) — the other echo-suppression side. */
-	const playerEchoRef = useRef("");
 	/** The live upload feeding the current speech segment (streaming ASR). */
 	const asrUploadRef = useRef<AsrUpload | null>(null);
 	/** The upload id of the utterance this view is currently speaking into. */
@@ -297,43 +212,28 @@ export function Live2DView(props: ViewProps) {
 		return hit.text;
 	};
 
-	const showSubtitle = (role: SubtitleLine["role"], text: string, lineId: string | undefined, at: number, translation?: string, speaker?: Speaker) => {
+	const showSubtitle = (role: SubtitleLine["role"], text: string, lineId: string | undefined, at: number, translation?: string) => {
 		const merged = translation ?? takeLateTr(lineId);
 		if (role === "assistant") {
 			assistantEchoRef.current = `${assistantEchoRef.current}\n${text}`.split("\n").slice(-3).join("\n");
-		} else if (role === "user" && speaker === "player") {
-			playerEchoRef.current = `${playerEchoRef.current}\n${text}`.split("\n").slice(-3).join("\n");
 		}
-		// A real line arrived — the third-person "酝酿中…" placeholder retires.
 		setSubtitles((prev) => [
-			...prev.slice(-5).filter((line) => !line.pending),
-			{ id: nextLineId.current++, role, text, lineId, at, ...(merged ? { translation: merged } : {}), ...(speaker ? { speaker } : {}) },
+			...prev.slice(-5),
+			{ id: nextLineId.current++, role, text, lineId, at, ...(merged ? { translation: merged } : {}) },
 		]);
 	};
 
-	const pushSubtitle = (role: SubtitleLine["role"], text: string, lineId?: string, audioSeq?: number, utteranceId?: string, speaker?: Speaker) => {
+	const pushSubtitle = (role: SubtitleLine["role"], text: string, lineId?: string, audioSeq?: number, utteranceId?: string) => {
 		if (typeof audioSeq === "number") {
-			// Voice-synced line (assistant or third-person player): hold
-			// until that speaker's audio chunk starts playing. A translation
-			// that raced ahead of this subtitle event is merged in here.
+			// Voice-synced line: hold until the audio chunk starts playing. A
+			// translation that raced ahead of this subtitle event is merged in
+			// here.
 			const parked = takeLateTr(lineId);
-			pendingSubsRef.current.push({ role, text, lineId, utteranceId, audioSeq, at: Date.now(), ...(parked ? { translation: parked } : {}), ...(speaker ? { speaker } : {}) });
+			pendingSubsRef.current.push({ role, text, lineId, utteranceId, audioSeq, at: Date.now(), ...(parked ? { translation: parked } : {}) });
 			pendingSubsRef.current.sort((a, b) => a.audioSeq - b.audioSeq);
 			return;
 		}
-		showSubtitle(role, text, lineId, Date.now(), undefined, speaker);
-	};
-
-	/**
-	 * Third-person submit placeholder: a grayed transient line right after
-	 * acceptance, replaced the moment the polished line arrives over SSE
-	 * (or swept by the subtitle TTL if the pipeline failed).
-	 */
-	const pushPendingPlaceholder = () => {
-		setSubtitles((prev) => [
-			...prev.slice(-5),
-			{ id: nextLineId.current++, role: "user" as const, text: "酝酿中…", pending: true, at: Date.now() },
-		]);
+		showSubtitle(role, text, lineId, Date.now());
 	};
 
 	const attachTranslation = (lineId: string, text: string) => {
@@ -367,17 +267,14 @@ export function Live2DView(props: ViewProps) {
 		const id = window.setInterval(() => {
 			const engine = engineRef.current;
 			if (!engine || pendingSubsRef.current.length === 0) return;
-			// Seq spaces are per-speaker (host counters are per-utterance and
-			// independent between the avatars) — check each held line against
-			// its own speaker's playback cursor.
-			const cursors: Record<Speaker, number> = { assistant: engine.currentSeq("assistant"), player: engine.currentSeq("player") };
+			const cursor = engine.currentSeq();
 			const now = Date.now();
 			const due = (line: (typeof pendingSubsRef.current)[number]): boolean =>
-				line.audioSeq <= cursors[line.speaker ?? "assistant"] || now - line.at > 30_000;
+				line.audioSeq <= cursor || now - line.at > 30_000;
 			const ready = pendingSubsRef.current.filter(due);
 			if (ready.length === 0) return;
 			pendingSubsRef.current = pendingSubsRef.current.filter((line) => !due(line));
-			for (const line of ready) showSubtitle(line.role, line.text, line.lineId, line.at, line.translation, line.speaker);
+			for (const line of ready) showSubtitle(line.role, line.text, line.lineId, line.at, line.translation);
 		}, 250);
 		return () => window.clearInterval(id);
 	}, []);
@@ -396,11 +293,7 @@ export function Live2DView(props: ViewProps) {
 				micNsRef.current = config.micNoiseSuppression !== false;
 				setEyeTracking(config.eyeTracking);
 				setGyroParallax(config.gyroParallax);
-				setIdleInterval(typeof config.idleInterval === "number" ? config.idleInterval : 20);
 				setTouchMode(config.touchMode === true);
-				setLiveMode(config.liveMode === "third" || config.liveMode === "call" ? config.liveMode : "first");
-				setPlayerVoiceId(config.playerVoiceId || "");
-				setPlayerPolish(config.playerPolish !== false);
 			})
 			.catch((error) => console.error("[dsh-live2d-voice] config load failed", error));
 
@@ -480,52 +373,20 @@ export function Live2DView(props: ViewProps) {
 		setModelInfo((prev) => (prev ? { ...prev } : prev));
 	}, []);
 
-	// Third-person resting gaze: the two avatars face each other (stage-play
-	// framing — they don't know the viewer exists) instead of staring at the
-	// camera; the AI (right) looks left, the player (left) looks right.
 /** localStorage flag: the touch-mode hint is shown once per browser. */
 const TOUCH_HINT_KEY = "lv-touch-mode-hint";
 
 /** Touch-mode gaze: after the finger leaves, ease the look back over this long. */
 const TOUCH_LOOK_DECAY_MS = 450;
-	const AI_FACE_BIAS = -0.6;
-	const PLAYER_FACE_BIAS = 0.6;
-	// In third-person the avatars must not turn toward the user: zero the
-	// head/body angle, eye and roll amplitudes and keep only the positional
-	// parallax so camera/gyro still add depth. Single-model (first / call)
-	// keeps the user's params — the character looks at you.
-	const stageLookParams = (): LookParams =>
-		modelInfo?.liveMode === "third" && Boolean(modelInfo?.player?.url)
-			? { ...lookParamsRef.current, angleAmp: 0, eyeAmp: 0, rollAmp: 0 }
-			: lookParamsRef.current;
-	// The call-mode PiP avatar MIMICS the user: keep the full head/roll amplitudes
-	// so it visibly follows your movement, but zero the positional pan so the
-	// model never slides out of its mask.
-	const pipLookParams = (): LookParams => ({ ...lookParamsRef.current, panAmp: 0 });
 
-	// The stage's shared Pixi application — created once per view (both
-	// avatars mount into it; see sharedStageRef). Destroyed on unmount.
-	useEffect(() => {
-		if (!stageRef.current) return undefined;
-		const stage = createLive2DStage(stageRef.current);
-		sharedStageRef.current = stage;
-		return () => {
-			sharedStageRef.current = null;
-			try {
-				const gl = (stage.app.renderer as unknown as { gl?: WebGLRenderingContext })?.gl;
-				const ext = gl?.getExtension?.("WEBGL_lose_context");
-				if (ext) ext.loseContext();
-			} catch {}
-			try {
-				stage.app.destroy(true, { children: true, texture: true, baseTexture: true });
-			} catch {
-				/* best-effort */
-			}
-			if (stage.canvas.parentNode) stage.canvas.remove();
-		};
-	}, []);
+/**
+ * How long after a turn ends the automatic idle motions may resume. Without
+ * it the gate flaps between two nearby utterances (the framework restarts an
+ * idle clip the moment the lane frees, then it is cut again).
+ */
+const IDLE_RESUME_DEBOUNCE_MS = 900;
 
-	// Live2D model lifecycle (the AI's avatar).
+	// Live2D model lifecycle.
 	useEffect(() => {
 		const rawUrl = modelInfo?.url;
 		if (!rawUrl || !stageRef.current) return;
@@ -534,10 +395,6 @@ const TOUCH_LOOK_DECAY_MS = 450;
 			setStatus("core-missing");
 			return;
 		}
-		// Third-person: two avatars share the stage — this one shifts right.
-		// (Call mode keeps the AI centered like first-person: the "remote
-		// party" of the video call.)
-		const dual = modelInfo?.liveMode === "third" && Boolean(modelInfo?.player?.url);
 		// Append cache-busting timestamp to model URL so updated textures or models are not stuck on old browser cache
 		const url = rawUrl.includes("?") ? `${rawUrl}&_v=${Date.now()}` : `${rawUrl}?_v=${Date.now()}`;
 		let cancelled = false;
@@ -550,16 +407,13 @@ const TOUCH_LOOK_DECAY_MS = 450;
 			modelUrl: url,
 			getMouth: () => {
 				engineRef.current?.tick();
-				return engineRef.current?.mouthValue("assistant") ?? 0;
+				return engineRef.current?.mouthValue() ?? 0;
 			},
 			onContextLost: () => {
 				// WebGL context lost or restored: reload model
 				logger.warn("WebGL context lost callback triggered, requesting model reload");
 				reloadModel();
 			},
-			layout: dual ? { xFraction: 0.72, scaleGain: 0.8, faceBiasX: AI_FACE_BIAS } : undefined,
-			shared: sharedStageRef.current ?? undefined,
-			tag: "Ai",
 			touchLook: touchLookChannelRef.current,
 			onGestureRefused: flashTouchRefused,
 		});
@@ -579,10 +433,11 @@ const TOUCH_LOOK_DECAY_MS = 450;
 				// Touch mode may have been restored from config before the model
 				// finished mounting: apply it the moment the handle exists.
 				mounted.setTouchMode(touchModeRef.current);
+				mounted.setIdleEnabled(idleEnabledRef.current);
 				setStatus("ready");
 				logger.info(`Live2D model ready: ${modelInfo?.name}`);
 				if (gazeRef.current?.active || tiltRef.current?.active) modelRef.current?.setLook(camLookRef.current, gyroLookRef.current);
-				modelRef.current?.setLookParams(stageLookParams());
+				modelRef.current?.setLookParams(lookParamsRef.current);
 			})
 			.catch((error) => {
 				if (cancelled) return;
@@ -608,221 +463,6 @@ const TOUCH_LOOK_DECAY_MS = 450;
 			}).catch(() => {});
 		};
 	}, [modelInfo?.url, reloadModel]);
-
-	// Mode toggle shifts the AI avatar between centered and the right half —
-	// refit without reloading the model.
-	useEffect(() => {
-		const dual = modelInfo?.liveMode === "third" && Boolean(modelInfo?.player?.url);
-		dualRef.current = dual;
-		playerViewRef.current = modelInfo?.liveMode === "call" && Boolean(modelInfo?.player?.url) ? "window" : dual ? "stage" : null;
-		modelRef.current?.setLayout({ xFraction: dual ? 0.72 : 0.5, scaleGain: dual ? 0.8 : 1, faceBiasX: dual ? AI_FACE_BIAS : 0 });
-		// Clear the player bias on the way out too — its effect cleanup
-		// destroys the model, but until then the layout must not keep a
-		// stale "turned toward a vanished partner" state.
-		playerModelRef.current?.setLayout({ faceBiasX: dual ? PLAYER_FACE_BIAS : 0 });
-		const look = stageLookParams();
-		modelRef.current?.setLookParams(look);
-		if (playerViewRef.current !== "window") playerModelRef.current?.setLookParams(look);
-		else playerModelRef.current?.setLookParams(pipLookParams());
-	}, [modelInfo?.liveMode, modelInfo?.player?.url]);
-
-	// The player's own avatar (third-person stage duo / call-mode PiP): a
-	// second model on the SAME shared stage (one WebGL context — see above).
-	// Third-person: left half, facing the AI. Call: inside a small rounded
-	// window (Pixi mask) that mirrors the user — mic-driven mouth + head
-	// follow. Voice-only third-person (no player model selected) skips this.
-	useEffect(() => {
-		const mode = modelInfo?.liveMode;
-		const rawUrl = mode === "third" || mode === "call" ? modelInfo?.player?.url : undefined;
-		const inWindow = mode === "call";
-		const stage = sharedStageRef.current;
-		if (!rawUrl || !stageRef.current || !stage) return undefined;
-		if (!isCubismCoreLoaded()) return undefined;
-		const url = rawUrl.includes("?") ? `${rawUrl}&_v=${Date.now()}` : `${rawUrl}?_v=${Date.now()}`;
-		let cancelled = false;
-		let handle: Live2DHandle | null = null;
-		logger.info(`Mounting player Live2D model: ${modelInfo?.player?.name ?? url}${inWindow ? " (call window)" : ""}`);
-		// Call mode: the mouth follows the USER'S microphone (mimicry, like a
-		// video call self-view), not TTS playback. Per-frame attack/release
-		// envelope — the raw level (~30 fps) is too jumpy to apply directly.
-		let micMouth = 0;
-		const mouthFromMic = () => {
-			const target = Math.min(1, micMouthRef.current * 1.8) ** 0.7;
-			micMouth += (target - micMouth) * (target > micMouth ? 0.4 : 0.16);
-			return micMouth;
-		};
-		const mountPromise = mountModel({
-			container: stageRef.current,
-			modelUrl: url,
-			getMouth: inWindow ? mouthFromMic : () => engineRef.current?.mouthValue("player") ?? 0,
-			onContextLost: () => {
-				// Player model context loss: remount via the same effect.
-				logger.warn("Player model WebGL context lost, remounting");
-				setModelInfo((prev) => (prev ? { ...prev, player: prev.player ? { ...prev.player } : prev.player } : prev));
-			},
-			layout: inWindow
-				? { window: pipWindowOf(pipPosRef.current), scaleGain: 1, faceBiasX: 0 }
-				: { xFraction: 0.28, scaleGain: 0.8, faceBiasX: PLAYER_FACE_BIAS },
-			shared: stage,
-			tag: "Player",
-			touchLook: touchLookChannelRef.current,
-			onGestureRefused: flashTouchRefused,
-		});
-		mountPromise
-			.then((mounted) => {
-				if (cancelled) {
-					try {
-						mounted.destroy();
-					} catch {
-						/* best-effort */
-					}
-					return;
-				}
-				handle = mounted;
-				playerModelRef.current = mounted;
-				mounted.setTouchMode(touchModeRef.current);
-				// An expression may have arrived while the avatar was still
-				// mounting — apply the latest one now.
-				const pendingExpression = pendingPlayerExpressionRef.current;
-				if (pendingExpression !== null) {
-					pendingPlayerExpressionRef.current = null;
-					mounted.setExpression(pendingExpression);
-				}
-				// Join the look pipeline: stage duo uses the parallax-only
-				// stage params facing the AI; the call window mimics the user
-				// with full angle gains (pan zeroed).
-				if (gazeRef.current?.active || tiltRef.current?.active) mounted.setLook(camLookRef.current, gyroLookRef.current);
-				if (inWindow) {
-					mounted.setLayout({ window: pipWindowOf(pipPosRef.current) });
-					mounted.setLookParams(pipLookParams());
-				} else {
-					mounted.setLookParams(stageLookParams());
-				}
-				if (stageRef.current) stageRef.current.dataset.lvPlayer = String(modelInfo?.player?.name ?? "");
-				logger.info(`Player Live2D model ready: ${modelInfo?.player?.name}`);
-			})
-			.catch((error) => {
-				if (cancelled) return;
-				logger.error(`Player Live2D mount failed for ${modelInfo?.player?.name}`, error);
-				showToast(`玩家模型加载失败：${String((error as Error)?.message ?? error)}`);
-			});
-		return () => {
-			cancelled = true;
-			playerModelRef.current = null;
-			delete stageRef.current?.dataset.lvPlayer;
-			if (handle) {
-				try {
-					handle.destroy();
-				} catch (err) {
-					logger.warn("player handle.destroy threw error, safely suppressed", err);
-				}
-				handle = null;
-			}
-			mountPromise
-				.then((mounted) => {
-					try {
-						mounted.destroy();
-					} catch {}
-				})
-				.catch(() => {});
-		};
-	}, [modelInfo?.liveMode, modelInfo?.player?.url]);
-
-	// PiP drag: push the window rect to the mounted model (no remount).
-	useEffect(() => {
-		if (modelInfo?.liveMode !== "call" || !modelInfo?.player?.url) return;
-		playerModelRef.current?.setLayout({ window: pipWindowOf(pipPos) });
-	}, [pipPos, modelInfo?.liveMode, modelInfo?.player?.url]);
-
-	// Idle scheduler: replaces the engine's automatic random-idle loop (which
-	// plays successive idle motions back-to-back with no gap, producing
-	// visually janky transitions). While the model is mounted and no audio is
-	// playing, after `idleInterval` seconds of inactivity the scheduler
-	// randomly picks one motion and plays it once; if no idle group exists
-	// (most models ship with an empty default group) we fall back to a
-	// random motion from any group. Each successful play resets the timer.
-	const lastInteractionRef = useRef<number>(Date.now());
-	const lastAudioEndRef = useRef<number>(Date.now());
-	const audioPlayingRef = useRef<boolean>(false);
-	// Track audio playing for the idle gate (independent of speaker).
-	useEffect(() => {
-		const onAudioStart = () => {
-			audioPlayingRef.current = true;
-			lastInteractionRef.current = Date.now();
-		};
-		const onAudioEnd = () => {
-			audioPlayingRef.current = false;
-			lastAudioEndRef.current = Date.now();
-		};
-		const onActivity = () => { lastInteractionRef.current = Date.now(); };
-		window.addEventListener("pointerdown", onActivity, true);
-		window.addEventListener("pointermove", onActivity, true);
-		window.addEventListener("keydown", onActivity, true);
-		// We don't get direct audio hooks here; piggyback on SSE — but
-		// audio-start/end events are already wired to the engine, which sets
-		// these flags via the side-effect below.
-		audioPlayingRef.current = false;
-		return () => {
-			window.removeEventListener("pointerdown", onActivity, true);
-			window.removeEventListener("pointermove", onActivity, true);
-			window.removeEventListener("keydown", onActivity, true);
-			onAudioEnd();
-		};
-	}, []);
-
-	useEffect(() => {
-		let timer: number | undefined;
-		const tick = () => {
-			const interval = Math.max(0, idleInterval);
-			if (interval > 0 && !audioPlayingRef.current && modelRef.current) {
-				const defs = modelRef.current.getMotions();
-				// Prefer the "Idle" group; fall back to "" (default for many ripped
-				// models, e.g. the whole game-ripped batch). Those fallback clips are
-				// short game performances rather than long idle loops, so the 20s
-				// default reads as a statue — tighten the cadence for them only, and
-				// keep the user's setting as the ceiling.
-				const idleGroup = defs.find((m) => m.group === "Idle") ? "Idle" : "";
-				const effective = idleGroup === "Idle" ? interval : Math.min(interval, 6);
-				// Diagnostic contract (e2e): the cadence actually in force.
-				const stageEl = stageRef.current;
-				if (stageEl && stageEl.dataset.lvIdleInterval !== String(effective)) stageEl.dataset.lvIdleInterval = String(effective);
-				const sinceInteraction = (Date.now() - lastInteractionRef.current) / 1000;
-				if (sinceInteraction >= effective) {
-					const idlePool = defs.filter((m) => m.group === idleGroup);
-					if (idlePool.length > 0) {
-						const pick = idlePool[Math.floor(Math.random() * idlePool.length)];
-						// Ambient playback must yield to the user and to real motions.
-						void modelRef.current.playMotion(pick, "idle");
-					}
-					lastInteractionRef.current = Date.now();
-				}
-			}
-			timer = window.setTimeout(tick, 1000);
-		};
-		timer = window.setTimeout(tick, 1000);
-		return () => {
-			if (timer !== undefined) window.clearTimeout(timer);
-		};
-	}, [idleInterval, modelInfo?.name]);
-
-	// Wire audio start/end to the playing flag.
-	useEffect(() => {
-		// currentSpeaker() always names someone (it defaults to "assistant"), so
-		// it cannot answer "is audio playing now" — using it latched the flag to
-		// true forever and the idle scheduler never ran. speaking() reflects the
-		// actual playback sources.
-		const wire = window.setInterval(() => {
-			const speaking = engineRef.current?.speaking() ?? false;
-			if (speaking && !audioPlayingRef.current) {
-				audioPlayingRef.current = true;
-				lastInteractionRef.current = Date.now();
-			} else if (!speaking && audioPlayingRef.current) {
-				audioPlayingRef.current = false;
-				lastAudioEndRef.current = Date.now();
-			}
-		}, 250);
-		return () => window.clearInterval(wire);
-	}, []);
 
 	// Gaze tracking lifecycle: the tracker owns the front camera while the
 	// config says so; normalized gaze (dx/dy in -1..1) lands in camLookRef.
@@ -887,13 +527,31 @@ const TOUCH_LOOK_DECAY_MS = 450;
 		};
 	}, [gyroParallax]);
 
-	// Push touch mode into the mounted models: the gesture layer reads it live,
+	// Push touch mode into the mounted model: the gesture layer reads it live,
 	// so toggling must never remount the avatar.
 	useEffect(() => {
 		touchModeRef.current = touchMode;
 		modelRef.current?.setTouchMode(touchMode);
-		playerModelRef.current?.setTouchMode(touchMode);
-	}, [touchMode, modelInfo?.name, modelInfo?.player?.name]);
+	}, [touchMode, modelInfo?.name]);
+
+	// Conversation state gates the automatic idle motions: while the mic is
+	// open or the character is speaking, a random idle clip would fight the
+	// turn (the character wanders off mid-conversation). Suspending is
+	// immediate — including cutting a clip already playing — while resuming is
+	// debounced so a pause between two utterances does not restart one.
+	const conversationActive = micState === "listening" || micState === "requesting" || speaking;
+	useEffect(() => {
+		if (conversationActive) {
+			idleEnabledRef.current = false;
+			modelRef.current?.setIdleEnabled(false);
+			return undefined;
+		}
+		const timer = window.setTimeout(() => {
+			idleEnabledRef.current = true;
+			modelRef.current?.setIdleEnabled(true);
+		}, IDLE_RESUME_DEBOUNCE_MS);
+		return () => window.clearTimeout(timer);
+	}, [conversationActive, modelInfo?.name]);
 
 	// Look loop: while camera gaze or gyro tilt is active, drive the model
 	// every frame from the latest cam/gyro vectors.
@@ -924,17 +582,6 @@ const TOUCH_LOOK_DECAY_MS = 450;
 				}
 			}
 			modelRef.current?.setLook(cam, gyro);
-			// The PiP self-view is a MIRROR of the user, not an autonomous
-			// character: raw camera/gyro follow while the stage avatar keeps
-			// the normal look pipeline.
-			if (playerViewRef.current === "window") {
-				playerModelRef.current?.setLook(
-					gazeRef.current?.active ? camLookRef.current : null,
-					tiltRef.current?.active ? gyroLookRef.current : null,
-				);
-			} else {
-				playerModelRef.current?.setLook(cam, gyro);
-			}
 
 			raf = window.requestAnimationFrame(tick);
 		};
@@ -946,25 +593,13 @@ const TOUCH_LOOK_DECAY_MS = 450;
 	useEffect(() => {
 		if (!sessionId) return undefined;
 		const close = openStream(sessionId, {
-			onExpression: ({ expression, utteranceId, speaker }) => {
-				const isPlayer = speaker === "player";
-				const active = isPlayer ? activePlayerUtterance : activeAssistantUtterance;
-				if (utteranceId !== active.current) return;
-				if (isPlayer) {
-					const model = playerModelRef.current;
-					if (model) model.setExpression(expression);
-					// Avatar still mounting — replay the latest expression once
-					// it is ready (the first player line can win that race).
-					else pendingPlayerExpressionRef.current = expression;
-					return;
-				}
+			onExpression: ({ expression, utteranceId }) => {
+				if (utteranceId !== activeUtterance.current) return;
 				modelRef.current?.setExpression(expression);
 			},
-			onMotion: ({ motion: motionName, utteranceId, speaker }) => {
-				const isPlayer = speaker === "player";
-				const active = isPlayer ? activePlayerUtterance : activeAssistantUtterance;
-				if (utteranceId && utteranceId !== active.current) return;
-				const target = isPlayer ? playerModelRef.current : modelRef.current;
+			onMotion: ({ motion: motionName, utteranceId }) => {
+				if (utteranceId && utteranceId !== activeUtterance.current) return;
+				const target = modelRef.current;
 				if (!target) return;
 				const defs = target.getMotions();
 				const def = defs.find((m) => m.name === motionName);
@@ -974,47 +609,34 @@ const TOUCH_LOOK_DECAY_MS = 450;
 				}
 				void target.playMotion(def);
 			},
-			onSpeechStart: ({ utteranceId, speaker }) => {
-				const isPlayer = speaker === "player";
-				const active = isPlayer ? activePlayerUtterance : activeAssistantUtterance;
-				if (utteranceId !== active.current) {
-					// A new player line interrupts whatever is playing (the
-					// user said something new); a new assistant utterance only
-					// supersedes the assistant's own audio — the player's line
-					// keeps its queue and the reply naturally lines up after.
-					if (isPlayer || engineRef.current?.currentSpeaker() === "assistant") engineRef.current?.stop();
-					active.current = utteranceId;
-					// The superseded utterance will never play — drop its held
-					// lines. A new player line also kills the assistant's turn
-					// (the host supersedes its TTS); a new assistant utterance
-					// never touches the player's still-queued line.
-					pendingSubsRef.current = pendingSubsRef.current.filter((line) => {
-						if (line.utteranceId === utteranceId) return true; // the new utterance's own lines
-						if (isPlayer) return false; // a new player line superseded everything else
-						return line.speaker === "player"; // an assistant utterance never kills the player's queued line
-					});
+			onSpeechStart: ({ utteranceId }) => {
+				setSpeaking(true);
+				if (utteranceId !== activeUtterance.current) {
+					// A new utterance supersedes the previous one: stop its
+					// remaining audio and drop the lines it will never play.
+					engineRef.current?.stop();
+					activeUtterance.current = utteranceId;
+					pendingSubsRef.current = pendingSubsRef.current.filter((line) => line.utteranceId === utteranceId);
 				}
 				void engineRef.current?.resume();
 			},
-			onSpeechEnd: ({ utteranceId, reason, speaker }) => {
-				const active = speaker === "player" ? activePlayerUtterance : activeAssistantUtterance;
-				if (utteranceId !== active.current) return;
+			onSpeechEnd: ({ utteranceId, reason }) => {
+				setSpeaking(false);
+				if (utteranceId !== activeUtterance.current) return;
 				if (reason === "aborted") engineRef.current?.stop();
 			},
-			onAudioStart: ({ sampleRate, utteranceId, speaker }) => {
-				const active = speaker === "player" ? activePlayerUtterance : activeAssistantUtterance;
-				if (utteranceId !== active.current) return;
+			onAudioStart: ({ sampleRate, utteranceId }) => {
+				if (utteranceId !== activeUtterance.current) return;
 				engineRef.current?.setSampleRate(sampleRate);
 			},
-			onAudio: ({ b64, seq, utteranceId, speaker }) => {
-				const active = speaker === "player" ? activePlayerUtterance : activeAssistantUtterance;
-				if (utteranceId !== active.current) return;
-				engineRef.current?.enqueueBase64(b64, seq, speaker ?? "assistant");
+			onAudio: ({ b64, seq, utteranceId }) => {
+				if (utteranceId !== activeUtterance.current) return;
+				engineRef.current?.enqueueBase64(b64, seq);
 			},
-			onSubtitle: ({ role, text, lineId, audioSeq, utteranceId, speaker }) => {
+			onSubtitle: ({ role, text, lineId, audioSeq, utteranceId }) => {
 				// Turn-yield pulse fires at actual audio playback (see the
 				// voice–subtitle sync interval), not on SSE arrival.
-				pushSubtitle(role, text, lineId, audioSeq, utteranceId, speaker);
+				pushSubtitle(role, text, lineId, audioSeq, utteranceId);
 			},
 			onSubtitleTranslation: ({ lineId, text }) => attachTranslation(lineId, text),
 			onCameraCapture: ({ requestId }) => {
@@ -1042,6 +664,9 @@ const TOUCH_LOOK_DECAY_MS = 450;
 			},
 			onError: ({ message }) => {
 				pushSubtitle("error", message);
+				// A failed stream may never deliver its speech-end — never leave
+				// the idle gate latched off.
+				setSpeaking(false);
 				// A stream failure settles the pending segment (no asr-final
 				// will arrive) so the pending counter cannot latch.
 				finishAsrSegment();
@@ -1324,10 +949,7 @@ const TOUCH_LOOK_DECAY_MS = 450;
 	const changeLookParams = (patch: Partial<LookParams>) => {
 		lookParamsRef.current = { ...lookParamsRef.current, ...patch };
 		setLookParams(lookParamsRef.current);
-		const look = stageLookParams();
-		modelRef.current?.setLookParams(look);
-		if (playerViewRef.current !== "window") playerModelRef.current?.setLookParams(look);
-		else playerModelRef.current?.setLookParams(pipLookParams());
+		modelRef.current?.setLookParams(lookParamsRef.current);
 		try {
 			localStorage.setItem(LOOK_PARAMS_STORE, JSON.stringify(lookParamsRef.current));
 		} catch {
@@ -1387,59 +1009,6 @@ const TOUCH_LOOK_DECAY_MS = 450;
 		}
 	};
 
-	// ---- Live mode controls (⚙ popover + settings share these) ----
-
-	const MODE_TOASTS: Record<LiveMode, string> = {
-		first: "已切换为第一人称模式",
-		third: "第三人称模式已开启",
-		call: "视频通话模式已开启（你的化身在小窗中实时跟随你）",
-	};
-
-	const setStageMode = async (next: LiveMode) => {
-		try {
-			const { config } = await saveConfig({ liveMode: next });
-			setLiveMode(config.liveMode === "third" || config.liveMode === "call" ? config.liveMode : "first");
-			// Remount the player avatar / re-layout the AI one.
-			const info = await fetchModelInfo(sessionId);
-			setModelInfo(info);
-			showToast(MODE_TOASTS[next]);
-		} catch (error) {
-			showToast(`切换失败：${String((error as Error)?.message ?? error)}`);
-		}
-	};
-
-	const pickPlayerModel = async (name: string) => {
-		try {
-			await saveConfig({ playerModelSelection: name });
-			const info = await fetchModelInfo(sessionId);
-			setModelInfo(info);
-			showToast(info.player?.name === name ? `玩家角色已切换：${info.player?.label ?? name}` : `已保存玩家角色 ${name}（需开启第三人称或视频通话）`);
-		} catch (error) {
-			showToast(`玩家角色切换失败：${String((error as Error)?.message ?? error)}`);
-		}
-	};
-
-	const pickPlayerVoice = async (preset: VoicePreset) => {
-		try {
-			const { config } = await saveConfig({ playerVoiceId: preset.voiceId });
-			setPlayerVoiceId(config.playerVoiceId);
-			showToast(`玩家音色已切换：${preset.label}`);
-		} catch (error) {
-			showToast(`玩家音色切换失败：${String((error as Error)?.message ?? error)}`);
-		}
-	};
-
-	const togglePlayerPolish = async () => {
-		const next = !playerPolish;
-		try {
-			const { config } = await saveConfig({ playerPolish: next });
-			setPlayerPolish(config.playerPolish !== false);
-			showToast(config.playerPolish !== false ? "台词润色已开启" : "台词润色已关闭（原话直出）");
-		} catch (error) {
-			showToast(`切换失败：${String((error as Error)?.message ?? error)}`);
-		}
-	};
-
 	/**
 	 * Touch mode toggle: persisted like every other view preference, with a
 	 * one-time hint because the semantics (finger gaze + gestures + two-finger
@@ -1486,25 +1055,16 @@ const TOUCH_LOOK_DECAY_MS = 450;
 	const submitText = async (text: string, mode: "queue" | "steer" = "queue"): Promise<boolean> => {
 		if (!text.trim()) return false;
 		try {
-			if (liveModeRef.current === "third") {
-				// Third-person: the line goes through the player pipeline —
-				// polish → player avatar speaks → only then the agent hears
-				// it. The polished line arrives over SSE (replacing the
-				// pending placeholder), so no local echo here.
-				await postPlayerLine(sessionId, text, mode);
-				pushPendingPlaceholder();
+			const viaClient = props.submitPrompt?.(sessionId, text, mode);
+			if (viaClient) {
+				const result = await viaClient;
+				if (!result.ok) throw new Error(result.error ?? "session/prompt rejected");
+				// The standalone submitPrompt POSTs /message, whose route
+				// echoes the user line over SSE — skip the local push or
+				// the line would display twice.
+				if (!result.remoteEcho) pushSubtitle("user", text);
 			} else {
-				const viaClient = props.submitPrompt?.(sessionId, text, mode);
-				if (viaClient) {
-					const result = await viaClient;
-					if (!result.ok) throw new Error(result.error ?? "session/prompt rejected");
-					// The standalone submitPrompt POSTs /message, whose route
-					// echoes the user line over SSE — skip the local push or
-					// the line would display twice.
-					if (!result.remoteEcho) pushSubtitle("user", text);
-				} else {
-					await postMessage(sessionId, text, mode);
-				}
+				await postMessage(sessionId, text, mode);
 			}
 			engineRef.current?.unmuzzle();
 			return true;
@@ -1543,7 +1103,6 @@ const TOUCH_LOOK_DECAY_MS = 450;
 		engineRef.current?.unmuzzle();
 		setMicState("idle");
 		setMicLevel(0);
-		micMouthRef.current = 0;
 		setInterimText("");
 	}, []);
 
@@ -1578,7 +1137,7 @@ const TOUCH_LOOK_DECAY_MS = 450;
 	}, [micState]);
 
 	const looksLikeEcho = (text: string): boolean => {
-		const recent = `${assistantEchoRef.current}\n${playerEchoRef.current}`;
+		const recent = assistantEchoRef.current;
 		if (!recent.trim()) return false;
 		const normalize = (s: string) => s.replace(/[\s，。！？、,.!?…~～「」『』（）()・]/g, "");
 		const target = normalize(text);
@@ -1629,11 +1188,9 @@ const TOUCH_LOOK_DECAY_MS = 450;
 			{
 				onLevel: (level) => {
 				setMicLevel(level);
-				micMouthRef.current = level;
 				if (engineRef.current?.speaking() && MicCapture.isBargeLevel(level)) {
 					engineRef.current.muzzle();
-					activeAssistantUtterance.current = "";
-					activePlayerUtterance.current = "";
+					activeUtterance.current = "";
 				}
 			},
 			// Streaming path (default): relay every in-speech frame into the
@@ -1719,67 +1276,6 @@ const TOUCH_LOOK_DECAY_MS = 450;
 		<div ref={rootRef} className={`lv-root${fullscreen ? " lv-fullscreen" : ""}${inputOpen ? " lv-keyboard-open" : ""}`} data-no-gesture>
 			<div className="lv-ambient" />
 			<div ref={stageRef} className="lv-stage" />
-
-			{/* Video-call self-view: a draggable frame over the stage. The
-			    model itself renders on the shared canvas behind it (masked
-			    to the window); this DOM layer only draws the chrome, the
-			    name badge, and owns the drag gesture. */}
-			{liveMode === "call" && modelInfo?.player && (
-				<div
-					className={`lv-call-pip${pipDragging ? " lv-call-pip-dragging" : ""}`}
-					data-lv-pip={modelInfo.player.name}
-					style={{
-						left: `${pipPos.x * 100}%`,
-						top: `${pipPos.y * 100}%`,
-						width: `${PIP_WIDTH_FRACTION * 100}%`,
-						aspectRatio: String(PIP_ASPECT_RATIO),
-						borderRadius: `${PIP_RADIUS_PX}px`,
-					}}
-					onPointerDown={(event) => {
-						const stage = stageRef.current?.getBoundingClientRect();
-						if (!stage) return;
-						pipGrabRef.current = {
-							dx: event.clientX - (stage.left + pipPosRef.current.x * stage.width),
-							dy: event.clientY - (stage.top + pipPosRef.current.y * stage.height),
-						};
-						// Best-effort capture: keeps real-pointer moves flowing to
-						// the window after the pointer leaves it. Synthetic test
-						// events carry no active pointer id and make this throw —
-						// they are dispatched straight at the element anyway.
-						try {
-							event.currentTarget.setPointerCapture(event.pointerId);
-						} catch {}
-						setPipDragging(true);
-					}}
-					onPointerMove={(event) => {
-						if (!pipDragging) return;
-						const stage = stageRef.current?.getBoundingClientRect();
-						if (!stage) return;
-						setPipPos(
-							clampPipPos(
-								{
-									x: (event.clientX - pipGrabRef.current.dx - stage.left) / stage.width,
-									y: (event.clientY - pipGrabRef.current.dy - stage.top) / stage.height,
-								},
-								stage.width,
-								stage.height,
-							),
-						);
-					}}
-					onPointerUp={(event) => {
-						if (!pipDragging) return;
-						const stage = stageRef.current?.getBoundingClientRect();
-						try {
-							event.currentTarget.releasePointerCapture(event.pointerId);
-						} catch {}
-						if (stage) setPipPos(snapPipPos(pipPosRef.current, stage.width, stage.height));
-						setPipDragging(false);
-					}}
-					onPointerCancel={() => setPipDragging(false)}
-				>
-					<span className="lv-call-pip-badge">{modelInfo.player.label ?? "我"}</span>
-				</div>
-			)}
 
 			{status !== "ready" && (
 				<div className="lv-center">
@@ -1910,22 +1406,9 @@ const TOUCH_LOOK_DECAY_MS = 450;
 					const first = (modelInfo?.models ?? []).find((m) => (m.group ?? "") === id);
 					if (first) void pickModel(first.name);
 				}}
-				idleInterval={idleInterval}
-				onChangeIdleInterval={(value) => {
-					setIdleInterval(value);
-					void saveConfig({ idleInterval: value });
-				}}
 				motions={modelInfo?.motions ?? []}
 				onPlayMotion={(motion) => void modelRef.current?.playMotion(motion)}
 				onPickModel={(name) => void pickModel(name)}
-				liveMode={liveMode}
-				playerPolish={playerPolish}
-				onSetLiveMode={(mode) => void setStageMode(mode)}
-				onTogglePlayerPolish={() => void togglePlayerPolish()}
-				currentPlayerModel={modelInfo?.player?.name}
-				onPickPlayerModel={(name) => void pickPlayerModel(name)}
-				currentPlayerVoiceId={playerVoiceId}
-				onPickPlayerVoice={(preset) => void pickPlayerVoice(preset)}
 				touchMode={touchMode}
 				touchRefusedFlash={touchRefusedFlash}
 				onToggleTouchMode={() => void toggleTouchMode()}

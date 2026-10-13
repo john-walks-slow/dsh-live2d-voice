@@ -7,11 +7,9 @@
  *    with no separate gain + max-range pair left.
  * T2 unsigned ranges: every slider starts at 0 (magnitudes only) and explains
  *    itself in a tooltip; angle amplitudes render in degrees.
- * T3 third-person stage: with a player avatar on stage the head-facing
- *    amplitudes (转头 / 眼球 / 侧倾) are disabled with a 对视停用 hint,
- *    位移 stays live.
- * T4 single model: drop the player avatar → amplitudes become editable; a
- *    changed value persists and renders back in its own unit.
+ * T3 slider state: every amplitude is editable (single avatar, no gating).
+ * T4 amplitude interaction: a changed value persists and renders back in its
+ *    own unit.
  * T5 preset round-trip: 标准 restores the default amplitudes.
  * T6 no page errors; the e2e config is restored before exiting.
  */
@@ -143,13 +141,6 @@ try {
   await sleep(10000);
   check('T0a', await openLiveView(), 'Live2D stage mounted');
 
-  const orig = await ev(async () => {
-    const r = await fetch('/live2d-voice/config', { headers: { accept: 'application/json' } });
-    const c = (await r.json()).config;
-    return { thirdPerson: c.thirdPerson, playerModelSelection: c.playerModelSelection };
-  });
-  const dual = orig.thirdPerson === true && Boolean(orig.playerModelSelection);
-  console.log(`    (config: thirdPerson=${orig.thirdPerson} player=${orig.playerModelSelection} → ${dual ? 'dual stage' : 'single model'})`);
   await stored(true); // clean slate: a previous run's params must not mask a regression
 
   check('T0b', await openLookPanel(), '⚙ popover + 详细参数 open');
@@ -170,34 +161,16 @@ try {
   console.log('=== T2 unsigned magnitude ranges ===');
   check('T2a', rows.every((r) => r.min === 0), `every slider is a magnitude starting at 0 (${rows.map((r) => r.min).join(',')})`);
   check('T2b', rows.every((r) => !r.signed), 'no slider carries the signed zero-notch class any more');
-  check('T2c', rows.every((r) => r.tip.length > 0), 'every slider has a tooltip (dual mode: the 对视停用 note)');
+  check('T2c', rows.every((r) => r.tip.length > 0), 'every slider has a tooltip');
   check('T2d', pick(rows, '动作幅度', '转头幅度')?.shown === '20°' && pick(rows, '动作幅度', '侧倾幅度')?.shown === '6°',
     `angle amplitudes render in degrees (${pick(rows, '动作幅度', '转头幅度')?.shown} / ${pick(rows, '动作幅度', '侧倾幅度')?.shown})`);
 
-  console.log('=== T3 third-person stage ===');
-  if (dual) {
-    const off = rows.filter((r) => r.disabled);
-    check('T3a', off.length === 4, `4 head-facing rows disabled (${off.map((r) => r.label).join('/')})`);
-    check('T3b', off.every((r) => /转头幅度|眼球幅度|侧倾幅度|身体侧倾联动/.test(r.label)), '眼球 + 侧倾 + 身体联动 join 转头幅度 in the 对视停用 set');
-    check('T3c', pick(rows, '动作幅度', '位移幅度')?.disabled === false, '位移幅度 stays live in dual mode');
-  } else {
-    check('T3a', rows.every((r) => !r.disabled), 'single model: nothing disabled');
-    check('T3b', true, 'dual-stage assertions skipped (config is single model)');
-    check('T3c', true, 'dual-stage assertions skipped (config is single model)');
-  }
+  console.log('=== T3 slider state ===');
+  check('T3a', rows.every((r) => !r.disabled), 'nothing disabled');
   await shot('01-panel');
 
-  console.log('=== T4 amplitude interaction (single model) ===');
-  if (dual) {
-    await patchCfg({ thirdPerson: false, playerModelSelection: '' });
-    await backToChat();
-    await sleep(2000);
-    check('T4a', await openLiveView(), 'stage re-mounted in single-model mode');
-    check('T4b', await openLookPanel(), '⚙ panel re-opened');
-    await sleep(800);
-    rows = await readSliders();
-  }
-  check('T4c', rows.every((r) => !r.disabled), 'every slider is editable outside the dual stage');
+  console.log('=== T4 amplitude interaction ===');
+  check('T4c', rows.every((r) => !r.disabled), 'every slider is editable');
   const panBounds = await setRange('位移幅度', 0.012);
   await sleep(500);
   const rollBounds = await setRange('侧倾幅度', 9);
@@ -222,8 +195,6 @@ try {
   check('T5b', st2.angleAmp === 20 && st2.eyeAmp === 0.7 && st2.camSensitivity === 1 && st2.gyroSensitivity === 1, '标准 preset restores the default amplitudes');
   check('T5c', pick(rows, '动作幅度', '转头幅度')?.shown === '20°', `angle amplitude renders in degrees (${pick(rows, '动作幅度', '转头幅度')?.shown})`);
 
-  // Restore whatever the e2e instance was configured with before the run.
-  await patchCfg({ thirdPerson: orig.thirdPerson, playerModelSelection: orig.playerModelSelection });
   await stored(true);
   await ev(() => document.querySelector('.lv-pop-close')?.click());
   await sleep(800);
