@@ -8,3 +8,4 @@ docs/research/
 tests/.behavior.mjs
 tests/.sentence.mjs
 .dsh-e2e-home/
+.playwright-cli/
