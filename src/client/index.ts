@@ -4,7 +4,13 @@
  *   - "settings.section": Global Live2D & Voice configuration panel
  */
 
-import type { ClientContext, ISessions, SessionId } from "@deepseek-ai/dsh-client-runtime/client";
+import type { Context as ClientContext } from "@deepseek-ai/cordis";
+import type { ISessions } from "@deepseek-ai/dsh-api-session-controller/client";
+import type { SessionId } from "@deepseek-ai/dsh-session/types";
+// Side-effect type imports: each package merges its own face into the shared
+// client declarations (Context.slots, SessionStandardProps, SlotMap entries).
+import type {} from "@deepseek-ai/dsh-client-ui-renderer/client";
+import type {} from "@deepseek-ai/dsh-client-ui-session/client";
 import type {} from "@deepseek-ai/dsh-client-ui-conversation/client";
 import { injectLiveStyles } from "./styles.js";
 import { makeLive2DView } from "./view.js";

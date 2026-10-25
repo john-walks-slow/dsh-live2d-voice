@@ -1,108 +1,113 @@
 {
-	"name": "dsh-live2d-voice",
-	"version": "1.6.2",
-	"description": "Live2D session view with realtime voice: continuous voice input, streaming TTS, subtitle translation, multi-model catalog, standalone entry / Live2D 实时语音会话视图：连续语音输入、流式 TTS、字幕翻译、多模型目录、独立入口",
-	"type": "module",
-	"main": "./lib/index.js",
-	"exports": {
-		".": "./lib/index.js",
-		"./client": "./lib/client.js",
-		"./cordis.patch.yml": "./cordis.patch.yml",
-		"./package.json": "./package.json"
-	},
-	"files": [
-		"lib/index.js",
-		"lib/client.js",
-		"lib/types",
-		"assets/cubism4/live2dcubismcore.min.js",
-		"assets/cubism2/live2d.min.js",
-		"assets/standalone.html",
-		"assets/picker.html",
-		"cordis.patch.yml",
-		"README.md",
-		"LICENSE"
-	],
-	"scripts": {
-		"build": "node build.mjs",
-		"typecheck": "tsc --noEmit",
-		"e2e:boot": "dsh-e2e run e2e/run.mjs boot",
-		"e2e:fullscreen": "dsh-e2e run e2e/run.mjs fullscreen",
-		"e2e:gaze": "dsh-e2e run e2e/run.mjs gaze",
-		"e2e:settings": "dsh-e2e run e2e/run.mjs settings",
-		"e2e:styles": "dsh-e2e run e2e/run.mjs styles",
-		"e2e:real-api": "dsh-e2e run e2e/run.mjs real-api",
-		"e2e": "dsh-e2e run e2e/run.mjs --list"
-	},
-	"keywords": [
-		"dsh",
-		"dsh-plugin",
-		"deepseek-harness",
-		"live2d",
-		"cubism",
-		"tts",
-		"voice",
-		"asr",
-		"speech-recognition",
-		"subtitle",
-		"lip-sync",
-		"vtuber",
-		"语音合成",
-		"语音识别",
-		"字幕翻译"
-	],
-	"license": "MIT",
-	"author": "johnnren",
-	"repository": {
-		"type": "git",
-		"url": "git+https://github.com/john-walks-slow/dsh-live2d-voice.git"
-	},
-	"homepage": "https://github.com/john-walks-slow/dsh-live2d-voice#readme",
-	"bugs": "https://github.com/john-walks-slow/dsh-live2d-voice/issues",
-	"dsh": {
-		"bundle": {
-			"patch": "./cordis.patch.yml"
-		},
-		"client": {
-			"inject": [
-				"@deepseek-ai/dsh-client-runtime",
-				"@deepseek-ai/dsh-client-ui-conversation"
-			],
-			"platform": "web"
-		}
-	},
-	"dependencies": {
-		"@deepseek-ai/dsh-api-session-controller": "0.1.5-rc.3",
-		"@deepseek-ai/dsh-attachment": "0.1.5-rc.3",
-		"@deepseek-ai/dsh-code-runtime": "0.1.5-rc.3",
-		"@deepseek-ai/dsh-invariants": "0.1.5-rc.3",
-		"@deepseek-ai/dsh-llm": "0.1.5-rc.3",
-		"@deepseek-ai/dsh-scope": "0.1.5-rc.3",
-		"@deepseek-ai/dsh-system-prompt": "0.1.5-rc.3",
-		"@deepseek-ai/dsh-tools": "0.1.5-rc.3",
-		"@deepseek-ai/dsh-user-approval": "0.1.5-rc.3",
-		"@mediapipe/tasks-vision": "^0.10.35",
-		"ws": "^8.21.3"
-	},
-	"peerDependencies": {
-		"@deepseek-ai/cordis": "^4.0.1"
-	},
-	"devDependencies": {
-		"@deepseek-ai/cordis": "^4.0.2",
-		"@deepseek-ai/dsh-agent": "0.1.5-rc.3",
-		"@deepseek-ai/dsh-client-runtime": "0.1.1-rc.2",
-		"@deepseek-ai/dsh-client-ui-conversation": "0.1.1-rc.2",
-		"@deepseek-ai/dsh-client-ui-slots": "0.1.1-rc.2",
-		"@deepseek-ai/dsh-host-webserver": "0.1.5-rc.3",
-		"@deepseek-ai/dsh-session": "0.1.5-rc.3",
-		"@types/node": "^22.20.1",
-		"@types/react": "~18.3.31",
-		"@types/react-dom": "^18.3.7",
-		"@types/ws": "^8.18.1",
-		"esbuild": "^0.28.2",
-		"pixi-live2d-display-lipsyncpatch": "^0.5.0-ls-8",
-		"pixi.js": "^7.4.3",
-		"react": "^18.3.1",
-		"react-dom": "^18.3.1",
-		"typescript": "^5.9.3"
-	}
+  "name": "dsh-live2d-voice",
+  "version": "1.6.2",
+  "description": "Live2D session view with realtime voice: continuous voice input, streaming TTS, subtitle translation, multi-model catalog, standalone entry / Live2D 实时语音会话视图：连续语音输入、流式 TTS、字幕翻译、多模型目录、独立入口",
+  "type": "module",
+  "main": "./lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./lib/client.js",
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib/index.js",
+    "lib/client.js",
+    "lib/types",
+    "assets/cubism4/live2dcubismcore.min.js",
+    "assets/cubism2/live2d.min.js",
+    "assets/standalone.html",
+    "assets/picker.html",
+    "cordis.patch.yml",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "node build.mjs",
+    "typecheck": "tsc --noEmit",
+    "e2e:boot": "dsh-e2e run e2e/run.mjs boot",
+    "e2e:fullscreen": "dsh-e2e run e2e/run.mjs fullscreen",
+    "e2e:gaze": "dsh-e2e run e2e/run.mjs gaze",
+    "e2e:settings": "dsh-e2e run e2e/run.mjs settings",
+    "e2e:styles": "dsh-e2e run e2e/run.mjs styles",
+    "e2e:real-api": "dsh-e2e run e2e/run.mjs real-api",
+    "e2e": "dsh-e2e run e2e/run.mjs --list"
+  },
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek-harness",
+    "live2d",
+    "cubism",
+    "tts",
+    "voice",
+    "asr",
+    "speech-recognition",
+    "subtitle",
+    "lip-sync",
+    "vtuber",
+    "语音合成",
+    "语音识别",
+    "字幕翻译"
+  ],
+  "license": "MIT",
+  "author": "johnnren",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/john-walks-slow/dsh-live2d-voice.git"
+  },
+  "homepage": "https://github.com/john-walks-slow/dsh-live2d-voice#readme",
+  "bugs": "https://github.com/john-walks-slow/dsh-live2d-voice/issues",
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "inject": [
+        "@deepseek-ai/dsh-api-session-controller",
+        "@deepseek-ai/dsh-client-ui-conversation",
+        "@deepseek-ai/dsh-client-ui-renderer",
+        "@deepseek-ai/dsh-client-ui-session",
+        "@deepseek-ai/dsh-client-store"
+      ],
+      "platform": "web"
+    }
+  },
+  "dependencies": {
+    "@deepseek-ai/dsh-api-session-controller": "0.2.1-rc.2",
+    "@deepseek-ai/dsh-attachment": "0.2.1-rc.2",
+    "@deepseek-ai/dsh-code-runtime": "0.1.5-rc.3",
+    "@deepseek-ai/dsh-invariants": "0.1.5-rc.3",
+    "@deepseek-ai/dsh-llm": "0.2.1-rc.2",
+    "@deepseek-ai/dsh-scope": "0.2.1-rc.2",
+    "@deepseek-ai/dsh-system-prompt": "0.2.1-rc.2",
+    "@deepseek-ai/dsh-tools": "0.2.1-rc.2",
+    "@deepseek-ai/dsh-user-approval": "0.2.1-rc.2",
+    "@mediapipe/tasks-vision": "^0.10.35",
+    "ws": "^8.21.3"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.1"
+  },
+  "devDependencies": {
+    "@deepseek-ai/cordis": "^4.0.5",
+    "@deepseek-ai/dsh-agent": "0.2.1-rc.2",
+    "@deepseek-ai/dsh-client-ui-conversation": "0.2.1-rc.2",
+    "@deepseek-ai/dsh-client-ui-slots": "0.2.1-rc.2",
+    "@deepseek-ai/dsh-host-webserver": "0.2.1-rc.2",
+    "@deepseek-ai/dsh-session": "0.2.1-rc.2",
+    "@types/node": "^22.20.1",
+    "@types/react": "~18.3.31",
+    "@types/react-dom": "^18.3.7",
+    "@types/ws": "^8.18.1",
+    "esbuild": "^0.28.2",
+    "pixi-live2d-display-lipsyncpatch": "^0.5.0-ls-8",
+    "pixi.js": "^7.4.3",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "typescript": "^5.9.3",
+    "@deepseek-ai/dsh-client-ui-renderer": "0.2.1-rc.2",
+    "@deepseek-ai/dsh-client-ui-session": "0.2.1-rc.2",
+    "@deepseek-ai/dsh-client-store": "0.2.1-rc.2"
+  }
 }

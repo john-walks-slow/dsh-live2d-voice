@@ -126,9 +126,10 @@ export function applyCameraTool(ctx: Context, hub: SseHub, bridge: CameraBridge)
 	const offCreated = ctx.on("agent/created", (payload: unknown) => {
 		// The event carries a { agent } wrapper.
 		const a = (payload as { agent?: AgentLike }).agent;
-		if (!a?.ctx || a.id === undefined) return;
-		if (!hub.has(String(a.id))) return; // Live2D view not open → no tool
+		if (!a?.ctx || a.id === undefined) return undefined;
+		if (!hub.has(String(a.id))) return undefined; // Live2D view not open → no tool
 		registerOne(a);
+		return undefined;
 	});
 	const offFirstOpen = hub.onFirstOpen((sessionId) => {
 		const agent = ctx.agents.get(sessionId as never) as unknown as AgentLike | undefined;
